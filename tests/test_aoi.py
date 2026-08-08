@@ -210,6 +210,36 @@ def test_rural_elevation_cap(params: dict[str, Any]) -> None:
     assert max_elev is None or max_elev > 0
 
 
+def test_cmc_definition_is_gn_union(params: dict[str, Any]) -> None:
+    # The DS pair measures 46.87 km2 with COD-AB polygons (its Colombo DS
+    # encloses the Port's outer harbour), so no DS union can give the gazetted
+    # 37.31 km2. The CMC's own GIS Unit GN list is authoritative.
+    cmc = params["aoi"]["cmc"]
+    assert cmc["definition"] in aoi.CMC_DEFINITIONS
+    assert cmc["definition"] == "gn_union"
+    assert params["aoi"]["expected_areas_km2"]["cmc"] == 37
+
+
+def test_cmc_gn_list_is_55_clean_unique_names(params: dict[str, Any]) -> None:
+    cmc = params["aoi"]["cmc"]
+    names = cmc["gn_division_names"]
+    assert len(names) == cmc["expected_gn_count"] == 55
+    assert len(set(names)) == len(names), "duplicate GN names"
+    for name in names:
+        assert isinstance(name, str) and name, f"bad GN name: {name!r}"
+        # A stray space silently breaks ee.Filter.inList and undersizes the CMC.
+        assert name == name.strip(), f"whitespace around GN name: {name!r}"
+        assert "  " not in name, f"double space in GN name: {name!r}"
+
+
+def test_cmc_gn_list_contains_known_landmarks(params: dict[str, Any]) -> None:
+    # Spot-check against the CMC GIS Unit map + the COD-AB samples seen in Colab.
+    names = set(params["aoi"]["cmc"]["gn_division_names"])
+    for expected in ("Fort", "Pettah", "Sammanthranapura", "Mattakkuliya",
+                     "Bambalapitiya", "Slave Island"):
+        assert expected in names, expected
+
+
 def test_lcz_scope_is_valid(params: dict[str, Any]) -> None:
     # Set 2026-08-08: unscoped LCZ masks spanned Western Province + 25 km, making
     # "urban" 2464 km2 of built-up across Gampaha and Kalutara.
@@ -238,6 +268,7 @@ def test_modules_import_without_earthengine() -> None:
         "area_km2",
         "mask_area_km2",
         "describe_asset",
+        "cmc_name_audit",
     ):
         assert callable(getattr(aoi, name)), name
     for name in ("bits_to_mask", "qa_clear_mask", "qa_water_flag", "scale_sr"):

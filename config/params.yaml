@@ -110,12 +110,86 @@ aoi:
                                       # when NO district property exists (geoBoundaries), the
                                       # loaders fall back to a centroid-within-GAUL spatial filter
   cmc:
-    # CMC has no boundary in any GEE dataset. It is derived by dissolving these
-    # DS divisions from the ds_divisions asset (their union ~= the ~37 km2 CMC).
+    # CMC has no boundary in any GEE dataset, so it is dissolved from the
+    # uploaded admin assets. Two definitions are supported:
+    #
+    #   gn_union  (DEFAULT, authoritative) — union of the 55 GN divisions that
+    #     the Colombo Municipal Council itself lists as inside the CMC. Source:
+    #     CMC GIS Unit / ID Center "GN DIVISIONS" map, supplied by the project
+    #     owner 2026-08-08. Expected area ~37 km2 (gazetted 37.31).
+    #   ds_union — union of the Colombo + Thimbirigasyaya DS divisions. This is
+    #     the mapping most sources quote, but with COD-AB polygons it measures
+    #     46.87 km2 (Colombo DS 24.54 + Thimbirigasyaya 22.33), ~10 km2 OVER the
+    #     gazetted CMC: COD-AB's Colombo DS polygon encloses the Colombo Port
+    #     outer harbour and breakwaters (confirmed visually in
+    #     figures/aoi_water_mask_core.png, Colab run 3). No union of COD-AB DS
+    #     polygons can yield 37 km2. Kept only as a sensitivity variant.
+    definition: "gn_union"
     ds_division_names: ["Colombo", "Thimbirigasyaya"]
     ds_name_property: null            # null = auto-resolve from
                                       # aoi.assets.ds_name_property_candidates; set a string here
                                       # to override
+    gn_name_property: null            # null = auto-resolve from
+                                      # aoi.assets.gn_name_property_candidates
+    expected_gn_count: 55             # every name below must match the asset; aoi.cmc_name_audit()
+                                      # reports any that do not (a partial match would silently
+                                      # shrink the CMC)
+    gn_division_names:                # the 55 GN divisions of the CMC, per the CMC GIS Unit map
+      - "Aluthkade East"
+      - "Aluthkade West"
+      - "Aluthmawatha"
+      - "Bambalapitiya"
+      - "Bloemendhal"
+      - "Borella North"
+      - "Borella South"
+      - "Dematagoda"
+      - "Fort"
+      - "Galle Face"
+      - "Gothamipura"
+      - "Grandpass North"
+      - "Grandpass South"
+      - "Havelock Town"
+      - "Hunupitiya"
+      - "Ibanwala"
+      - "Jinthupitiya"
+      - "Keselwatta"
+      - "Kettarama"
+      - "Kirula"
+      - "Kirulapona"
+      - "Kochchikade North"
+      - "Kochchikade South"
+      - "Kollupitiya"
+      - "Kotehena East"
+      - "Kotehena West"
+      - "Kuppiyawatta East"
+      - "Kuppiyawatta West"
+      - "Kurunduwatta"
+      - "Lunupokuna"
+      - "Madampitiya"
+      - "Mahawatta"
+      - "Maligakanda"
+      - "Maligawatta East"
+      - "Maligawatta West"
+      - "Maradana"
+      - "Masangasweediya"
+      - "Mattakkuliya"
+      - "Milagiriya"
+      - "Modara"
+      - "Narahenpita"
+      - "Nawagampura"
+      - "New Bazaar"
+      - "Pamankada East"
+      - "Pamankada West"
+      - "Panchikawatta"
+      - "Pettah"
+      - "Sammanthranapura"
+      - "Slave Island"
+      - "Suduwella"
+      - "Thimbirigasyaya"
+      - "Wanathamulla"
+      - "Wekanda"
+      - "Wellawatta North"
+      - "Wellawatta South"
   expected_areas_km2:                 # [DEFAULT — Phase 1] notebook sanity checks only;
     cmc: 37                           # GAUL is simplified at 500 m, expect a few % deviation
     district: 699

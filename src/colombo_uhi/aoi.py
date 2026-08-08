@@ -500,19 +500,148 @@ def gn_divisions(
     return _filter_to_district(fc, asset_id, params) if district_only else fc
 
 
+#: Valid values for ``aoi.cmc.definition``.
+CMC_DEFINITIONS = ("gn_union", "ds_union")
+
+
+def _cmc_source(params: dict[str, Any]) -> tuple[str, str, str, list[str], str]:
+    """Resolve everything ``cmc_boundary``/``cmc_name_audit`` need.
+
+    Returns:
+        ``(definition, asset_key, name_property, configured_names, level)``
+        where ``level`` is a human label ("GN"/"DS") for messages.
+
+    Raises:
+        RuntimeError: If the required asset id is null, with fix steps.
+        ValueError: On an unknown ``definition``, or if the name attribute
+            cannot be resolved.
+    """
+    cmc_cfg = params["aoi"]["cmc"]
+    assets_cfg = params["aoi"]["assets"]
+    definition = cmc_cfg["definition"]
+    if definition not in CMC_DEFINITIONS:
+        raise ValueError(
+            f"unknown aoi.cmc.definition '{definition}'; valid options: "
+            f"{list(CMC_DEFINITIONS)}"
+        )
+
+    if definition == "gn_union":
+        asset_key, level = "gn_divisions", "GN"
+        candidates = assets_cfg["gn_name_property_candidates"]
+        override = cmc_cfg["gn_name_property"]
+        names = cmc_cfg["gn_division_names"]
+    else:  # ds_union
+        asset_key, level = "ds_divisions", "DS"
+        candidates = assets_cfg["ds_name_property_candidates"]
+        override = cmc_cfg["ds_name_property"]
+        names = cmc_cfg["ds_division_names"]
+
+    asset_id = assets_cfg[asset_key]
+    if not asset_id:
+        raise RuntimeError(
+            f"Cannot build the CMC boundary: aoi.assets.{asset_key} is null in "
+            "config/params.yaml and no GEE dataset contains CMC/DS/GN boundaries "
+            "(GAUL stops at district level for Sri Lanka). Fix:\n"
+            "  1. Download 'Sri Lanka - Subnational Administrative Boundaries' "
+            "from OCHA/HDX (admin3 = DS divisions, admin4 = GN divisions).\n"
+            "  2. Upload the shapefile as an EE table asset "
+            "(Code Editor > Assets > New > Shape files).\n"
+            f"  3. Set aoi.assets.{asset_key} to the asset id in "
+            "config/params.yaml.\n"
+            f"CMC will then be the union of {len(names)} {level} divisions."
+        )
+
+    name_property = _resolve_property(
+        asset_id, candidates, f"{level}-division name", override=override
+    )
+    return definition, asset_id, name_property, list(names), level
+
+
+def _cmc_units(params: dict[str, Any]) -> "ee.FeatureCollection":
+    """The district-filtered divisions the CMC is dissolved from."""
+    definition, _, _, _, _ = _cmc_source(params)
+    if definition == "gn_union":
+        return gn_divisions(params, district_only=True)
+    return ds_divisions(params, district_only=True)
+
+
+def cmc_name_audit(params: dict[str, Any]) -> dict[str, Any]:
+    """Diagnostic: check the configured CMC division names against the asset.
+
+    A *partial* name match is the dangerous case — it yields a plausible-looking
+    but undersized CMC. This reports both directions so spelling drift between
+    the CMC GIS Unit map and COD-AB (e.g. Wellawatta/Wellawatte) is visible
+    rather than silently absorbed. Like :func:`describe_asset`, evaluating
+    client-side is the point of this function.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        Dict with ``definition``, ``name_property``, ``expected`` (configured
+        count), ``matched`` / ``missing`` (configured names present / absent in
+        the asset), ``extra`` (division names inside the CMC's parent DS
+        divisions that are NOT on the configured list — where a misspelling
+        surfaces) and ``stated_area_km2`` (sum of the asset's own area field
+        over the matched units).
+    """
+    import ee  # Deferred: see module docstring.
+
+    definition, _, name_property, configured, _ = _cmc_source(params)
+    cmc_cfg = params["aoi"]["cmc"]
+    assets_cfg = params["aoi"]["assets"]
+
+    units = _cmc_units(params)
+    matched_fc = units.filter(ee.Filter.inList(name_property, configured))
+    present = set(matched_fc.aggregate_array(name_property).getInfo())
+    stated = matched_fc.aggregate_sum(assets_cfg["area_property"]).getInfo()
+
+    # "extra" = names in the CMC's parent DS divisions that are not configured.
+    if definition == "gn_union":
+        ds_property = _resolve_property(
+            assets_cfg["gn_divisions"],
+            assets_cfg["ds_name_property_candidates"],
+            "DS-division name (on the GN asset)",
+        )
+        parent = units.filter(
+            ee.Filter.inList(ds_property, cmc_cfg["ds_division_names"])
+        )
+        extra = sorted(
+            set(parent.aggregate_array(name_property).getInfo()) - set(configured)
+        )
+    else:
+        extra = sorted(set(units.aggregate_array(name_property).getInfo()) - set(configured))
+
+    return {
+        "definition": definition,
+        "name_property": name_property,
+        "expected": len(configured),
+        "matched": sorted(present),
+        "missing": sorted(set(configured) - present),
+        "extra": extra,
+        "stated_area_km2": stated,
+    }
+
+
 def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
     """Colombo Municipal Council (~37 km2) boundary.
 
-    CMC exists in no GEE dataset; it is dissolved from the DS divisions named
-    in ``aoi.cmc.ds_division_names`` (Colombo + Thimbirigasyaya) of the
-    user-uploaded DS asset. The name attribute is auto-resolved from
-    ``aoi.assets.ds_name_property_candidates`` unless
-    ``aoi.cmc.ds_name_property`` overrides it. Notebook 01 sanity-checks the
-    area against ``aoi.expected_areas_km2.cmc``.
+    CMC exists in no GEE dataset. It is dissolved from the user-uploaded admin
+    assets according to ``aoi.cmc.definition``:
 
-    A name filter that matches nothing raises rather than returning an empty
-    geometry — the earlier silent 0 km2 result (Colab run 2026-08-08) was
-    indistinguishable from a real answer.
+    * ``"gn_union"`` (default, authoritative) — the 55 GN divisions the Colombo
+      Municipal Council's own GIS Unit lists as inside the CMC.
+    * ``"ds_union"`` — Colombo + Thimbirigasyaya DS divisions. Measures
+      46.87 km2 with COD-AB polygons because its Colombo DS polygon encloses the
+      Port's outer harbour; kept as a sensitivity variant only.
+
+    The name attribute is auto-resolved from the matching ``*_candidates`` list.
+    Notebook 01 checks the area against ``aoi.expected_areas_km2.cmc``.
+
+    Neither an empty nor a partial name match is allowed to pass silently: zero
+    matches raise, and a partial match warns with the missing names. The earlier
+    silent 0 km2 CMC (Colab run 2026-08-08) was indistinguishable from a real
+    answer, and an undersized one would be worse.
 
     Args:
         params: Parsed params mapping.
@@ -521,50 +650,46 @@ def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
         Dissolved ``ee.Geometry`` of the CMC.
 
     Raises:
-        RuntimeError: While ``aoi.assets.ds_divisions`` is null (with the exact
-            steps to fix it), or when no DS division matches the configured
-            names (listing the names actually present in the district).
-        ValueError: If the DS name attribute cannot be resolved.
+        RuntimeError: If the required asset id is null (with fix steps), or when
+            no division matches the configured names (listing what is present).
+        ValueError: On an unknown definition or an unresolvable name attribute.
     """
     import ee  # Deferred: see module docstring.
 
+    definition, asset_id, name_property, configured, level = _cmc_source(params)
     cmc_cfg = params["aoi"]["cmc"]
-    assets_cfg = params["aoi"]["assets"]
-    asset_id = assets_cfg["ds_divisions"]
-    if not asset_id:
+    units = _cmc_units(params)
+    matched = units.filter(ee.Filter.inList(name_property, configured))
+
+    # One client-side check; see the docstring for why it is worth the round trip.
+    matched_names = matched.aggregate_array(name_property).getInfo()
+    if not matched_names:
+        available = sorted(units.aggregate_array(name_property).getInfo())
         raise RuntimeError(
-            "Cannot build the CMC boundary: aoi.assets.ds_divisions is null in "
-            "config/params.yaml and no GEE dataset contains CMC/DS boundaries "
-            "(GAUL stops at district level for Sri Lanka). Fix:\n"
-            "  1. Download 'Sri Lanka - Subnational Administrative Boundaries' "
-            "(admin3 layer) from OCHA/HDX.\n"
-            "  2. Upload the shapefile as an EE table asset "
-            "(Code Editor > Assets > New > Shape files).\n"
-            "  3. Set aoi.assets.ds_divisions to the asset id in "
-            "config/params.yaml.\n"
-            f"CMC will then be the dissolve of {cmc_cfg['ds_division_names']}."
+            f"No {level} division matched aoi.cmc "
+            f"({len(configured)} configured names) on property "
+            f"'{name_property}' in asset '{asset_id}' (within Colombo District).\n"
+            f"{level} names actually present: {available}\n"
+            f"Fix: correct the name list under aoi.cmc in config/params.yaml."
         )
 
-    name_property = _resolve_property(
-        asset_id,
-        assets_cfg["ds_name_property_candidates"],
-        "DS-division name",
-        override=cmc_cfg["ds_name_property"],
-    )
-    district_ds = ds_divisions(params, district_only=True)
-    matched = district_ds.filter(
-        ee.Filter.inList(name_property, cmc_cfg["ds_division_names"])
-    )
+    missing = sorted(set(configured) - set(matched_names))
+    if missing:
+        warnings.warn(
+            f"CMC is being built from only {len(matched_names)}/{len(configured)} "
+            f"{level} divisions - these configured names are NOT in the asset and "
+            f"the CMC is therefore UNDERSIZED: {missing}. Run "
+            "aoi.cmc_name_audit(params) to see the asset's actual spellings, then "
+            "fix aoi.cmc in config/params.yaml.",
+            stacklevel=2,
+        )
 
-    # One client-side check: an empty match must not masquerade as a 0 km2 CMC.
-    if matched.size().getInfo() == 0:
-        available = sorted(district_ds.aggregate_array(name_property).getInfo())
-        raise RuntimeError(
-            f"No DS division matched {cmc_cfg['ds_division_names']} on property "
-            f"'{name_property}' in asset '{asset_id}' (within Colombo District).\n"
-            f"DS names actually present: {available}\n"
-            "Fix: set aoi.cmc.ds_division_names in config/params.yaml to the "
-            "spellings above that make up the Colombo Municipal Council."
+    expected_n = cmc_cfg.get("expected_gn_count") if definition == "gn_union" else None
+    if expected_n is not None and len(configured) != expected_n:
+        warnings.warn(
+            f"aoi.cmc.gn_division_names holds {len(configured)} names but "
+            f"expected_gn_count is {expected_n} - update whichever is stale.",
+            stacklevel=2,
         )
     return matched.union(_MAX_ERROR_M).geometry(_MAX_ERROR_M)
 

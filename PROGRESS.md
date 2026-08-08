@@ -1,13 +1,13 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 1c session)_
+_Last updated: 2026-08-08 (Phase 1d session)_
 
 ## Status snapshot
 
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
-| 1 | AOI & boundaries | 🔄 Colab runs 1–2 done; schema now known, run 3 pending (see Phase 1c) |
+| 1 | AOI & boundaries | 🔄 runs 1–3 done; all verified except CMC, now redefined — run 4 pending (Phase 1d) |
 | 2 | LST pipeline (Landsat + MODIS) | ⬜ |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
@@ -28,6 +28,57 @@ _Last updated: 2026-08-08 (Phase 1c session)_
 - [x] `notebooks/00_setup_and_auth.ipynb` (functional) + 01–08 stubs
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
+
+## Phase 1d — Colab run 3 results + CMC redefinition (2026-08-08)
+
+Run 3 verified **everything except the CMC**:
+
+| Check | Run 3 | Verdict |
+|---|---|---|
+| DS / GN in Colombo District | **13** / **557** | ✅ exact |
+| Colombo District / Western Province | 685.6 / 3761.7 km² | ✅ |
+| Rural buffer ring | 1603 km² (was 4049) | ✅ proper 15–25 km annulus |
+| Rural ring mask after exclusions | 206 km² | ✅ usable sample |
+| LCZ urban / rural (district-scoped) | 477 / 152 km² | ✅ sums to the district |
+| **CMC (DS pair)** | **47.1 km²** vs ~37 | ⛔ wrong definition |
+
+### ✅ CMC DEFINITION — AUTHORITATIVE (do not revisit)
+
+**CMC = union of the 55 GN divisions listed by the Colombo Municipal Council's
+own GIS Unit** ("GN DIVISIONS" map, CMC GIS Unit / ID Center, supplied by the
+project owner 2026-08-08). Encoded in `aoi.cmc.gn_division_names`;
+`aoi.cmc.definition: "gn_union"`.
+
+**The DS-pair definition is disproven arithmetically:** Colombo DS = 24.54 km²,
+Thimbirigasyaya DS = 22.33 km², sum **46.87 km²** — and no other combination of
+COD-AB DS polygons gives 37.31 km². The computed geometry (47.1 km²) agreed with
+the asset's own `area_sqkm`, so the code was never wrong; the *definition* was.
+
+**Why the DS pair over-covers by ~10 km²:** `figures/aoi_water_mask_core.png`
+from run 3 shows COD-AB's Colombo DS polygon enclosing the **Colombo Port outer
+harbour and breakwaters** — a large semicircle of open sea counted as CMC. The
+GN divisions do not include the port waters. `ds_union` is kept in params only as
+a sensitivity variant, with that reason recorded.
+
+**Guard against silent partial matches:** the risk with 55 hand-transcribed names
+is spelling drift vs COD-AB (Wellawatta/Wellawatte, Kettarama/Khettarama). New
+`aoi.cmc_name_audit()` reports `matched` / `missing` / `extra` in both directions
+plus the asset-stated area; `cmc_boundary()` raises on zero matches and **warns
+loudly on a partial match** (an undersized CMC would look plausible). Notebook 01
+runs the audit before building the geometry.
+
+### Figure review (run 3 PNGs, decoded from the notebook)
+
+- **`aoi_water_mask_core.png`** (new, ~22 m/px) — settles the water checklist:
+  **Beira Lake**, **Diyawanna (Parliament) Lake** and a continuous **Kelani
+  River** are all captured. Also the figure that revealed the port-in-CMC problem.
+- **`aoi_rural_buffer_ring.png`** — textbook result: compact red CMC core, clean
+  green annulus 15–25 km out on the **landward side only** (the seaward half is
+  removed by the water mask), thinning out before the high ground (elevation cap
+  working). Green is sparse because built-up LCZ is excluded and the ring crosses
+  the conurbation — expected, and 206 km² is a workable sample.
+- **`aoi_rural_lcz.png` / `aoi_boundaries.png`** — district-scoped LCZ masks now
+  sit inside the district outline; boundaries nest correctly.
 
 ## Phase 1c — Colab run 2 results + fixes (2026-08-08)
 
@@ -261,19 +312,18 @@ water mask, both rural references and the map all built.
 
 Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
 
-## What you must run to verify Phase 1 (run 3, after the 1c fixes)
+## What you must run to verify Phase 1 (run 4, after the 1d CMC redefinition)
 
 1. Commit + push, then re-run `notebooks/01_aoi_and_boundaries.ipynb` in Colab.
-2. Confirm: DS = **13**, GN = **557**, CMC ≈ **37 km²** and close to the
-   `area_sqkm` sum printed next to it, ring compact around the CMC, LCZ urban a
-   district-scale number (not 2464 km²) with a non-empty rural counterpart, no
-   mask flagged near-empty.
-3. If CMC still fails, the printed DS-name list shows the exact spellings —
-   paste the right two into `aoi.cmc.ds_division_names`.
-4. **Send back the PNGs from `figures/`** — especially the new
-   `aoi_water_mask_core.png`, which is the only view that can resolve Beira Lake
-   and Diyawanna Lake.
-5. Locally: `python -m pytest tests/ -q` → 84 passed.
+2. The **CMC audit cell** is the one that matters: expect **55/55 matched** and an
+   empty `missing` list. If names are missing, the printed `extra` list holds
+   COD-AB's spelling of each — copy those into `aoi.cmc.gn_division_names`.
+3. Confirm CMC ≈ **37 km²**, agreeing with the asset-stated area, and that the
+   ring has been recomputed around the smaller core. DS = 13, GN = 557, LCZ
+   urban/rural ≈ 477/152 km² should be unchanged.
+4. **Send back the PNGs from `figures/`** — `aoi_water_mask_core.png` should now
+   show the CMC hugging the shoreline instead of enclosing the Port harbour.
+5. Locally: `python -m pytest tests/ -q` → 87 passed.
 
 ## What you must run to verify Phase 0
 
@@ -299,6 +349,14 @@ Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
   catalog Browser pane (17 ✅, 1 ❌ GSOD); wrote params.yaml, auth module,
   tests (30 passing), notebook 00, stubs, README. No LST processing code
   written (per session scope). Nothing committed to git yet.
+- **2026-08-08 — Phase 1d**: third Colab run — DS/GN counts exact (13/557), ring
+  and LCZ masks all correct. CMC came out 47.1 km² vs ~37; proved no COD-AB DS
+  union can give 37.31, and the zoomed water figure showed why (Colombo DS
+  encloses the Port harbour). User supplied the CMC GIS Unit's GN-division map →
+  CMC redefined as the union of its **55 GN divisions**, with `cmc_name_audit()`
+  guarding against partial name matches. Reviewed all five run-3 PNGs: Beira,
+  Diyawanna, Kelani, Bolgoda and the eastern reservoirs all confirmed in the
+  water mask. 87 tests passing.
 - **2026-08-08 — Phase 1c**: second Colab run. Diagnostic cell revealed the
   assets are COD-AB v03 with **lowercase** fields (`adm3_name`/`adm4_name`/
   `adm2_name`) — my candidates were uppercase, so DS/GN came back 0/0. Also

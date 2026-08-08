@@ -171,12 +171,14 @@ def test_phase1_aoi_sections(params: dict[str, Any]) -> None:
     # district level for Sri Lanka — decision recorded 2026-08-08).
     assert "ds_divisions" in aoi["assets"]
     assert "gn_divisions" in aoi["assets"]
-    # CMC = dissolve of these DS divisions from the ds_divisions asset.
+    # CMC = union of the 55 GN divisions the CMC GIS Unit lists (authoritative);
+    # the DS pair is kept only as a sensitivity variant (it measures 46.87 km2).
+    assert aoi["cmc"]["definition"] == "gn_union"
+    assert len(aoi["cmc"]["gn_division_names"]) == aoi["cmc"]["expected_gn_count"] == 55
     assert aoi["cmc"]["ds_division_names"] == ["Colombo", "Thimbirigasyaya"]
-    # null = auto-resolve from aoi.assets.ds_name_property_candidates.
-    assert aoi["cmc"]["ds_name_property"] is None or isinstance(
-        aoi["cmc"]["ds_name_property"], str
-    )
+    # null = auto-resolve from the matching aoi.assets.*_name_property_candidates.
+    for key in ("ds_name_property", "gn_name_property"):
+        assert aoi["cmc"][key] is None or isinstance(aoi["cmc"][key], str)
     assert aoi["assets"]["district_value"] == "Colombo"
     # Notebook sanity-check areas.
     expected = aoi["expected_areas_km2"]
