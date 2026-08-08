@@ -1,0 +1,423 @@
+# =============================================================================
+# SINGLE SOURCE OF TRUTH — Colombo UHI project parameters
+# =============================================================================
+# Every dataset ID, band name, scale factor, date range, threshold and CRS used
+# anywhere in src/ or notebooks/ MUST be read from this file (CLAUDE.md rule:
+# "No magic numbers in src/").
+#
+# Provenance tags used in the comments below:
+#   [CLAUDE.md]    authoritative project-spec value
+#   [GEE catalog]  verified against developers.google.com/earth-engine/datasets
+#                  in the Browser pane on 2026-08-08 (see PROGRESS.md table)
+#   [DEFAULT]      methodological default NOT fixed by CLAUDE.md — revisit at
+#                  the phase noted before treating results as final
+#
+# NOTE: NOAA/GSOD station data is listed in CLAUDE.md but is NOT in the Earth
+# Engine catalog (verified 2026-08-08: page 404s, catalog search returns no
+# hits). It is therefore parked under `non_ee_sources` at the bottom of this
+# file and NOT under `datasets`. See PROGRESS.md "Catalog discrepancies".
+# =============================================================================
+
+project:
+  name: colombo-uhi
+  title: "Urban Heat Island Intensity in Colombo, Sri Lanka (2000-2025)"
+  python_min: "3.10"                  # [CLAUDE.md] target Python 3.10+
+
+# --- Google Cloud / Earth Engine session -------------------------------------
+gcp:
+  # Earth Engine Cloud project id. Three ways to set (first non-empty wins):
+  #   1. pass project_id="..." to colombo_uhi.auth.init_ee()
+  #   2. set env var EE_PROJECT (in Colab: os.environ["EE_PROJECT"] = "...")
+  #   3. this value (owner's project, set 2026-08-08)
+  ee_project_id: "research-uhi-484404"
+
+# --- Coordinate reference system + analysis grid -----------------------------
+crs:
+  analysis_epsg: "EPSG:32644"         # [CLAUDE.md] UTM zone 44N
+  analysis_scale_m: 30                # [CLAUDE.md] 30 m analysis grid
+
+# --- Study period + seasonal windows -----------------------------------------
+time:
+  start_year: 2000                    # [CLAUDE.md] study period 2000-2025
+  end_year: 2025
+  start_date: "2000-01-01"
+  end_date: "2025-12-31"
+  seasons:
+    sw_monsoon:                       # [CLAUDE.md] SW monsoon May-Sep
+      months: [5, 6, 7, 8, 9]
+      label: "SW monsoon (May-Sep)"
+    ne_monsoon:                       # [CLAUDE.md] NE monsoon Dec-Feb
+      months: [12, 1, 2]
+      label: "NE monsoon (Dec-Feb)"
+    dry_window:                       # [CLAUDE.md] driest/clearest window; the
+      months: [1, 2, 3]               # primary "dry season" comparison window
+      label: "Dry season (Jan-Mar)"
+
+# --- Study area ---------------------------------------------------------------
+aoi:
+  centre: {lat: 6.93, lon: 79.85}     # [CLAUDE.md] Colombo centre
+  koppen: "Af"                        # [CLAUDE.md] tropical rainforest/monsoon
+  cmc_area_km2: 37                    # [CLAUDE.md] Colombo Municipal Council ~37 km2 (urban core)
+  district:
+    name: "Colombo"
+    ds_divisions: 13                  # [CLAUDE.md] Divisional Secretariat divisions
+    gn_divisions: 557                 # [CLAUDE.md] Grama Niladhari divisions
+  western_province_districts:         # [CLAUDE.md]
+    - "Colombo"
+    - "Gampaha"
+    - "Kalutara"
+  water_bodies_to_mask:               # [CLAUDE.md] mask before any LST statistics
+    - "Indian Ocean"
+    - "Beira Lake"
+    - "Bolgoda Lake"
+    - "Kelani River"
+    - "Diyawanna (Parliament) Lake"
+  gaul:                               # [GEE catalog] property names verified
+    country_property: "ADM0_NAME"
+    country_value: "Sri Lanka"
+    district_property: "ADM2_NAME"    # ADM2 = district level in GAUL
+    district_value: "Colombo"
+  assets:
+    # GN-division polygons are NOT in GAUL/GADM [CLAUDE.md]. Upload your own
+    # shapefile/GeoJSON as an EE asset and put the full asset id here, e.g.
+    #   "projects/<your-ee-project>/assets/colombo_gn_divisions"
+    # Any code needing GN divisions must fail with a clear, actionable message
+    # while this is null.
+    gn_divisions: null
+
+# =============================================================================
+# DATASETS — all IDs verified in the GEE catalog on 2026-08-08
+# =============================================================================
+datasets:
+  landsat5:
+    id: "LANDSAT/LT05/C02/T1_L2"      # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    sensor: "TM"
+    st_band: "ST_B6"                  # [CLAUDE.md][GEE catalog] surface temperature, Kelvin after scaling
+    availability: ["1984-03-16", "2012-05-05"]   # [GEE catalog]
+    sr_bands:                         # [GEE catalog] for NDVI/NDBI/etc. in Phase 2
+      blue: "SR_B1"
+      green: "SR_B2"
+      red: "SR_B3"
+      nir: "SR_B4"
+      swir1: "SR_B5"
+      swir2: "SR_B7"
+  landsat7:
+    id: "LANDSAT/LE07/C02/T1_L2"      # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    sensor: "ETM+"
+    st_band: "ST_B6"                  # [CLAUDE.md][GEE catalog]
+    availability: ["1999-05-28", "2024-01-19"]   # [GEE catalog] collection ended Jan 2024
+    slc_off_after: "2003-05-31"       # [CLAUDE.md] SLC failure -> striped gaps afterwards
+    sr_bands:                         # [GEE catalog]
+      blue: "SR_B1"
+      green: "SR_B2"
+      red: "SR_B3"
+      nir: "SR_B4"
+      swir1: "SR_B5"
+      swir2: "SR_B7"
+  landsat8:
+    id: "LANDSAT/LC08/C02/T1_L2"      # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    sensor: "OLI/TIRS"
+    st_band: "ST_B10"                 # [CLAUDE.md][GEE catalog]
+    availability: ["2013-03-18", null]           # [GEE catalog] null = ongoing
+    sr_bands:                         # [GEE catalog] note band shift vs TM/ETM+
+      blue: "SR_B2"
+      green: "SR_B3"
+      red: "SR_B4"
+      nir: "SR_B5"
+      swir1: "SR_B6"
+      swir2: "SR_B7"
+  landsat9:
+    id: "LANDSAT/LC09/C02/T1_L2"      # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    sensor: "OLI-2/TIRS-2"
+    st_band: "ST_B10"                 # [CLAUDE.md][GEE catalog]
+    availability: ["2021-10-31", null]           # [GEE catalog]
+    sr_bands:                         # [GEE catalog] same layout as Landsat 8
+      blue: "SR_B2"
+      green: "SR_B3"
+      red: "SR_B4"
+      nir: "SR_B5"
+      swir1: "SR_B6"
+      swir2: "SR_B7"
+  modis_terra_lst:
+    id: "MODIS/061/MOD11A2"           # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    cadence: "8-day"
+    scale_m: 1000
+    day_band: "LST_Day_1km"           # [CLAUDE.md][GEE catalog]
+    night_band: "LST_Night_1km"       # [CLAUDE.md][GEE catalog]
+    qc_day_band: "QC_Day"             # [GEE catalog]
+    qc_night_band: "QC_Night"         # [GEE catalog]
+    availability: ["2000-02-18", null]           # [GEE catalog]
+  modis_aqua_lst:
+    id: "MODIS/061/MYD11A2"           # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    cadence: "8-day"
+    scale_m: 1000
+    day_band: "LST_Day_1km"           # [GEE catalog]
+    night_band: "LST_Night_1km"       # [GEE catalog]
+    qc_day_band: "QC_Day"             # [GEE catalog]
+    qc_night_band: "QC_Night"         # [GEE catalog]
+    availability: ["2002-07-04", null]           # [GEE catalog] Aqua launch — NO Aqua data 2000 - mid-2002
+  dynamic_world:
+    id: "GOOGLE/DYNAMICWORLD/V1"      # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    scale_m: 10
+    label_band: "label"               # [GEE catalog] 0-8, index of highest-probability class
+    availability: ["2015-06-27", null]           # [CLAUDE.md][GEE catalog]
+    classes:                          # [GEE catalog] band order == label index
+      0: "water"
+      1: "trees"
+      2: "grass"
+      3: "flooded_vegetation"
+      4: "crops"
+      5: "shrub_and_scrub"
+      6: "built"
+      7: "bare"
+      8: "snow_and_ice"
+  worldcover_2020:
+    id: "ESA/WorldCover/v100"         # [CLAUDE.md][GEE catalog]
+    type: image_collection            # single-image collection for year 2020
+    scale_m: 10
+    band: "Map"                       # [GEE catalog]
+    nominal_year: 2020
+  worldcover_2021:
+    id: "ESA/WorldCover/v200"         # [CLAUDE.md][GEE catalog]
+    type: image_collection            # single-image collection for year 2021
+    scale_m: 10
+    band: "Map"                       # [GEE catalog]
+    nominal_year: 2021
+    classes:                          # [GEE catalog] same legend for v100
+      10: "Tree cover"
+      20: "Shrubland"
+      30: "Grassland"
+      40: "Cropland"
+      50: "Built-up"
+      60: "Bare / sparse vegetation"
+      70: "Snow and ice"
+      80: "Permanent water bodies"
+      90: "Herbaceous wetland"
+      95: "Mangroves"
+      100: "Moss and lichen"
+  ghsl_built:
+    id: "JRC/GHSL/P2023A/GHS_BUILT_S" # [CLAUDE.md][GEE catalog]
+    type: image_collection            # 5-year epochs
+    scale_m: 100
+    band: "built_surface"             # [GEE catalog] m^2 of built surface per 100 m cell
+    band_nres: "built_surface_nres"   # [GEE catalog] non-residential subset
+    availability: ["1975-01-01", "2030-12-31"]   # [CLAUDE.md][GEE catalog] incl. 2025/2030 projections
+  lcz:
+    id: "RUB/RUBCLIM/LCZ/global_lcz_map/latest"  # [CLAUDE.md][GEE catalog] valid "latest" alias
+    type: image_collection
+    scale_m: 100
+    band: "LCZ_Filter"                # [GEE catalog] recommended (Gaussian-filtered) band
+    band_raw: "LCZ"                   # [GEE catalog]
+    nominal_period: [2018, 2019]      # [GEE catalog] single global snapshot (Demuzere et al. 2022)
+  srtm:
+    id: "USGS/SRTMGL1_003"            # [CLAUDE.md][GEE catalog]
+    type: image
+    scale_m: 30
+    band: "elevation"                 # [GEE catalog] metres
+  worldpop:
+    id: "WorldPop/GP/100m/pop"        # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    scale_m: 100                      # nominal (native ~92.77 m)
+    band: "population"                # [GEE catalog] people per cell
+    availability: ["2000-01-01", "2020-12-31"]   # [GEE catalog] annual 2000-2020 ONLY (no 2021+)
+    country_filter_property: "country"
+    country_filter_value: "LKA"       # ISO3 used by WorldPop mosaics
+  viirs_nightlights:
+    id: "NOAA/VIIRS/DNB/MONTHLY_V1/VCMSLCFG"     # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    cadence: "monthly"
+    scale_m: 464
+    band: "avg_rad"                   # [GEE catalog] nanoWatts/sr/cm^2
+    band_obs_count: "cf_cvg"          # [GEE catalog] cloud-free observation count
+    availability: ["2014-01-01", null]
+    # ^ [GEE catalog] DISCREPANCY: CLAUDE.md says "2012+"; the stray-light-
+    #   corrected VCMSLCFG series starts 2014-01. 2012-04..2013-12 exists only
+    #   in the UNcorrected sibling NOAA/VIIRS/DNB/MONTHLY_V1/VCMCFG.
+    #   See PROGRESS.md; decide in Phase 5/6 if 2012-13 months are needed.
+  surface_water:
+    id: "JRC/GSW1_4/GlobalSurfaceWater"          # [CLAUDE.md][GEE catalog]
+    type: image
+    scale_m: 30
+    band_occurrence: "occurrence"     # [GEE catalog] % of time water present 1984-2021
+    band_seasonality: "seasonality"   # [GEE catalog] months/year with water
+    band_max_extent: "max_extent"     # [GEE catalog] ever-detected-water mask
+    occurrence_threshold_pct: 50      # [DEFAULT — Phase 1] pixels >= this occurrence are masked as water
+  aster_ged:
+    id: "NASA/ASTER_GED/AG100_003"    # [CLAUDE.md][GEE catalog]
+    type: image
+    scale_m: 100
+    emissivity_bands: ["emissivity_band10", "emissivity_band11", "emissivity_band12", "emissivity_band13", "emissivity_band14"]  # [GEE catalog]
+    emissivity_scale: 0.001           # [GEE catalog] DN -> emissivity
+    ndvi_band: "ndvi"                 # [GEE catalog] scale 0.01
+    note: "Only needed if computing LST manually; C2 L2 ST products already use ASTER GED."
+  era5_land:
+    id: "ECMWF/ERA5_LAND/MONTHLY_AGGR"           # [CLAUDE.md][GEE catalog]
+    type: image_collection
+    cadence: "monthly"
+    scale_m: 11132
+    band_t2m: "temperature_2m"        # [CLAUDE.md][GEE catalog] Kelvin
+    band_skin_temp: "skin_temperature" # [GEE catalog] Kelvin — extra option for LST sanity checks
+    availability: ["1950-02-01", null]           # [GEE catalog]
+  gaul_level2:
+    id: "FAO/GAUL_SIMPLIFIED_500m/2015/level2"   # [CLAUDE.md][GEE catalog]
+    type: feature_collection
+    properties: ["ADM0_NAME", "ADM1_NAME", "ADM2_NAME", "ADM0_CODE", "ADM1_CODE", "ADM2_CODE"]  # [GEE catalog]
+
+# --- Sources that are NOT Earth Engine datasets ------------------------------
+non_ee_sources:
+  gsod:
+    # [DISCREPANCY vs CLAUDE.md — do not write EE code against this]
+    # CLAUDE.md lists "NOAA/GSOD" for station air temperature (Katunayake,
+    # WMO 43450), but no such dataset exists in the EE catalog (verified
+    # 2026-08-08). Free alternatives, pending user decision:
+    #   a) ERA5-Land temperature_2m (already in `datasets`, in EE)
+    #   b) NOAA NCEI GSOD direct download (free CSV, load with pandas)
+    #   c) BigQuery public dataset `bigquery-public-data.noaa_gsod` (free tier)
+    station_name: "Katunayake (Bandaranaike Intl Airport)"
+    wmo_station_id: "43450"           # [CLAUDE.md]
+    status: "unresolved - see PROGRESS.md"
+
+# =============================================================================
+# SENSOR CONSTANTS
+# =============================================================================
+# --- Landsat Collection 2 Level-2 (identical across L5/L7/L8/L9) -------------
+landsat_c2l2:
+  st_scale: 0.00341802                # [CLAUDE.md][GEE catalog] ST DN -> Kelvin multiplier
+  st_offset: 149.0                    # [CLAUDE.md][GEE catalog] ST DN -> Kelvin offset
+  kelvin_to_celsius_offset: 273.15    # [CLAUDE.md] degC = K - 273.15
+  sr_scale: 0.0000275                 # [CLAUDE.md][GEE catalog] SR DN -> reflectance multiplier
+  sr_offset: -0.2                     # [CLAUDE.md][GEE catalog]
+  st_emis_scale: 0.0001               # [CLAUDE.md][GEE catalog] ST_EMIS DN -> emissivity
+  st_qa_scale: 0.01                   # [CLAUDE.md][GEE catalog] ST_QA DN -> Kelvin uncertainty
+  st_valid_dn_range: [293, 65535]     # [CLAUDE.md] USGS product spec; catalog shows display range 0-65535
+  st_fill_dn: 0                       # [CLAUDE.md] fill value
+  processing_level_property: "PROCESSING_LEVEL"  # [GEE catalog] ST bands are FULLY MASKED when 'L2SR'
+  processing_level_required: "L2SP"   # [GEE catalog] keep only L2SP scenes for LST work
+  qa_pixel_band: "QA_PIXEL"           # [CLAUDE.md][GEE catalog]
+  qa_radsat_band: "QA_RADSAT"         # [CLAUDE.md][GEE catalog]
+  qa_pixel_bits:                      # [GEE catalog] full layout (CLAUDE.md omits 12-13)
+    fill: 0
+    dilated_cloud: 1
+    cirrus: 2                         # OLI (L8/L9) only — bit 2 is "Unused" on TM/ETM+ (L5/L7),
+                                      # where it is always 0, so the shared mask below stays valid
+    cloud: 3
+    cloud_shadow: 4
+    snow: 5
+    clear: 6
+    water: 7
+    cloud_confidence: [8, 9]
+    cloud_shadow_confidence: [10, 11]
+    snow_ice_confidence: [12, 13]     # [GEE catalog] (not listed in CLAUDE.md)
+    cirrus_confidence: [14, 15]
+  standard_mask:
+    require_zero_bits: [0, 1, 2, 3, 4]  # [CLAUDE.md] Fill, Dilated Cloud, Cirrus/Unused, Cloud, Shadow
+    require_qa_radsat_value: 0          # [CLAUDE.md] no saturated bands
+  harmonisation: "none"               # [CLAUDE.md] C2 is inter-calibrated across TM/ETM+/OLI;
+                                      # no manual coefficients — but verify empirically on overlap years
+
+# --- MODIS MOD11A2 / MYD11A2 --------------------------------------------------
+modis_lst:
+  lst_scale: 0.02                     # [CLAUDE.md][GEE catalog] DN -> Kelvin
+  kelvin_to_celsius_offset: 273.15    # [CLAUDE.md]
+  view_time_scale: 0.1                # [GEE catalog] Day/Night_view_time DN -> local solar hours
+  qc_filter:                          # [CLAUDE.md] "good quality" AND "avg error <= 1 K";
+                                      # MOD11A2 is a plain average of MOD11A1 with NO built-in
+                                      # QA filtering — QC_Day/QC_Night MUST be applied explicitly
+    mandatory_qa_bits: [0, 1]         # [GEE catalog] value 0 = produced, good quality
+    mandatory_qa_required_value: 0
+    lst_error_bits: [6, 7]            # [GEE catalog] value 0 = avg LST error <= 1 K
+    lst_error_required_value: 0
+  overpass_local_time:                # [CLAUDE.md] approximate local solar times
+    terra_day: "10:30"
+    terra_night: "22:30"
+    aqua_day: "13:30"                 # ~ peak daytime heating
+    aqua_night: "01:30"
+
+# =============================================================================
+# METHOD PARAMETERS
+# =============================================================================
+uhi:
+  suhii:
+    definition: "mean_urban_LST_minus_mean_rural_LST"   # [CLAUDE.md]
+    # [CLAUDE.md] compute under >= 2 rural definitions and report sensitivity:
+    rural_definitions: ["buffer_ring", "lcz_based"]
+    buffer_ring:                      # [DEFAULT — Phase 3] revisit distances before final numbers
+      inner_km: 15                    # ring starts this far beyond the urban-core boundary
+      outer_km: 25                    # ring ends here
+      exclude: ["water", "built_up"]  # rural reference excludes water + built pixels
+    lcz_based:
+      urban_classes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]   # LCZ built classes 1-10 (Demuzere et al. 2022)
+      rural_classes: [11, 12, 14]     # [DEFAULT — Phase 3] A=11 dense trees, B=12 scattered trees,
+                                      # D=14 low plants; adjust after inspecting Colombo's LCZ map
+  utfvi:
+    definition: "(Ts - Tmean) / Tmean"                  # [CLAUDE.md]
+    breaks: [0.0, 0.005, 0.010, 0.015, 0.020]           # [CLAUDE.md] five thresholds -> six classes
+    labels: ["Excellent", "Good", "Normal", "Bad", "Worse", "Worst"]  # [CLAUDE.md]
+
+trends:
+  series_basis: "annual_composite"    # [CLAUDE.md] MK + Sen's slope on ANNUAL composite series
+  mk_reducer: "kendallsCorrelation"   # [CLAUDE.md] ee.Reducer.kendallsCorrelation
+  sen_reducer: "sensSlope"            # [CLAUDE.md] ee.Reducer.sensSlope
+  slope_units: "degC_per_year"        # [CLAUDE.md] report Sen's slope in degC/yr
+  fdr:
+    method: "benjamini_hochberg"      # [CLAUDE.md] applied in Python on the exported p-value raster
+    alpha: 0.05                       # [DEFAULT — Phase 4] significance level before FDR
+
+spatial_stats:
+  hotspot_methods: ["getis_ord_gi_star", "local_morans_i"]   # [CLAUDE.md] esda/libpysal on exported zonal stats
+  emerging_hotspot: "mann_kendall_on_gi_star_space_time_bins" # [CLAUDE.md] EHSA
+  weights:
+    scheme: "queen"                   # [DEFAULT — Phase 5] contiguity weights for GN/DS polygons
+    knn_k: 8                          # [DEFAULT — Phase 5] KNN fallback for centroid-based runs
+  driver_attribution:                 # [CLAUDE.md] escalation path
+    workflow: ["ols", "residual_morans_i", "spatial_lag_or_error", "gwr_mgwr"]
+
+prediction:
+  framing: "conditional_scenario_projection_NOT_forecast"    # [CLAUDE.md caveat 3]
+  methods: ["random_forest_regression", "ca_markov"]         # [CLAUDE.md]
+  validation_metrics: ["rmse", "r2", "kappa"]                # [CLAUDE.md] must ship with every output
+  rf:
+    n_trees: 500                      # [DEFAULT — Phase 6]
+    random_seed: 42                   # [DEFAULT] reproducibility
+
+greening:
+  method: "mcda_weighted_overlay"     # [CLAUDE.md] MCDA / AHP weighted overlay
+  ahp:
+    consistency_ratio_max: 0.1        # [DEFAULT — standard Saaty threshold; confirm in Phase 7]
+  criteria_weights: null              # [Phase 7] filled after AHP pairwise comparison
+
+# --- Exports ------------------------------------------------------------------
+exports:
+  name_template: "{product}_{aoi}_{startyear}_{endyear}_{res}m"   # [CLAUDE.md]
+  drive_folder: "colombo_uhi_exports" # [DEFAULT] change to your preferred Drive folder
+  default_scale_m: 30                 # [CLAUDE.md] matches analysis grid
+  default_crs: "EPSG:32644"           # [CLAUDE.md]
+
+# --- Non-negotiable scientific caveats [CLAUDE.md] ---------------------------
+# Reusable strings: stamp on figures, notebook headers and exported metadata.
+caveats:
+  lst_not_air_temp: >-
+    Values are LAND SURFACE TEMPERATURE (LST), not air temperature. Never label
+    outputs as air temperature or 'temperature felt by residents'; surface UHI
+    can be roughly 2x the canopy-air UHI.
+  valid_obs_required: >-
+    Every composite or trend product must be interpreted alongside its
+    per-pixel valid-observation count; tropical cloud cover means only a
+    minority of scenes are usable.
+  scenario_not_forecast: >-
+    Predictive outputs are conditional scenario projections, NOT forecasts.
+    They must ship with validation metrics (RMSE, R2, Kappa) and explicit
+    uncertainty language.
+  single_overpass: >-
+    Landsat observes once near ~10:30 local solar time; daytime-only. Night
+    UHI comes only from MODIS (Terra ~22:30, Aqua ~01:30 local).
+  sensitivity_reporting: >-
+    Report rural-reference and aggregation-unit (MAUP) sensitivity, never a
+    single unqualified number.

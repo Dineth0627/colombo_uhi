@@ -1,0 +1,66 @@
+# =============================================================================
+# Colombo UHI — Python dependencies (target runtime: Google Colab)
+# =============================================================================
+#
+# HOW TO INSTALL IN COLAB
+#   Run the pip cell in notebooks/00_setup_and_auth.ipynb, which executes:
+#       %pip install -q -r requirements.txt
+#   Install EVERYTHING in ONE pip call so the resolver solves the whole set
+#   jointly. Installing packages one-by-one lets a later install silently
+#   downgrade an earlier one.
+#
+#   If Colab prompts "You must restart the runtime": restart ONCE
+#   (Runtime > Restart session), then re-run the notebook from the clone cell.
+#   Do NOT re-run the pip cell after restarting unless requirements changed.
+#
+# CONFLICT / COMPATIBILITY NOTES (Colab, checked Aug 2026)
+#   * numpy, pandas, scipy, statsmodels, scikit-learn, matplotlib, seaborn,
+#     pyyaml, tqdm, xarray, geopandas and earthengine-api come PREINSTALLED in
+#     Colab. The floors below accept Colab's builds; hard `==` pins would force
+#     mass reinstalls and can break preinstalled packages that share the same
+#     numpy ABI. NEVER force numpy below 2 — most current geospatial wheels
+#     are built against numpy 2.x.
+#   * NEVER `pip install gdal` or `apt-get install gdal-bin`. rasterio, fiona
+#     and geopandas ship self-contained wheels that bundle GDAL; a system GDAL
+#     alongside them is the most common cause of a broken geo stack in Colab.
+#   * geemap pulls ipyleaflet/ipywidgets extras — fine in Colab; the first
+#     `import geemap` in a fresh runtime is slow (~30 s). That is normal.
+#   * The PySAL family (libpysal, esda, spreg, mgwr) is pure Python — no
+#     binary conflicts. mgwr releases rarely; its floor is intentionally loose.
+#   * INSTALL ORDER inside the single call does not matter (one resolve), but
+#     if you ever install manually, do it in this order: earthengine-api +
+#     geemap first, then the raster stack (rasterio/rioxarray), then PySAL.
+#   * After your first fully working Colab session, archive the exact solved
+#     environment for the report:  pip freeze > requirements-lock.txt
+# -----------------------------------------------------------------------------
+
+# --- Earth Engine + interactive mapping (earthengine-api is preinstalled) ----
+earthengine-api>=1.5
+geemap>=0.35
+
+# --- Core scientific stack (ALL preinstalled in Colab; floors only) ----------
+numpy>=2.0,<3
+pandas>=2.2,<3
+scipy>=1.13
+statsmodels>=0.14.2
+scikit-learn>=1.5
+matplotlib>=3.9
+seaborn>=0.13.2
+pyyaml>=6.0.1
+tqdm>=4.66
+
+# --- Geospatial vector/raster I/O (geopandas, xarray preinstalled) -----------
+geopandas>=1.0
+rasterio>=1.4
+xarray>=2024.9.0
+rioxarray>=0.17
+
+# --- Trend + spatial statistics (NOT preinstalled in Colab) ------------------
+pymannkendall>=1.4.3
+libpysal>=4.12
+esda>=2.6
+spreg>=1.8
+mgwr>=2.2.1
+
+# --- Local development only (harmless in Colab) ------------------------------
+pytest>=8.0

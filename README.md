@@ -1,0 +1,107 @@
+# Urban Heat Island Intensity in Colombo, Sri Lanka (2000–2025)
+
+Undergraduate spatial-analytics practicum: a remote-sensing analysis of **Land
+Surface Temperature (LST)** trends in Colombo using **only free, public Google
+Earth Engine data**, run entirely in **Google Colab**.
+
+Three deliverables:
+
+1. **LST trend analysis** — pixel-wise Mann-Kendall + Sen's slope (°C/yr) with
+   Benjamini-Hochberg FDR-corrected significance, 2000–2025.
+2. **Future hotspot scenario projection** — RF regression + CA-Markov,
+   presented strictly as *conditional scenario projection*, never a forecast.
+3. **Urban greening priority recommendations** — MCDA/AHP weighted overlay.
+
+> ⚠️ **This project measures Land Surface Temperature, not air temperature.**
+> Surface UHI can be roughly 2× the canopy-air UHI. No output may be labelled
+> "air temperature" or "temperature felt by residents".
+
+## How this repo works
+
+- **`config/params.yaml` is the single source of truth** — every dataset ID,
+  band name, scale factor, date range, threshold and CRS lives there. No magic
+  numbers anywhere in `src/`.
+- **`src/colombo_uhi/`** holds all logic as importable, typed modules.
+- **`notebooks/`** are thin orchestrators run *by you* in Colab. Cells marked
+  `# COLAB: RUN THIS CELL` need your authenticated Google session.
+- **`tests/`** cover the pure-Python logic; Earth-Engine calls are not
+  unit-tested.
+
+## Quick start (GitHub → Colab workflow)
+
+1. **Push this project to GitHub**: <https://github.com/Dineth0627/colombo_uhi>
+   (first-time commit/push commands are in `PROGRESS.md`).
+2. **Earth Engine project**: `research-uhi-484404` — registered and set in
+   `config/params.yaml` (`gcp.ee_project_id`). Per-session override if ever
+   needed: `os.environ["EE_PROJECT"] = "..."` or `init_ee(project_id="...")`.
+3. After the first push, open notebook 00 directly in Colab:
+   <https://colab.research.google.com/github/Dineth0627/colombo_uhi/blob/main/notebooks/00_setup_and_auth.ipynb>
+4. Run all cells top-to-bottom (`REPO_URL` is preconfigured).
+5. The notebook ends with an Earth Engine smoke test. Expected output:
+   `one_plus_one == 2` and `srtm_bands == ['elevation']`.
+
+Each fresh Colab VM re-prompts for Google authentication once — that is
+normal. Within a session `init_ee()` is idempotent and never re-prompts.
+
+## Repository structure
+
+```
+├── CLAUDE.md                # project spec (authoritative)
+├── README.md
+├── PROGRESS.md              # phase status + what to verify next
+├── requirements.txt         # Colab-compatible pins + conflict notes
+├── config/
+│   └── params.yaml          # SINGLE SOURCE OF TRUTH for all constants
+├── src/colombo_uhi/
+│   ├── __init__.py          # load_params(), repo_root()
+│   ├── auth.py              # Colab-friendly EE auth/init (idempotent)
+│   ├── aoi.py               # stub — Phase 1
+│   ├── landsat.py           # stub — Phase 2
+│   ├── modis.py             # stub — Phase 2
+│   ├── indices.py           # stub — Phase 2
+│   ├── composites.py        # stub — Phase 2
+│   ├── uhi_metrics.py       # stub — Phase 3
+│   ├── trends.py            # stub — Phase 4
+│   ├── spatial_stats.py     # stub — Phase 5
+│   ├── prediction.py        # stub — Phase 6
+│   ├── greening.py          # stub — Phase 7
+│   ├── exports.py           # stub — Phase 2+
+│   └── viz.py               # stub — Phase 8
+├── notebooks/               # 00 works; 01–08 are stubs
+├── data/
+│   ├── raw/                 # git-ignored
+│   ├── interim/
+│   └── outputs/             # exported CSVs / small GeoJSONs (committed)
+├── figures/
+└── tests/                   # pytest — pure-Python logic only
+```
+
+## Phase roadmap
+
+| Phase | Notebook | Content | Status |
+|---|---|---|---|
+| 0 | `00_setup_and_auth` | scaffold, config, EE auth | ✅ done |
+| 1 | `01_aoi_and_boundaries` | AOI geometries, GN asset, water mask | ⬜ |
+| 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | ⬜ |
+| 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ⬜ |
+| 4 | `04_trend_analysis` | MK + Sen's slope, FDR | ⬜ |
+| 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR | ⬜ |
+| 6 | `06_prediction` | RF + CA-Markov scenario projection | ⬜ |
+| 7 | `07_greening_priority` | MCDA/AHP overlay | ⬜ |
+| 8 | `08_figures_for_report` | final figures | ⬜ |
+
+## Running tests locally
+
+```bash
+python -m pytest tests/ -q
+```
+
+The suite needs only `pyyaml` and `pytest` (no `earthengine-api`): tests fake
+`ee` and pin `params.yaml` values against the verified catalog constants.
+
+## Data policy
+
+Free/public GEE datasets only — no paywalled sources, no proprietary sensors,
+no field data. GN-division boundary polygons are **not** in any public GEE
+dataset and must be uploaded by the project owner as an EE asset (path set in
+`params.yaml` → `aoi.assets.gn_divisions`).
