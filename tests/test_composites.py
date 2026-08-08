@@ -13,6 +13,7 @@ Two things carry real risk and are therefore pinned hard:
 from __future__ import annotations
 
 import copy
+import warnings
 from typing import Any
 
 import pytest
@@ -331,6 +332,59 @@ def test_zonal_frame_raises_on_unexpected_column_names(
     # Better a loud error than an all-NaN table that looks like missing data.
     rows = [{"year": 2000, "LST_C": 29.8}]
     with pytest.raises(RuntimeError, match="LST_C_mean"):
+        composites.build_zonal_frame(rows, "LST_C", params)
+
+
+def test_zonal_frame_warns_when_the_series_is_completely_empty(
+    params: dict[str, Any],
+) -> None:
+    # The Colab run 5 defect: both MODIS night series returned 26 rows of None
+    # with valid_pixels == 0 and the pipeline said nothing. Emitting a count
+    # nobody reads does not satisfy caveat 2.
+    rows = [
+        {"year": year, "LST_C_mean": None, "LST_C_count": 0}
+        for year in range(2000, 2026)
+    ]
+    with pytest.warns(UserWarning, match="COMPLETELY EMPTY"):
+        frame = composites.build_zonal_frame(rows, "LST_C", params)
+    # Still returned: downstream needs the shape, and swallowing it would trade
+    # one silent failure for another.
+    assert len(frame) == 26
+
+
+def test_zonal_frame_warns_when_the_series_is_mostly_empty(
+    params: dict[str, Any],
+) -> None:
+    rows = [{"year": 2000, "LST_C_mean": 30.0, "LST_C_count": 100}]
+    rows += [
+        {"year": year, "LST_C_mean": None, "LST_C_count": 0}
+        for year in range(2001, 2005)
+    ]
+    with pytest.warns(UserWarning, match="mostly empty"):
+        composites.build_zonal_frame(rows, "LST_C", params)
+
+
+def test_zonal_frame_is_quiet_for_a_healthy_series(params: dict[str, Any]) -> None:
+    rows = [
+        {"year": year, "LST_C_mean": 30.0, "LST_C_count": 4206}
+        for year in range(2000, 2026)
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning here fails the test
+        composites.build_zonal_frame(rows, "LST_C", params)
+
+
+def test_zonal_frame_tolerates_one_empty_year_without_warning(
+    params: dict[str, Any],
+) -> None:
+    # A single cloudy year is normal and must not cry wolf.
+    rows = [
+        {"year": year, "LST_C_mean": 30.0, "LST_C_count": 4206}
+        for year in range(2000, 2026)
+    ]
+    rows[5] = {"year": 2005, "LST_C_mean": None, "LST_C_count": 0}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         composites.build_zonal_frame(rows, "LST_C", params)
 
 

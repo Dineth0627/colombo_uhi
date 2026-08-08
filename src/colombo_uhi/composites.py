@@ -28,6 +28,7 @@ Design notes:
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any, Sequence
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never at runtime
@@ -732,8 +733,55 @@ def build_zonal_frame(
     frame = frame.rename(
         columns={mean_key: MEAN_COLUMN, count_key: VALID_PIXELS_COLUMN}
     )
-    return (
+    result = (
         frame[[year_prop, MEAN_COLUMN, VALID_PIXELS_COLUMN]]
         .sort_values(year_prop)
         .reset_index(drop=True)
     )
+    _warn_if_series_is_empty(result, band)
+    return result
+
+
+def _warn_if_series_is_empty(frame: "pd.DataFrame", band: str) -> None:
+    """Complain loudly about a series with no, or almost no, valid pixels.
+
+    CLAUDE.md caveat 2 is not satisfied by merely *emitting* a count that nobody
+    reads. In Colab run 5 both MODIS night series returned 26 rows of ``None``
+    with ``valid_pixels == 0`` and the pipeline said nothing — the table looked
+    like a plausible product until someone checked the column. An all-empty
+    result is a defect, not a datum, and must announce itself.
+
+    The frame is still returned by the caller: downstream code needs the shape,
+    and suppressing it would trade one silent failure for another.
+
+    Args:
+        frame: The assembled year/mean/valid_pixels table.
+        band: Band name, for a message that identifies the culprit.
+    """
+    if frame.empty:
+        return
+
+    counts = frame[VALID_PIXELS_COLUMN].fillna(0)
+    empty_years = int((counts <= 0).sum())
+    total_years = len(frame)
+    if empty_years == 0:
+        return
+
+    if empty_years == total_years:
+        warnings.warn(
+            f"zonal series for band '{band}' is COMPLETELY EMPTY: all "
+            f"{total_years} years returned 0 valid pixels. Do not plot or "
+            "interpret it. Usual causes, in order: a QC filter that rejects "
+            "everything (run modis.qc_class_histogram to see which class), a "
+            "mask that excludes the whole geometry, or a reduction scale finer "
+            "than the data.",
+            stacklevel=4,
+        )
+    elif empty_years > total_years / 2:
+        warnings.warn(
+            f"zonal series for band '{band}' is mostly empty: {empty_years} of "
+            f"{total_years} years returned 0 valid pixels. The remaining years "
+            "may rest on very few pixels — check the valid_pixels column before "
+            "reading any trend into this series.",
+            stacklevel=4,
+        )

@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 2 rev 5 — Steps 1-5 Colab-verified, Step 6 pending)_
+_Last updated: 2026-08-08 (Phase 2 rev 6 — notebook runs end to end; night QC + offset decomposition pending run 6)_
 
 ## Status snapshot
 
@@ -8,7 +8,7 @@ _Last updated: 2026-08-08 (Phase 2 rev 5 — Steps 1-5 Colab-verified, Step 6 pe
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
-| 2 | LST pipeline (Landsat + MODIS) | 🟡 **Steps 1-5 Colab-verified; Step 6 rev 5 — 233 tests passing** |
+| 2 | LST pipeline (Landsat + MODIS) | 🟡 **runs end to end (run 5); rev 6 fixes night QC + offset decomposition — 249 tests passing** |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
@@ -29,13 +29,14 @@ _Last updated: 2026-08-08 (Phase 2 rev 5 — Steps 1-5 Colab-verified, Step 6 pe
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
 
-## 🟡 PHASE 2 — LST pipeline; Steps 1-5 Colab-verified, Step 6 pending
+## 🟡 PHASE 2 — LST pipeline; runs end to end, two findings pending run 6
 
 `landsat.py`, `indices.py`, `composites.py`, `modis.py`, a `viz.py` addition and
-`notebooks/02_lst_pipeline.ipynb` are complete. **233 tests pass locally** (was 90);
-every module still imports without `earthengine-api`. Notebook Steps 1-5 are verified
-in Colab (run 3, table below); Step 6 (the Landsat-vs-MODIS comparison) has failed on
-the Earth Engine memory limit four times and is at rev 5 — see the run notes.
+`notebooks/02_lst_pipeline.ipynb` are complete. **249 tests pass locally** (was 90);
+every module still imports without `earthengine-api`. The notebook **runs end to end**
+as of Colab run 5. Two findings from that run are fixed in rev 6 and need one more run
+to confirm: MODIS night-time LST (empty under strict QC) and the Landsat-vs-MODIS
+offset (not yet attributable).
 
 Sections below are in reverse chronological order: latest run first, then the
 as-designed record from before any run.
@@ -205,6 +206,72 @@ Two findings worth carrying forward:
    the L7-only gap is really **2012-01 to 2013-03**, wider than CLAUDE.md's
    "2012-05" implies. Relevant to Phase 4: that stretch of the series rests on
    SLC-off ETM+ alone.
+
+### ✅ Colab run 5 (2026-08-08) — notebook 02 runs end to end
+
+Step 6 completed. Everything mechanical in Phase 2 now works; what remains is
+driven by the numbers, not the plumbing.
+
+| Check | Result | Verdict |
+|---|---|---|
+| Water mask: static (JRC) vs combined, CMC mean 2025 | **−0.074 °C** | ✅ the cheap mask is a fair substitute |
+| Landsat zonal series, 26 years | complete, 4206 valid pixels/yr | ✅ |
+| MODIS Terra day | 31.7–35.1 °C | ✅ plausible |
+| MODIS Aqua day | 35.5–39.0 °C | ✅ warmer than Terra day, as expected at 13:30 |
+| **MODIS Terra + Aqua NIGHT** | **all 26 years empty** | ⛔ see below |
+| Index means over CMC (Jan–Mar 2025) | NDVI 0.372, NDBI 0.025, MNDWI −0.415, EVI 0.196, SAVI 0.192, albedo 0.124 | ✅ all physically plausible |
+
+### ⛔ Two defects run 5 exposed, and the rev 6 fixes
+
+**1. MODIS night LST was completely empty** — 0 valid pixels, all 26 years, both
+satellites, while day worked. The code path is identical apart from band names,
+so the cause is the QC policy: tropical night retrievals rarely reach "good
+quality AND avg error ≤ 1 K". Strict night QC does not produce a conservative
+answer, it produces **no** answer — and MODIS is the only night-time source
+(CLAUDE.md caveat 4), so night-time UHI would have been unobtainable.
+
+**2. The pipeline stayed silent about it.** `zonal_annual_means_by_year` returned
+26 rows of `None` with `valid_pixels == 0` and no warning. Emitting a count that
+nobody reads does not satisfy caveat 2 — an all-empty product is a defect, not a
+datum. `composites._warn_if_series_is_empty` now warns loudly for a fully empty
+series and for a majority-empty one, while still returning the frame (downstream
+needs the shape, and swallowing it would trade one silent failure for another).
+
+### Phase 2 decision 7 (user-approved 2026-08-08) — night QC deviation
+
+**`modis_lst.qc_filter` is now split by overpass.** Day stays CLAUDE.md-strict
+(mandatory QA ≤ 0, LST error ≤ 0). **Night is relaxed to mandatory QA ≤ 1 and
+LST error ≤ 2 (≤ 3 K)** — a deliberate, documented deviation from CLAUDE.md,
+justified by the measured fact above and recorded in the params comment.
+
+**This asymmetry must travel into Phase 3:** night LST is accepted at up to 3 K
+stated uncertainty against ≤ 1 K for day, so night-time SUHII is weaker evidence
+than daytime SUHII and must never be reported as an equal-confidence pair.
+
+`modis.qc_class_histogram()` was added so the next run *proves* which bit field
+was doing the killing rather than leaving it to inference. If the histogram does
+not show night mass above the strict ceiling, the night policy is the wrong fix.
+
+### Open question for run 6 — the Landsat/MODIS offset
+
+Landsat reads ~39–41 °C against Terra day ~32–35 °C **at the same overpass
+time**, and warmer than Aqua day (13:30, nearer peak heating), which is the wrong
+way round. Meanwhile the MODIS CMC means rest on only **13–23** 1 km pixels
+(Terra day), as few as **2** in 2023 for Aqua. Three causes are tangled:
+
+1. too few pixels → tested by rerunning over Colombo District (~700 MODIS pixels);
+2. resolution/mixing → tested by reducing Landsat at 1000 m over the same polygon;
+3. genuine sensor/emissivity difference → whatever offset survives both.
+
+Notebook 02 now runs all three and prints the decomposition. **No offset should
+be quoted in the report until that table comes back.** The figure also gained a
+second panel plotting valid-pixel counts on a log scale, because nothing in the
+top panel revealed that one point rested on 2 pixels and another on 4200.
+
+Separately, the ~40 °C annual means are not implausible but must be presented
+carefully: they are clear-sky, ~10:30, 30 m **land surface** temperatures over a
+dense urban core. The clear-sky sampling bias is uncorrected anywhere in this
+pipeline and belongs in the report.
 
 ### Colab run 4 — the actual cause: filtering a computed collection
 
@@ -728,6 +795,15 @@ Locally: `python -m pytest tests/ -q` → **90 passed** at the end of Phase 1;
 
 ## Session log
 
+- **2026-08-08 — Phase 2 rev 6**: notebook 02 ran end to end (run 5). Two defects in the
+  results: MODIS **night** LST was empty for all 26 years on both satellites under the
+  strict QC, and the pipeline **said nothing** about a 100%-empty series. Split
+  `qc_filter` by overpass (day stays CLAUDE.md-strict; night relaxed to QA ≤ 1 /
+  error ≤ 3 K as a documented deviation, with the uncertainty asymmetry flagged for
+  Phase 3), added `modis.qc_class_histogram` so the next run proves the cause, and made
+  `build_zonal_frame` warn on empty/mostly-empty series. Also added the offset
+  decomposition (district scope + Landsat at 1 km) and a valid-pixel panel on the
+  comparison figure. 249 tests passing.
 - **2026-08-08 — Phase 2 rev 5**: `BATCH_YEARS = 1` still failed, which ruled
   out volume and exposed the real bug: **batching by `ee.Filter` saves
   nothing**, because filtering a collection built from `ee.List.map()`

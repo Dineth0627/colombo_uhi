@@ -159,7 +159,14 @@ def plot_annual_lst_comparison(
     """Plot several annual LST series together and stamp the caveats on it.
 
     Built for the Landsat-vs-MODIS comparison, but it takes any number of
-    labelled series from :func:`colombo_uhi.composites.zonal_annual_means`.
+    labelled series from :func:`colombo_uhi.composites.zonal_annual_means` or
+    :func:`colombo_uhi.composites.zonal_annual_means_by_year`.
+
+    When the frames carry ``count_column``, the figure gains a second panel
+    plotting it on a log scale. That panel is not decoration: a MODIS annual
+    mean over the CMC can rest on as few as 2 one-kilometre pixels while the
+    Landsat mean beside it rests on ~4200, and nothing in the top panel reveals
+    that. CLAUDE.md caveat 2 applies to figures, not only to tables.
 
     The two sensors are NOT expected to agree in absolute terms - 30 m versus
     1 km, a single ~10:30 overpass versus an 8-day clear-sky average. Agreement
@@ -194,9 +201,19 @@ def plot_annual_lst_comparison(
         raise ValueError("series must contain at least one labelled DataFrame")
 
     year_column = params["composites"]["year_property"]
-    figure = Figure(figsize=(10, 5.5))
+    show_counts = bool(count_column) and any(
+        count_column in frame.columns for frame in series.values()
+    )
+
+    figure = Figure(figsize=(10, 7.0 if show_counts else 5.5))
     FigureCanvasAgg(figure)
-    axes = figure.subplots()
+    if show_counts:
+        # Counts get their own panel rather than an annotation: a reader cannot
+        # otherwise see that one series' point rests on 2 pixels and another's
+        # on 4200. CLAUDE.md caveat 2 applied to the figure, not just the table.
+        axes, count_axes = figure.subplots(2, 1, sharex=True, height_ratios=[3, 1])
+    else:
+        axes, count_axes = figure.subplots(), None
 
     for label, frame in series.items():
         missing = [c for c in (year_column, value_column) if c not in frame.columns]
@@ -208,7 +225,7 @@ def plot_annual_lst_comparison(
         plotted = frame.dropna(subset=[value_column])
         if count_column and count_column in plotted.columns:
             plotted = plotted[plotted[count_column].fillna(0) > 0]
-        axes.plot(
+        line, = axes.plot(
             plotted[year_column],
             plotted[value_column],
             marker="o",
@@ -216,12 +233,29 @@ def plot_annual_lst_comparison(
             linewidth=1.6,
             label=label,
         )
+        if count_axes is not None and count_column in plotted.columns:
+            count_axes.plot(
+                plotted[year_column],
+                plotted[count_column],
+                marker=".",
+                markersize=4,
+                linewidth=1.0,
+                color=line.get_color(),
+            )
 
-    axes.set_xlabel("Year")
     axes.set_ylabel("Land surface temperature (degC)")
     axes.set_title(title)
     axes.grid(True, alpha=0.3)
-    axes.legend(frameon=False)
+    axes.legend(frameon=False, fontsize=8)
+
+    if count_axes is not None:
+        count_axes.set_yscale("log")
+        count_axes.set_ylabel("valid\npixels", fontsize=8)
+        count_axes.set_xlabel("Year")
+        count_axes.grid(True, alpha=0.3)
+        count_axes.tick_params(labelsize=8)
+    else:
+        axes.set_xlabel("Year")
 
     figure.text(
         0.01,
@@ -232,7 +266,7 @@ def plot_annual_lst_comparison(
         ha="left",
         color="#444444",
     )
-    figure.tight_layout(rect=(0, 0.13, 1, 1))
+    figure.tight_layout(rect=(0, 0.11, 1, 1))
 
     destination = Path(out_path)
     destination.parent.mkdir(parents=True, exist_ok=True)

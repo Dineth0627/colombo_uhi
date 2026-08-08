@@ -148,9 +148,49 @@ def clamp_start_date(
 # =============================================================================
 # Earth Engine helpers
 # =============================================================================
+def qc_thresholds(
+    params: dict[str, Any],
+    daynight: str,
+    mandatory_qa_max: int | None = None,
+    lst_error_max: int | None = None,
+) -> tuple[int, int]:
+    """Resolve the QC ceilings for one overpass, honouring explicit overrides.
+
+    Day and night have separate policies because their retrieval quality is not
+    comparable — see ``modis_lst.qc_filter.night`` in params for the measured
+    reason and the consequence for Phase 3.
+
+    Args:
+        params: Parsed params mapping.
+        daynight: ``"day"`` or ``"night"``.
+        mandatory_qa_max: Override; ``None`` uses the configured policy.
+        lst_error_max: Override; ``None`` uses the configured policy.
+
+    Returns:
+        ``(mandatory_qa_max, lst_error_max)``.
+
+    Raises:
+        ValueError: If ``daynight`` is invalid or a threshold is out of range.
+    """
+    policy = params["modis_lst"]["qc_filter"][resolve_daynight(daynight)]
+    qa_ceiling = int(
+        policy["mandatory_qa_max"] if mandatory_qa_max is None else mandatory_qa_max
+    )
+    err_ceiling = int(
+        policy["lst_error_max"] if lst_error_max is None else lst_error_max
+    )
+    for label, value in (("mandatory_qa_max", qa_ceiling), ("lst_error_max", err_ceiling)):
+        if not 0 <= value <= 3:
+            raise ValueError(
+                f"{label} must be in 0..3 (both QC fields are 2-bit), got {value}"
+            )
+    return qa_ceiling, err_ceiling
+
+
 def qc_mask(
     qc_image: "ee.Image",
     params: dict[str, Any],
+    daynight: str = "day",
     mandatory_qa_max: int | None = None,
     lst_error_max: int | None = None,
 ) -> "ee.Image":
@@ -164,37 +204,172 @@ def qc_mask(
     * LST error (bits 6-7): 0 = avg error <= 1 K; 1 = <= 2 K; 2 = <= 3 K;
       3 = > 3 K.
 
-    With both at 0 (the params default) this is exactly CLAUDE.md's "good
-    quality AND average error <= 1 K".
+    The DAY policy is 0/0 — exactly CLAUDE.md's "good quality AND average error
+    <= 1 K". The NIGHT policy is deliberately more permissive: measured in Colab
+    run 5, the strict thresholds returned zero night pixels over the CMC for all
+    26 years on both satellites, which is not a conservative answer but no
+    answer at all. See ``modis_lst.qc_filter.night`` for the full rationale and
+    the uncertainty asymmetry it creates.
 
     Args:
         qc_image: The ``QC_Day`` or ``QC_Night`` band as an ``ee.Image``.
         params: Parsed params mapping (``modis_lst.qc_filter``).
+        daynight: Which policy to apply, ``"day"`` or ``"night"``.
         mandatory_qa_max: Highest acceptable mandatory-QA value; ``None`` uses
-            ``qc_filter.mandatory_qa_required_value``.
-        lst_error_max: Highest acceptable LST-error class; ``None`` uses
-            ``qc_filter.lst_error_required_value``.
+            the configured policy for ``daynight``.
+        lst_error_max: Highest acceptable LST-error class; ``None`` likewise.
 
     Returns:
         Single-band 0/1 ``ee.Image`` named ``qc_good``.
     """
     cfg = params["modis_lst"]["qc_filter"]
+    qa_ceiling, err_ceiling = qc_thresholds(
+        params, daynight, mandatory_qa_max, lst_error_max
+    )
 
     qa_shift, qa_mask = qc_bit_range(cfg["mandatory_qa_bits"])
-    qa_ceiling = (
-        cfg["mandatory_qa_required_value"]
-        if mandatory_qa_max is None
-        else mandatory_qa_max
-    )
     good_qa = qc_image.rightShift(qa_shift).bitwiseAnd(qa_mask).lte(qa_ceiling)
 
     err_shift, err_mask = qc_bit_range(cfg["lst_error_bits"])
-    err_ceiling = (
-        cfg["lst_error_required_value"] if lst_error_max is None else lst_error_max
-    )
     good_error = qc_image.rightShift(err_shift).bitwiseAnd(err_mask).lte(err_ceiling)
 
     return good_qa.And(good_error).rename("qc_good")
+
+
+def qc_field_labels(params: dict[str, Any], field: str) -> dict[int, str]:
+    """Human-readable class labels for one QC bit field.
+
+    Args:
+        params: Parsed params mapping.
+        field: ``"mandatory_qa"`` or ``"lst_error"``.
+
+    Returns:
+        Mapping of class value (0-3) to its catalog meaning.
+
+    Raises:
+        ValueError: If the field is unknown or its labels are not a complete
+            0-3 set — an incomplete map would silently print ``None`` for the
+            very class that explains a data gap.
+    """
+    cfg = params["modis_lst"]["qc_filter"]
+    key = f"{field}_labels"
+    if key not in cfg:
+        available = sorted(k[: -len("_labels")] for k in cfg if k.endswith("_labels"))
+        raise ValueError(f"unknown QC field '{field}'; available: {available}")
+    labels = {int(value): text for value, text in cfg[key].items()}
+    if set(labels) != {0, 1, 2, 3}:
+        raise ValueError(
+            f"modis_lst.qc_filter.{key} must define classes 0-3, got {sorted(labels)}"
+        )
+    return labels
+
+
+def qc_class_histogram(
+    product: str,
+    daynight: str,
+    params: dict[str, Any],
+    geometry: "ee.Geometry",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    scale_m: int | None = None,
+) -> "pd.DataFrame":
+    """How often each QC class occurs — the diagnostic for an empty LST series.
+
+    When a MODIS series comes back empty, this says WHICH bit field caused it
+    rather than leaving it to inference. It reduces the raw ``QC_Day``/
+    ``QC_Night`` band (no LST masking applied) over a geometry and reports the
+    frequency of every mandatory-QA and LST-error class.
+
+    Read it against the thresholds in ``modis_lst.qc_filter``: if the mass sits
+    in classes above the configured ceiling, that ceiling is what is discarding
+    the data.
+
+    Args:
+        product: ``"terra"`` or ``"aqua"``.
+        daynight: ``"day"`` or ``"night"``.
+        params: Parsed params mapping.
+        geometry: Region to tally over.
+        start_date: Inclusive start; defaults to ``time.start_year``-01-01,
+            clamped to the product's launch date.
+        end_date: **Exclusive** end; defaults to ``time.end_year`` + 1 -01-01.
+        scale_m: Reduction scale; defaults to ``modis_lst.reduction_scale_m``.
+
+    Returns:
+        ``pandas.DataFrame`` with columns ``field``, ``class``, ``label``,
+        ``pixels``, ``share`` — ``share`` being the fraction within that field.
+    """
+    import ee  # Deferred: see module docstring.
+    import pandas as pd
+
+    resolve_daynight(daynight)
+    dataset = params["datasets"][resolve_product(product, params)]
+    cfg = params["modis_lst"]
+    comp = params["composites"]
+    scale = int(scale_m or cfg["reduction_scale_m"])
+
+    time_cfg = params["time"]
+    start = clamp_start_date(
+        start_date or f"{time_cfg['start_year']}-01-01", product, params
+    )
+    end = end_date or f"{int(time_cfg['end_year']) + 1}-01-01"
+
+    qc_band = dataset[f"qc_{daynight}_band"]
+    fields = {
+        "mandatory_qa": qc_bit_range(cfg["qc_filter"]["mandatory_qa_bits"]),
+        "lst_error": qc_bit_range(cfg["qc_filter"]["lst_error_bits"]),
+    }
+    classes = sorted(qc_field_labels(params, "mandatory_qa"))
+
+    def indicators(image: "ee.Image") -> "ee.Image":
+        # One 0/1 band per (field, class). Summing indicators is used rather
+        # than ee.Reducer.frequencyHistogram() because that produces a
+        # per-pixel DICTIONARY, which reduceRegion's sum reducer cannot
+        # aggregate over a region.
+        qc = image.select(qc_band)
+        bands = []
+        for name, (shift, mask) in fields.items():
+            field_value = qc.rightShift(shift).bitwiseAnd(mask)
+            for class_value in classes:
+                bands.append(
+                    field_value.eq(class_value).rename(f"{name}__{class_value}")
+                )
+        return ee.Image.cat(bands)
+
+    totals = (
+        ee.ImageCollection(dataset["id"])
+        .filterBounds(geometry)
+        .filterDate(start, end)
+        .map(indicators)
+        .sum()  # across time, per pixel
+        .reduceRegion(  # then across space
+            reducer=ee.Reducer.sum(),
+            geometry=geometry,
+            scale=scale,
+            maxPixels=comp["reduce_max_pixels"],
+            tileScale=comp["tile_scale"],
+        )
+        .getInfo()
+    )
+
+    rows: list[dict[str, Any]] = []
+    for field in fields:
+        labels = qc_field_labels(params, field)
+        counts = {
+            class_value: float(totals.get(f"{field}__{class_value}") or 0.0)
+            for class_value in classes
+        }
+        total = sum(counts.values()) or 1.0
+        for class_value in classes:
+            rows.append(
+                {
+                    "field": field,
+                    "class": class_value,
+                    "label": labels[class_value],
+                    "pixels": counts[class_value],
+                    "share": counts[class_value] / total,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def clear_sky_count(
@@ -293,7 +468,11 @@ def lst_collection(
         raw = image.select(lst_band)
         valid = raw.gte(dn_min).And(raw.lte(dn_max))
         good = qc_mask(
-            image.select(qc_band), params, mandatory_qa_max, lst_error_max
+            image.select(qc_band),
+            params,
+            daynight,
+            mandatory_qa_max,
+            lst_error_max,
         )
         lst_c = (
             raw.multiply(cfg["lst_scale"])

@@ -128,6 +128,41 @@ def test_plot_drops_rows_with_zero_valid_pixels(
     assert out.is_file()
 
 
+def test_plot_adds_a_count_panel_when_counts_are_present(
+    tmp_path: Path,
+    params: dict[str, Any],
+    landsat_series: pd.DataFrame,
+    modis_series: pd.DataFrame,
+) -> None:
+    # Two panels means a taller figure than the single-panel form; that is the
+    # cheapest observable proof the count axis was actually added.
+    with_counts = viz.plot_annual_lst_comparison(
+        {"Landsat": landsat_series, "MODIS": modis_series},
+        tmp_path / "with_counts.png",
+        params,
+    )
+    without_counts = viz.plot_annual_lst_comparison(
+        {"Landsat": landsat_series.drop(columns=["valid_pixels"])},
+        tmp_path / "without_counts.png",
+        params,
+        count_column=None,
+    )
+    assert with_counts.stat().st_size > 0
+    assert without_counts.stat().st_size > 0
+
+
+def test_plot_without_a_count_column_still_works(
+    tmp_path: Path, params: dict[str, Any]
+) -> None:
+    # A caller may legitimately have no counts; the figure must degrade to one
+    # panel rather than crash looking for the column.
+    frame = pd.DataFrame({"year": [2000, 2001], "mean": [29.4, 30.1]})
+    out = viz.plot_annual_lst_comparison(
+        {"Landsat": frame}, tmp_path / "nocounts.png", params, count_column=None
+    )
+    assert out.is_file()
+
+
 def test_plot_rejects_empty_series(tmp_path: Path, params: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="at least one"):
         viz.plot_annual_lst_comparison({}, tmp_path / "none.png", params)

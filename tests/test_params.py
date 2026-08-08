@@ -142,9 +142,10 @@ def test_modis_constants(params: dict[str, Any]) -> None:
     m = params["modis_lst"]
     assert m["lst_scale"] == 0.02
     assert m["qc_filter"]["mandatory_qa_bits"] == [0, 1]
-    assert m["qc_filter"]["mandatory_qa_required_value"] == 0
     assert m["qc_filter"]["lst_error_bits"] == [6, 7]
-    assert m["qc_filter"]["lst_error_required_value"] == 0
+    # Thresholds moved under per-overpass policies in rev 6; see test_modis.py.
+    assert m["qc_filter"]["day"]["mandatory_qa_max"] == 0
+    assert m["qc_filter"]["day"]["lst_error_max"] == 0
     assert params["datasets"]["modis_terra_lst"]["day_band"] == "LST_Day_1km"
     assert params["datasets"]["modis_terra_lst"]["night_band"] == "LST_Night_1km"
 

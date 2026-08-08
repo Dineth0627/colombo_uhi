@@ -555,15 +555,40 @@ modis_lst:
   qc_filter:                          # [CLAUDE.md] "good quality" AND "avg error <= 1 K";
                                       # MOD11A2 is a plain average of MOD11A1 with NO built-in
                                       # QA filtering — QC_Day/QC_Night MUST be applied explicitly
-    mandatory_qa_bits: [0, 1]         # [GEE catalog] value 0 = produced, good quality
-    mandatory_qa_required_value: 0
-    lst_error_bits: [6, 7]            # [GEE catalog] value 0 = avg LST error <= 1 K
-    lst_error_required_value: 0
-    # Both `*_required_value` keys are treated as MAXIMA (<=), not equalities: the
-    # QC fields are ordinal with 0 = best (mandatory QA 0/1/2/3 = good/unreliable/
-    # cloud/other; LST error 0/1/2/3 = <=1K/<=2K/<=3K/>3K). With both at 0 this is
-    # exactly CLAUDE.md's "good quality AND avg error <= 1 K". Phase 3 sensitivity
-    # runs can relax them via arguments to modis.qc_mask() without editing params.
+    mandatory_qa_bits: [0, 1]         # [GEE catalog] bit field positions — shared by day/night
+    lst_error_bits: [6, 7]            # [GEE catalog] bit field positions — shared by day/night
+    mandatory_qa_labels:              # [GEE catalog] used by modis.qc_class_histogram()
+      0: "produced, good quality"
+      1: "produced, unreliable/unquantifiable quality"
+      2: "not produced (cloud effects)"
+      3: "not produced (reasons other than cloud)"
+    lst_error_labels:                 # [GEE catalog]
+      0: "avg LST error <= 1 K"
+      1: "avg LST error <= 2 K"
+      2: "avg LST error <= 3 K"
+      3: "avg LST error > 3 K"
+    # Thresholds are MAXIMA (<=), not equalities: both QC fields are ordinal with
+    # 0 = best. They are split by overpass because the two are not comparable in
+    # quality — see the night note below.
+    day:
+      mandatory_qa_max: 0             # [CLAUDE.md] "good quality"
+      lst_error_max: 0                # [CLAUDE.md] "avg error <= 1 K"
+    night:
+      # *** DELIBERATE DEVIATION FROM CLAUDE.md — do not "correct" this to 0/0. ***
+      # MEASURED, Colab run 5 (2026-08-08): applying the strict day thresholds to
+      # QC_Night returned ZERO valid pixels over the CMC for ALL 26 years, on both
+      # Terra and Aqua. MOD11A2/MYD11A2 night retrievals over the humid tropical
+      # coast are routinely flagged "unreliable" and rarely reach the <=1 K error
+      # class. Strict night QC therefore does not produce a conservative answer, it
+      # produces NO answer — and MODIS is the only night-time source in this
+      # project (CLAUDE.md caveat 4), so night-time UHI would be unobtainable.
+      #
+      # CONSEQUENCE THAT MUST TRAVEL INTO PHASE 3: night LST carries a stated
+      # uncertainty of up to 3 K, versus <= 1 K for day. Night-time SUHII is
+      # correspondingly weaker evidence than daytime SUHII and must be reported
+      # with that asymmetry stated, never as an equal-confidence pair.
+      mandatory_qa_max: 1             # allow "produced, unreliable quality"
+      lst_error_max: 2                # allow up to "avg LST error <= 3 K"
   clear_sky_day_band: "Clear_sky_days"      # [GEE catalog] present on MOD11A2 AND MYD11A2
   clear_sky_night_band: "Clear_sky_nights"  # [GEE catalog]
   clear_sky_is_bitmask: true          # [GEE catalog, verified 2026-08-08] CRITICAL: these are

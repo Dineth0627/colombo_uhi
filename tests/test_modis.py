@@ -93,10 +93,67 @@ def test_qc_bit_extraction_arithmetic_matches_catalog() -> None:
     assert (0b00000000 >> err_shift) & err_mask == 0
 
 
-def test_params_qc_defaults_are_claude_md_strict(params: dict[str, Any]) -> None:
-    cfg = params["modis_lst"]["qc_filter"]
-    assert cfg["mandatory_qa_required_value"] == 0  # "good quality"
-    assert cfg["lst_error_required_value"] == 0  # "avg LST error <= 1 K"
+def test_day_qc_policy_is_claude_md_strict(params: dict[str, Any]) -> None:
+    # Day must stay exactly "good quality AND avg LST error <= 1 K".
+    assert modis.qc_thresholds(params, "day") == (0, 0)
+
+
+def test_night_qc_policy_is_the_documented_deviation(params: dict[str, Any]) -> None:
+    # MEASURED, Colab run 5: strict thresholds returned ZERO night pixels over
+    # the CMC for all 26 years on both satellites. Night is deliberately looser.
+    # If this test fails because someone "corrected" night back to 0/0, read the
+    # params comment first — night-time UHI disappears entirely.
+    qa_max, err_max = modis.qc_thresholds(params, "night")
+    assert (qa_max, err_max) == (1, 2)
+    day_qa, day_err = modis.qc_thresholds(params, "day")
+    assert qa_max >= day_qa and err_max >= day_err
+
+
+def test_qc_thresholds_honour_explicit_overrides(params: dict[str, Any]) -> None:
+    # Phase 3 sensitivity runs must not need a params edit.
+    assert modis.qc_thresholds(params, "night", mandatory_qa_max=0) == (0, 2)
+    assert modis.qc_thresholds(params, "day", lst_error_max=3) == (0, 3)
+    assert modis.qc_thresholds(params, "day", 1, 1) == (1, 1)
+
+
+@pytest.mark.parametrize("bad", [-1, 4, 99])
+def test_qc_thresholds_reject_out_of_range(params: dict[str, Any], bad: int) -> None:
+    # Both QC fields are 2-bit, so anything outside 0..3 is a silent no-op filter.
+    with pytest.raises(ValueError, match="0..3"):
+        modis.qc_thresholds(params, "day", mandatory_qa_max=bad)
+    with pytest.raises(ValueError, match="0..3"):
+        modis.qc_thresholds(params, "day", lst_error_max=bad)
+
+
+def test_qc_thresholds_reject_unknown_overpass(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="daynight"):
+        modis.qc_thresholds(params, "twilight")
+
+
+# --- qc_field_labels -------------------------------------------------------------
+def test_qc_field_labels_cover_all_four_classes(params: dict[str, Any]) -> None:
+    for field in ("mandatory_qa", "lst_error"):
+        labels = modis.qc_field_labels(params, field)
+        assert set(labels) == {0, 1, 2, 3}
+        assert all(text.strip() for text in labels.values())
+
+
+def test_qc_field_labels_match_the_catalog(params: dict[str, Any]) -> None:
+    assert "good quality" in modis.qc_field_labels(params, "mandatory_qa")[0]
+    assert "<= 1 K" in modis.qc_field_labels(params, "lst_error")[0]
+    assert "> 3 K" in modis.qc_field_labels(params, "lst_error")[3]
+
+
+def test_qc_field_labels_reject_unknown_field(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="emissivity_error"):
+        modis.qc_field_labels(params, "emissivity_error")
+
+
+def test_qc_field_labels_reject_an_incomplete_map(params_copy: dict[str, Any]) -> None:
+    # A gap would print None for exactly the class that explains a data gap.
+    del params_copy["modis_lst"]["qc_filter"]["lst_error_labels"][2]
+    with pytest.raises(ValueError, match="classes 0-3"):
+        modis.qc_field_labels(params_copy, "lst_error")
 
 
 # --- resolve_product / resolve_daynight ----------------------------------------
