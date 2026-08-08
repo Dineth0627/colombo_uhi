@@ -193,6 +193,36 @@ def test_output_band_names_are_unique(params: dict[str, Any]) -> None:
     assert len(names) == len(set(names))
 
 
+def test_output_band_names_can_drop_optional_groups(params: dict[str, Any]) -> None:
+    # LST-only mode: strips six reflectance scalings per scene from the graph,
+    # which is what keeps a 26-year series inside the EE memory limit.
+    assert landsat.output_band_names(
+        params, include_sr=False, include_st_qa=False
+    ) == ["LST_C"]
+    assert landsat.output_band_names(params, include_sr=False) == [
+        "LST_C",
+        "ST_QA_K",
+    ]
+    assert landsat.output_band_names(params, include_st_qa=False) == [
+        "LST_C",
+        "blue",
+        "green",
+        "red",
+        "nir",
+        "swir1",
+        "swir2",
+    ]
+
+
+def test_lst_band_is_always_emitted(params: dict[str, Any]) -> None:
+    # Whatever else is switched off, the thermal band is the point of the module.
+    lst = params["landsat_c2l2"]["lst_band_name"]
+    for include_sr in (True, False):
+        for include_st_qa in (True, False):
+            names = landsat.output_band_names(params, include_sr, include_st_qa)
+            assert names[0] == lst
+
+
 # --- month_filter validation (runs before the deferred ee import) ---------------
 def test_month_filter_rejects_empty() -> None:
     with pytest.raises(ValueError, match="at least one"):

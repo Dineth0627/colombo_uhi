@@ -8,7 +8,7 @@ _Last updated: 2026-08-08 (Phase 2 — code written, awaiting first Colab run)_
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
-| 2 | LST pipeline (Landsat + MODIS) | 🟡 **rev 3 after Colab runs 1-2 (memory errors); 229 tests passing — awaiting run 3** |
+| 2 | LST pipeline (Landsat + MODIS) | 🟡 **Steps 1-5 Colab-verified (run 3); Step 6 rev 4 — 231 tests passing** |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
@@ -174,6 +174,53 @@ levers in order of effect.
 whole-series `getInfo` will exceed the memory limit, and reach for
 drop-unneeded-reducers → batch → narrow region → coarsen scale, in that order.
 Only the last one changes the numbers.
+
+### ✅ Colab run 3 (2026-08-08) — Steps 1-5 VERIFIED
+
+Everything up to the comparison plot now works. Verified outputs:
+
+| Check | Result | Verdict |
+|---|---|---|
+| Scenes over the district, 2000-2025 | **1674** | ✅ |
+| `L2SP only` vs unfiltered | 214/214, 402/402, 794/794, 264/264 | ✅ filter is a **no-op** here |
+| Scene inventory | TM ends 2011, OLI from 2013, OLI-2 from 2021, ETM+ ends 2024 | ✅ as predicted |
+| Dry-window years with zero scenes | **none** (min 2 in 2000, typically 15-35) | ✅ better than feared |
+| Dry-season 2025 composite | 30 scenes, bands `LST_C`/`LST_C_p90`/`obs_count` | ✅ |
+| `obs_count` over CMC, dry 2025 | **min 4, median 10, max 14** | ✅ healthy — no zero-coverage pixels |
+| Terra day 8-day granules | 1189 | ✅ |
+| LST + obs-count PNGs | rendered | ✅ |
+
+Two findings worth carrying forward:
+
+1. **The `PROCESSING_LEVEL` filter removes nothing** over this AOI — all four
+   sensors report identical counts filtered and unfiltered. It stays enabled
+   (harmless, and it fails open), but it is not load-bearing here.
+2. **Landsat 5 shows 0 scenes in 2012**, not a partial year. Correct: L5 stopped
+   *acquiring* in November 2011 after the electronics failure; `2012-05-05` is
+   the collection's end timestamp, not its last acquisition over Sri Lanka. So
+   the L7-only gap is really **2012-01 to 2013-03**, wider than CLAUDE.md's
+   "2012-05" implies. Relevant to Phase 4: that stretch of the series rests on
+   SLC-off ETM+ alone.
+
+### Colab run 3 — Step 6 still exceeded memory; rev 4
+
+Batching to 4 years was not enough. The cost I had not accounted for: **a mask
+built by compositing gets embedded into every image it masks.**
+`aoi.water_mask` internally composites ~100 Landsat scenes, so masking 26 annual
+images instantiated that composite 26 times, on top of the annual reductions
+themselves. Three further changes:
+
+1. **`aoi.static_water_mask()`** — JRC Global Surface Water occurrence alone, a
+   single static image. For permanent water (ocean, Port harbour, Beira, Kelani)
+   it agrees closely with the combined mask; it misses seasonal and shallow
+   water. Used for long series only; `water_mask` still backs the maps. **This is
+   the one change that moves a number**, so notebook 02 now measures the
+   difference on the 2025 CMC mean and prints it, rather than assuming it away.
+2. **`harmonised_collection(include_sr=False, include_st_qa=False)`** — an
+   LST-only collection. Scaling and renaming six reflectance bands on ~1670
+   scenes is pure weight when only `LST_C` is wanted.
+3. `BATCH_YEARS` lowered to 2, and MODIS masking moved from Step 5 to Step 6 so
+   every plotted series is masked identically.
 
 ### Known limitations carried into Phase 3+
 
@@ -649,6 +696,18 @@ Locally: `python -m pytest tests/ -q` → **90 passed** at the end of Phase 1;
 
 ## Session log
 
+- **2026-08-08 — Phase 2 rev 4**: third Colab run **verified Steps 1-5** (1674
+  scenes, inventory exactly as predicted, dry-2025 `obs_count` min 4 / median 10
+  over the CMC, both PNGs rendered). Step 6 still exceeded memory: the cost I had
+  missed is that a mask built by *compositing* is instantiated once per image it
+  masks, so `aoi.water_mask` was rebuilt 26 times. Added
+  `aoi.static_water_mask` (JRC-only, one static image) for series work, an
+  LST-only collection mode (`include_sr=False`), and dropped `BATCH_YEARS` to 2.
+  The static mask is the only change that moves a number, so the notebook now
+  measures it against the combined mask on 2025 and prints the difference. Also
+  learned that Landsat 5 has **zero** 2012 scenes (it stopped acquiring in Nov
+  2011), so the L7-only gap is 2012-01 to 2013-03, wider than CLAUDE.md implies.
+  231 tests passing.
 - **2026-08-08 — Phase 2 rev 3**: second Colab run cleared Steps 1-5 and died in
   `zonal_annual_means` — one request cannot hold 26 annual composite graphs.
   Added `with_percentile=False` (a percentile reducer retains every observation

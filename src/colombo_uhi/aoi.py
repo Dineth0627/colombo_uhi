@@ -949,6 +949,54 @@ def water_exclusion_mask(
     return mask.rename("water_excluded")
 
 
+def static_water_mask(
+    params: dict[str, Any], region: "ee.Geometry | None" = None
+) -> "ee.Image":
+    """Cheap 0/1 water mask from JRC Global Surface Water alone (1 = water).
+
+    :func:`water_mask` ORs three detectors, two of which require compositing a
+    Landsat reflectance collection. That composite then gets embedded into
+    *every* image it masks, so applying it across a 26-year annual series
+    multiplies a heavy graph 26 times and exceeds the Earth Engine user memory
+    limit (Colab run 3, 2026-08-08). This variant is a single static image:
+    essentially free, and safe to apply to a long series.
+
+    What it does and does not capture, so the trade is explicit:
+
+    * JRC ``occurrence`` is itself derived from 38 years of Landsat, so for
+      PERMANENT water — the ocean, the Colombo Port outer harbour, Beira,
+      Bolgoda and Diyawanna lakes, the Kelani — it is the authoritative source
+      and agrees closely with the combined mask.
+    * It will miss seasonal, shallow or newly-impounded water that the MNDWI and
+      QA_PIXEL detectors catch, and it carries no shoreline dilation.
+
+    Use :func:`water_mask` for maps and for any single-date product. Use this one
+    for long series, and report the difference rather than assuming it is nil —
+    notebook 02 measures it on one year.
+
+    Args:
+        params: Parsed params mapping.
+        region: Geometry to clip to; defaults to :func:`analysis_region`.
+
+    Returns:
+        Single-band 0/1 ``ee.Image`` named ``water``.
+    """
+    import ee  # Deferred: see module docstring.
+
+    if region is None:
+        region = analysis_region(params)
+    gsw_cfg = params["datasets"]["surface_water"]
+    threshold = params["aoi"]["water_mask"]["jrc_occurrence_threshold_pct"]
+    return (
+        ee.Image(gsw_cfg["id"])
+        .select(gsw_cfg["band_occurrence"])
+        .gte(threshold)
+        .unmask(0)
+        .rename("water")
+        .clip(region)
+    )
+
+
 # =============================================================================
 # Rural-reference interface (SUHII urban/rural definitions)
 # =============================================================================

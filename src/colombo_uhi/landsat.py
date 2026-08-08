@@ -153,7 +153,11 @@ def source_sr_bands(sensor_key: str, params: dict[str, Any]) -> list[str]:
     return [mapping[name] for name in harmonised]
 
 
-def output_band_names(params: dict[str, Any]) -> list[str]:
+def output_band_names(
+    params: dict[str, Any],
+    include_sr: bool = True,
+    include_st_qa: bool = True,
+) -> list[str]:
     """Band names every scene in the harmonised collection carries, in order.
 
     Fixed order and identical dtype across sensors is what lets the four
@@ -162,17 +166,20 @@ def output_band_names(params: dict[str, Any]) -> list[str]:
 
     Args:
         params: Parsed params mapping.
+        include_sr: Whether the six harmonised reflectance bands are present.
+        include_st_qa: Whether the scaled ``ST_QA_K`` band is present.
 
     Returns:
         ``["LST_C", "blue", "green", "red", "nir", "swir1", "swir2", "ST_QA_K"]``
-        with the actual configured names.
+        with the actual configured names, minus any group switched off.
     """
     c2l2 = params["landsat_c2l2"]
-    return [
-        c2l2["lst_band_name"],
-        *c2l2["harmonised_sr_bands"],
-        c2l2["st_qa_band_name"],
-    ]
+    names = [c2l2["lst_band_name"]]
+    if include_sr:
+        names.extend(c2l2["harmonised_sr_bands"])
+    if include_st_qa:
+        names.append(c2l2["st_qa_band_name"])
+    return names
 
 
 def monsoon_season(month: int, params: dict[str, Any]) -> str:
@@ -407,6 +414,8 @@ def _prepare_scene(
     sensor_key: str,
     params: dict[str, Any],
     st_qa_max_kelvin: float | None = None,
+    include_sr: bool = True,
+    include_st_qa: bool = True,
 ) -> "ee.Image":
     """Mask, scale and rename one raw C2 L2 scene onto the harmonised schema.
 
@@ -427,6 +436,14 @@ def _prepare_scene(
         st_qa_max_kelvin: Per-pixel LST uncertainty ceiling in Kelvin; ``None``
             falls back to ``landsat_c2l2.st_qa_max_kelvin`` (itself ``null`` =
             no filtering by default).
+        include_sr: Emit the six harmonised reflectance bands. Set ``False`` for
+            LST-only work: scaling and renaming six bands on every scene is real
+            graph weight, and over a 26-year series it is weight Earth Engine
+            charges against the user memory limit for nothing. ``indices.py``
+            needs them; trends and zonal LST means do not.
+        include_st_qa: Emit the scaled ``ST_QA_K`` band. The uncertainty filter
+            still works when this is ``False`` — the band is computed for the
+            gate and simply not returned.
 
     Returns:
         ``ee.Image`` with the bands from :func:`output_band_names`, as float,
@@ -438,21 +455,31 @@ def _prepare_scene(
 
     clear = qa_clear_mask(image, params)
     lst_c = scale_st(image, sensor_key, params)
-    st_qa_k = scale_st_qa(image, params)
 
     threshold = (
         c2l2["st_qa_max_kelvin"] if st_qa_max_kelvin is None else st_qa_max_kelvin
     )
+    st_qa_k = (
+        scale_st_qa(image, params) if include_st_qa or threshold is not None else None
+    )
     if threshold is not None:
+        assert st_qa_k is not None
         # Thermal-only gate, same reasoning as the gates inside scale_st().
         lst_c = lst_c.updateMask(st_qa_k.lte(float(threshold)))
 
-    reflectance = scale_sr(image, params).select(
-        source_sr_bands(sensor_key, params), c2l2["harmonised_sr_bands"]
-    )
+    bands: list["ee.Image"] = [lst_c]
+    if include_sr:
+        bands.append(
+            scale_sr(image, params).select(
+                source_sr_bands(sensor_key, params), c2l2["harmonised_sr_bands"]
+            )
+        )
+    if include_st_qa:
+        assert st_qa_k is not None
+        bands.append(st_qa_k)
 
     stacked = (
-        ee.Image.cat([lst_c, reflectance, st_qa_k])
+        ee.Image.cat(bands)
         .toFloat()  # identical dtype across sensors, so merge + reduce stay valid
         .updateMask(clear)
     )
@@ -510,6 +537,8 @@ def _sensor_collection(
     months: Sequence[int] | None = None,
     include_l7_slc_off: bool | None = None,
     st_qa_max_kelvin: float | None = None,
+    include_sr: bool = True,
+    include_st_qa: bool = True,
 ) -> "ee.ImageCollection":
     """Build one sensor's filtered, masked, harmonised collection.
 
@@ -523,6 +552,8 @@ def _sensor_collection(
         include_l7_slc_off: Landsat 7 only; ``None`` uses
             ``landsat_c2l2.include_l7_slc_off``.
         st_qa_max_kelvin: See :func:`_prepare_scene`.
+        include_sr: See :func:`_prepare_scene`.
+        include_st_qa: See :func:`_prepare_scene`.
 
     Returns:
         ``ee.ImageCollection`` of prepared, tagged scenes.
@@ -569,7 +600,14 @@ def _sensor_collection(
 
     def prepare(image: "ee.Image") -> "ee.Image":
         return _tag_scene(
-            _prepare_scene(image, sensor_key, params, st_qa_max_kelvin),
+            _prepare_scene(
+                image,
+                sensor_key,
+                params,
+                st_qa_max_kelvin,
+                include_sr=include_sr,
+                include_st_qa=include_st_qa,
+            ),
             sensor_key,
             params,
             season_lookup,
@@ -587,6 +625,8 @@ def harmonised_collection(
     sensors: Sequence[str] | None = None,
     include_l7_slc_off: bool | None = None,
     st_qa_max_kelvin: float | None = None,
+    include_sr: bool = True,
+    include_st_qa: bool = True,
 ) -> "ee.ImageCollection":
     """One harmonised L5/L7/L8/L9 C2 L2 collection, sorted by acquisition time.
 
@@ -616,6 +656,13 @@ def harmonised_collection(
         include_l7_slc_off: Override the params default described above.
         st_qa_max_kelvin: Optional per-pixel LST uncertainty ceiling in Kelvin;
             ``None`` uses ``landsat_c2l2.st_qa_max_kelvin`` (``null`` = off).
+        include_sr: Emit the six harmonised reflectance bands. Set ``False`` for
+            LST-only work (trends, zonal means): it strips six band scalings per
+            scene from the graph, which is the cheapest way to keep a long
+            series inside the Earth Engine user memory limit. Leave it ``True``
+            whenever :mod:`colombo_uhi.indices` will run on the result.
+        include_st_qa: Emit the scaled ``ST_QA_K`` band. The optional
+            uncertainty filter still applies when this is ``False``.
 
     Returns:
         ``ee.ImageCollection`` sorted ascending by ``system:time_start``.
@@ -644,6 +691,8 @@ def harmonised_collection(
             months=months,
             include_l7_slc_off=include_l7_slc_off,
             st_qa_max_kelvin=st_qa_max_kelvin,
+            include_sr=include_sr,
+            include_st_qa=include_st_qa,
         )
         merged = collection if merged is None else merged.merge(collection)
 
