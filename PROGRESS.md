@@ -1,13 +1,13 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 1b session)_
+_Last updated: 2026-08-08 (Phase 1c session)_
 
 ## Status snapshot
 
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
-| 1 | AOI & boundaries | 🔄 Colab run 1 done; 3 bugs fixed, re-run pending (see Phase 1b) |
+| 1 | AOI & boundaries | 🔄 Colab runs 1–2 done; schema now known, run 3 pending (see Phase 1c) |
 | 2 | LST pipeline (Landsat + MODIS) | ⬜ |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
@@ -28,6 +28,70 @@ _Last updated: 2026-08-08 (Phase 1b session)_
 - [x] `notebooks/00_setup_and_auth.ipynb` (functional) + 01–08 stubs
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
+
+## Phase 1c — Colab run 2 results + fixes (2026-08-08)
+
+The diagnostic-first approach paid off: the new `describe_asset` cell printed
+both assets' real schemas, so **nothing about the boundary data is guesswork any
+more.**
+
+### ✅ Asset schema — AUTHORITATIVE (verified in Colab, do not re-guess)
+
+The uploads are **OCHA COD-AB v03 with LOWERCASE field names**:
+
+| Need | Property | Example value |
+|---|---|---|
+| DS name (admin3) | `adm3_name` | `Colombo`, `Kolonnawa` |
+| GN name (admin4) | `adm4_name` | `Sammanthranapura`, `Mattakkuliya` |
+| Parent district | `adm2_name` | `Colombo` |
+| Province | `adm1_name` | `Western` |
+| P-codes | `adm2_pcode` / `adm3_pcode` | `LK11` / `LK1103` |
+| Stated area | `area_sqkm` | Colombo DS = 24.54 km² |
+
+`adm*_name1` is Sinhala and `adm*_name2` Tamil — never filter on those.
+Colombo DS at 24.54 km² makes the Colombo + Thimbirigasyaya pair land near the
+expected 37 km² CMC, independent support for that two-DS definition.
+
+### Bugs found and fixed
+
+4. **Candidate lists were all uppercase** (`ADM3_EN`, …), so none matched.
+   The district column resolved to None → the code took its spatial fallback.
+   Fixed: lowercase COD-AB names are now the **first** candidate in each list
+   (pinned by a test), uppercase variants kept as fallbacks.
+5. **The spatial fallback silently returned 0 features** — latent bug of mine.
+   `ee.Geometry.contains()` yields an `ee.Boolean` that round-trips as JSON
+   `true`, which `ee.Filter.eq(prop, 1)` does not match; last session I
+   "hardened" that comparison from `True` to `1`, which was exactly backwards.
+   Fixed by casting to `ee.Number` so the stored value is unambiguously 1/0,
+   with a comment telling future readers not to simplify it back.
+
+### Phase 1c decision (user-approved 2026-08-08)
+
+7. **LCZ masks are scoped to Colombo District** (`uhi.suhii.lcz_based.scope`).
+   Unscoped they spanned Western Province + 25 km, making "urban" 2464 km² of
+   built-up LCZ across Gampaha and Kalutara — a regional statistic, not
+   Colombo's. The LCZ method is now an intra-district built-vs-vegetated
+   contrast while the buffer method stays CMC-vs-ring, so the two definitions
+   stay genuinely independent. Caveat recorded in code: the LCZ rural reference
+   sits closer to the core, so advection may damp its SUHII relative to the ring
+   — that divergence is the sensitivity to report, not a defect.
+
+### Figure review (run 2's PNGs, decoded from the notebook)
+
+`viz.save_thumbnail` is **Colab-proven**. What the figures show:
+
+- **Water mask** — ocean, **Bolgoda Lake**, and the Labugama/Kalatuwawa
+  reservoirs in eastern Seethawaka are all clearly captured. Beira and Diyawanna
+  are **not resolvable** at the district-wide scale (~50 m/px for a 0.65 km²
+  lake), so a zoomed `aoi_water_mask_core.png` (10 km around the centre,
+  ~22 m/px) was added to notebook 01 to verify them. Water is visibly excluded
+  from the LCZ rural mask along the coast and lagoons.
+- **Boundaries** — province/district/urban-extent nest correctly. The GHSL urban
+  extent is scattered speckle across the whole province, confirming exactly why
+  a ring based on it came out at 4049 km².
+- **LCZ masks** — red/green covered the entire buffered province with the tiny
+  district outline lost inside it: the visual proof of the scoping problem that
+  decision 7 fixes.
 
 ## Phase 1b — Colab run 1 results + fixes (2026-08-08)
 
@@ -197,18 +261,19 @@ water mask, both rural references and the map all built.
 
 Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
 
-## What you must run to verify Phase 1 (re-run after the 1b fixes)
+## What you must run to verify Phase 1 (run 3, after the 1c fixes)
 
 1. Commit + push, then re-run `notebooks/01_aoi_and_boundaries.ipynb` in Colab.
-2. The new **first cell** prints each uploaded asset's property names — that
-   output is what tells us whether the assets are COD-AB or geoBoundaries.
-3. Confirm: DS = **13**, GN = **557**, CMC ≈ **37 km²**, ring far smaller than
-   4049 km², and no mask flagged near-empty.
-   If CMC still fails, the error now lists the DS names present — paste the
-   right ones into `aoi.cmc.ds_division_names`.
-4. **Send back the four PNGs from `figures/`** (or the saved notebook) so the
-   water mask and rural references can be reviewed before Phase 2.
-5. Locally: `python -m pytest tests/ -q` → 82 passed.
+2. Confirm: DS = **13**, GN = **557**, CMC ≈ **37 km²** and close to the
+   `area_sqkm` sum printed next to it, ring compact around the CMC, LCZ urban a
+   district-scale number (not 2464 km²) with a non-empty rural counterpart, no
+   mask flagged near-empty.
+3. If CMC still fails, the printed DS-name list shows the exact spellings —
+   paste the right two into `aoi.cmc.ds_division_names`.
+4. **Send back the PNGs from `figures/`** — especially the new
+   `aoi_water_mask_core.png`, which is the only view that can resolve Beira Lake
+   and Diyawanna Lake.
+5. Locally: `python -m pytest tests/ -q` → 84 passed.
 
 ## What you must run to verify Phase 0
 
@@ -234,6 +299,13 @@ Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
   catalog Browser pane (17 ✅, 1 ❌ GSOD); wrote params.yaml, auth module,
   tests (30 passing), notebook 00, stubs, README. No LST processing code
   written (per session scope). Nothing committed to git yet.
+- **2026-08-08 — Phase 1c**: second Colab run. Diagnostic cell revealed the
+  assets are COD-AB v03 with **lowercase** fields (`adm3_name`/`adm4_name`/
+  `adm2_name`) — my candidates were uppercase, so DS/GN came back 0/0. Also
+  fixed a latent `ee.Boolean` vs `1` filter bug that made the spatial fallback
+  match nothing. Scoped both LCZ masks to Colombo District per user decision.
+  Reviewed run 2's PNGs (water mask confirmed over ocean/Bolgoda/reservoirs;
+  added a zoomed core figure for Beira + Diyawanna). 84 tests passing.
 - **2026-08-08 — Phase 1b**: first Colab run of notebook 01. Boundaries/areas
   correct; found 3 bugs (no district filter on the uploaded assets → 339/14043;
   silent 0 km² CMC from an unmatched attribute name; ring based on the

@@ -209,6 +209,8 @@ def test_phase1_rural_reference_settings(params: dict[str, Any]) -> None:
     assert suhii["lcz_based"]["urban_classes"] == list(range(1, 11))
     # Rural = LCZ A-G (11-17), user decision 2026-08-08; water mask removes G.
     assert suhii["lcz_based"]["rural_classes"] == list(range(11, 18))
+    # Both LCZ masks are clipped to this geometry (user decision 2026-08-08).
+    assert suhii["lcz_based"]["scope"] in ("district", "cmc", "analysis_region")
 
 
 def test_trend_settings(params: dict[str, Any]) -> None:

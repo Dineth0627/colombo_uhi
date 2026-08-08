@@ -422,15 +422,18 @@ def _filter_to_district(
 
     def tag_centroid(feature: "ee.Feature") -> "ee.Feature":
         centroid = feature.geometry().centroid(_MAX_ERROR_M)
+        # ee.Geometry.contains() returns an ee.Boolean, which round-trips as JSON
+        # `true`/`false` — ee.Filter.eq(prop, 1) does NOT match that (it silently
+        # matched nothing in the 2026-08-08 Colab run). Cast to ee.Number so the
+        # stored value is unambiguously 1/0. Do not "simplify" this back.
         return feature.set(
             "_centroid_in_district",
-            district_geom.contains(centroid, _MAX_ERROR_M),
+            ee.Number(district_geom.contains(centroid, _MAX_ERROR_M)),
         )
 
     return (
         fc.filterBounds(district_geom)          # cheap pre-filter
         .map(tag_centroid)
-        # ee.Boolean is backed by a number server-side, so compare against 1.
         .filter(ee.Filter.eq("_centroid_in_district", 1))
     )
 
@@ -789,6 +792,34 @@ def _buffer_ring_base(params: dict[str, Any]) -> "ee.Geometry":
     )
 
 
+def _lcz_scope_geometry(params: dict[str, Any]) -> "ee.Geometry":
+    """Resolve the geometry both LCZ masks are clipped to.
+
+    Set by ``uhi.suhii.lcz_based.scope``. Without a scope the LCZ masks span the
+    whole analysis region, which made "urban" 2464 km2 of built-up LCZ across
+    Gampaha and Kalutara — a regional statistic rather than Colombo's.
+
+    Note the trade-off of the district scope: the rural reference then sits much
+    closer to the urban core than the buffer method's 15-25 km ring, so
+    advection may damp its SUHII. That divergence between the two definitions is
+    precisely the sensitivity CLAUDE.md requires to be reported, not a defect.
+
+    Raises:
+        ValueError: On an unknown scope value, listing the valid options.
+    """
+    scope = params["uhi"]["suhii"]["lcz_based"]["scope"]
+    if scope == "district":
+        return colombo_district(params).geometry(_MAX_ERROR_M)
+    if scope == "cmc":
+        return cmc_boundary(params)
+    if scope == "analysis_region":
+        return analysis_region(params)
+    raise ValueError(
+        f"unknown lcz_based scope '{scope}'; valid options: "
+        "['district', 'cmc', 'analysis_region']"
+    )
+
+
 def buffer_ring(params: dict[str, Any]) -> "ee.Geometry":
     """Rural-reference ring geometry around the urban core.
 
@@ -813,28 +844,28 @@ def buffer_ring(params: dict[str, Any]) -> "ee.Geometry":
 def urban_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     """0/1 urban mask for SUHII under the given rural-reference method.
 
-    * ``"buffer_ring"``: rasterised base geometry (urban extent or CMC).
-    * ``"lcz_based"``: LCZ built classes (1-10 by default).
+    * ``"buffer_ring"``: rasterised base geometry (urban extent or CMC), over
+      :func:`analysis_region`.
+    * ``"lcz_based"``: LCZ built classes (1-10 by default), clipped to
+      :func:`_lcz_scope_geometry` (Colombo District by default).
 
     Args:
         method: One of ``uhi.suhii.rural_definitions``.
         params: Parsed params mapping.
 
     Returns:
-        Single-band 0/1 ``ee.Image`` named ``urban``, clipped to
-        :func:`analysis_region`.
+        Single-band 0/1 ``ee.Image`` named ``urban``.
     """
     suhii = params["uhi"]["suhii"]
     method = resolve_rural_method(method, suhii["rural_definitions"])
-    region = analysis_region(params)
 
     if method == "buffer_ring":
-        mask = _paint(_buffer_ring_base(params), region)
+        mask = _paint(_buffer_ring_base(params), analysis_region(params))
     else:  # lcz_based
         urban_classes, _ = validate_lcz_classes(
             suhii["lcz_based"]["urban_classes"], suhii["lcz_based"]["rural_classes"]
         )
-        mask = _lcz_class_mask(params, urban_classes).clip(region)
+        mask = _lcz_class_mask(params, urban_classes).clip(_lcz_scope_geometry(params))
     return mask.rename("urban")
 
 
@@ -861,11 +892,13 @@ def _elevation_cap_mask(params: dict[str, Any]) -> "ee.Image | None":
 def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     """0/1 rural-reference mask for SUHII under the given method.
 
-    * ``"buffer_ring"``: ring around the urban core, minus the exclusions in
-      ``buffer_ring.exclude`` (water via :func:`water_exclusion_mask`,
-      built-up via the LCZ built classes).
-    * ``"lcz_based"``: LCZ natural classes (A-G = 11-17 by default) minus the
-      water exclusion (which removes class G plus any shoreline buffer).
+    * ``"buffer_ring"``: ring around the urban core over
+      :func:`analysis_region`, minus the exclusions in ``buffer_ring.exclude``
+      (water via :func:`water_exclusion_mask`, built-up via the LCZ built
+      classes).
+    * ``"lcz_based"``: LCZ natural classes (A-G = 11-17 by default) within
+      :func:`_lcz_scope_geometry` (Colombo District by default), minus the water
+      exclusion (which removes class G plus any shoreline buffer).
 
     Both definitions then get the SRTM elevation cap from
     ``uhi.suhii.rural_filters.max_elevation_m`` (see
@@ -876,26 +909,28 @@ def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
         params: Parsed params mapping.
 
     Returns:
-        Single-band 0/1 ``ee.Image`` named ``rural``, clipped to
-        :func:`analysis_region`.
+        Single-band 0/1 ``ee.Image`` named ``rural``.
     """
     suhii = params["uhi"]["suhii"]
     method = resolve_rural_method(method, suhii["rural_definitions"])
-    region = analysis_region(params)
     urban_classes, rural_classes = validate_lcz_classes(
         suhii["lcz_based"]["urban_classes"], suhii["lcz_based"]["rural_classes"]
     )
     not_water = water_exclusion_mask(params).Not()
 
     if method == "buffer_ring":
-        mask = _paint(buffer_ring(params), region)
+        mask = _paint(buffer_ring(params), analysis_region(params))
         exclude = suhii["buffer_ring"]["exclude"]
         if "water" in exclude:
             mask = mask.And(not_water)
         if "built_up" in exclude:
             mask = mask.And(_lcz_class_mask(params, urban_classes).Not())
     else:  # lcz_based
-        mask = _lcz_class_mask(params, rural_classes).clip(region).And(not_water)
+        mask = (
+            _lcz_class_mask(params, rural_classes)
+            .clip(_lcz_scope_geometry(params))
+            .And(not_water)
+        )
 
     elevation_ok = _elevation_cap_mask(params)
     if elevation_ok is not None:

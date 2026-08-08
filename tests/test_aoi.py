@@ -160,6 +160,17 @@ def test_property_candidates_from_params_are_valid(params: dict[str, Any]) -> No
         assert resolved == assets[key]
 
 
+def test_codab_lowercase_names_are_first_candidates(params: dict[str, Any]) -> None:
+    # The uploaded assets are OCHA COD-AB v03 with LOWERCASE fields (verified by
+    # describe_asset in Colab, 2026-08-08). Uppercase-only candidates matched
+    # nothing and silently produced 0 DS / 0 GN, so pin the ordering.
+    assets = params["aoi"]["assets"]
+    assert assets["ds_name_property_candidates"][0] == "adm3_name"
+    assert assets["gn_name_property_candidates"][0] == "adm4_name"
+    assert assets["district_property_candidates"][0] == "adm2_name"
+    assert assets["area_property"] == "area_sqkm"
+
+
 @pytest.mark.parametrize(
     "candidates",
     [
@@ -197,6 +208,12 @@ def test_buffer_ring_base_is_cmc(params: dict[str, Any]) -> None:
 def test_rural_elevation_cap(params: dict[str, Any]) -> None:
     max_elev = params["uhi"]["suhii"]["rural_filters"]["max_elevation_m"]
     assert max_elev is None or max_elev > 0
+
+
+def test_lcz_scope_is_valid(params: dict[str, Any]) -> None:
+    # Set 2026-08-08: unscoped LCZ masks spanned Western Province + 25 km, making
+    # "urban" 2464 km2 of built-up across Gampaha and Kalutara.
+    assert params["uhi"]["suhii"]["lcz_based"]["scope"] == "district"
 
 
 # --- import hygiene -------------------------------------------------------------

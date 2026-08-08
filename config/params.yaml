@@ -89,16 +89,23 @@ aoi:
     # actionable error (notebook 01 has step-by-step upload instructions).
     ds_divisions: "projects/research-uhi-484404/assets/lka_admin3"
     gn_divisions: "projects/research-uhi-484404/assets/lka_admin4"
-    # The uploaded assets cover ALL of Sri Lanka (339 DS / 14043 GN features,
-    # confirmed in the 2026-08-08 Colab run) and their attribute schema depends
-    # on the source: OCHA COD-AB uses ADM3_EN/ADM2_EN, geoBoundaries uses
-    # shapeName (and carries NO parent-district column). Rather than guess,
-    # aoi._resolve_property() picks the first candidate present in the asset and
-    # raises with the asset's real property names if none match. Set the
-    # overrides under `aoi.cmc` / below if auto-resolution picks wrongly.
-    ds_name_property_candidates: ["ADM3_EN", "ADM_3_EN", "shapeName", "NAME_3", "DSD_N", "DSD_NAME"]
-    gn_name_property_candidates: ["ADM4_EN", "ADM_4_EN", "shapeName", "NAME_4", "GND_N"]
-    district_property_candidates: ["ADM2_EN", "ADM_2_EN", "NAME_2", "DISTRICT_N", "DISTRICT"]
+    # The uploaded assets cover ALL of Sri Lanka (339 DS / 14043 GN features)
+    # and are OCHA COD-AB v03 with LOWERCASE field names — verified by
+    # aoi.describe_asset() in the Colab run of 2026-08-08:
+    #   adm3_name = DS name, adm4_name = GN name, adm2_name = parent district
+    #   ("Colombo"), plus pcodes (adm2_pcode "LK11", adm3_pcode "LK1103") and
+    #   area_sqkm. `adm*_name` is English (lang: en); adm*_name1 = Sinhala,
+    #   adm*_name2 = Tamil — never filter on those.
+    # Lowercase COD-AB names come FIRST; the uppercase/geoBoundaries variants
+    # stay as fallbacks in case the assets are ever re-uploaded from another
+    # source. aoi._resolve_property() takes the first candidate present and
+    # raises with the asset's real property names if none match.
+    # The pcode fields are a diacritic-proof alternative if names ever drift.
+    ds_name_property_candidates: ["adm3_name", "ADM3_EN", "ADM_3_EN", "shapeName", "NAME_3", "DSD_N", "DSD_NAME"]
+    gn_name_property_candidates: ["adm4_name", "ADM4_EN", "ADM_4_EN", "shapeName", "NAME_4", "GND_N"]
+    district_property_candidates: ["adm2_name", "ADM2_EN", "ADM_2_EN", "NAME_2", "DISTRICT_N", "DISTRICT"]
+    area_property: "area_sqkm"        # COD-AB carries its own area; the notebook cross-checks
+                                      # the computed CMC area against the sum of these
     district_value: "Colombo"         # value of the district property for Colombo District;
                                       # when NO district property exists (geoBoundaries), the
                                       # loaders fall back to a centroid-within-GAUL spatial filter
@@ -414,6 +421,14 @@ uhi:
                                       # that is up to ~0.65 degC of elevation-driven cooling
                                       # contaminating SUHII. null = no elevation filtering.
     lcz_based:
+      scope: "district"               # geometry both LCZ masks are clipped to: "district"
+                                      # (Colombo District), "cmc", or "analysis_region".
+                                      # Set to "district" 2026-08-08: computing LCZ masks over the
+                                      # whole analysis region made "urban" 2464 km2 of built-up
+                                      # LCZ across Gampaha and Kalutara too, which is a regional
+                                      # statistic, not Colombo's. District scope makes this an
+                                      # intra-district built-vs-vegetated contrast, independent of
+                                      # the buffer method's CMC-vs-ring geometry.
       urban_classes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]   # LCZ built classes 1-10 (Demuzere et al. 2022)
       rural_classes: [11, 12, 13, 14, 15, 16, 17]      # rural = LCZ A-G (user decision 2026-08-08).
                                       # G=17 water is removed by the water mask; E=15 (bare
