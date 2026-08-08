@@ -1,13 +1,13 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 1d session)_
+_Last updated: 2026-08-08 (Phase 1e session)_
 
 ## Status snapshot
 
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
-| 1 | AOI & boundaries | 🔄 runs 1–3 done; all verified except CMC, now redefined — run 4 pending (Phase 1d) |
+| 1 | AOI & boundaries | 🔄 runs 1–4 done; CMC area explained + 2 bugs fixed — run 5 pending (Phase 1e) |
 | 2 | LST pipeline (Landsat + MODIS) | ⬜ |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
@@ -28,6 +28,56 @@ _Last updated: 2026-08-08 (Phase 1d session)_
 - [x] `notebooks/00_setup_and_auth.ipynb` (functional) + 01–08 stubs
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
+
+## Phase 1e — Colab run 4 results + fixes (2026-08-08)
+
+The audit cell paid for itself immediately: **50/55 names matched**, and it printed
+COD-AB's own spellings for the five that did not.
+
+### ✅ CMC AREA — RESOLVED (do not revisit)
+
+Three facts, established arithmetically:
+
+1. The `extra` list came back as *exactly* the five correct spellings and nothing
+   else ⇒ the Colombo + Thimbirigasyaya DS divisions contain **precisely the 55**
+   GN divisions on the CMC's list. **GN-union ≡ DS-pair — the same polygon.**
+   Switching units was never going to change the area.
+2. **46.9 km² is COD-AB's polygon, and it is not wrong** — it encloses the
+   **Colombo Port outer harbour**, plainly visible in
+   `figures/aoi_water_mask_core.png` (run 3). The excess over the gazetted
+   37.31 km² is **9.56 km²**, which matches the harbour's size.
+3. Therefore the **land-only** area is the figure to compare against 37.31, and
+   it is also what LST statistics actually cover. New `aoi.cmc_land_area_km2()`
+   measures it; run 5 confirms the number. This doubles as an independent
+   validation of the water mask.
+
+`aoi.expected_areas_km2` now carries **both**: `cmc: 37` (checked against land)
+and `cmc_administrative: 47` (the raw polygon, legitimately larger).
+
+### Bugs found and fixed
+
+6. **Five spelling errors** in my transcription from the CMC map. Corrected in
+   params and pinned by a test (reverting any would silently undersize the CMC):
+   Ibanwala→**Ibbanwala**, Kettarama→**Khettarama**, Kirulapona→**Kirulapone**,
+   Kotehena East/West→**Kotahena East/West**.
+7. **GN names are NOT unique within Colombo District** — a genuine bug of mine.
+   Matching names across all 557 district GN divisions also pulled in same-named
+   divisions from Dehiwala/Moratuwa/Kolonnawa. The tell was arithmetic: 50 of 55
+   units measured **47.50 km²**, *more than both parent DS divisions combined*
+   (46.87) — children cannot exceed their parents. Downstream corroboration: the
+   ring inflated 1603 → **2100 km²** and its rural mask 206 → **468 km²**, and
+   `figures/aoi_rural_buffer_ring.png` shows stray red fragments inland, each
+   generating its own annulus. Fixed: `_cmc_units()` scopes GN selection to the
+   parent DS divisions (`aoi.cmc.parent_ds_scope`) before name matching, and
+   `cmc_boundary()` now warns when the matched **feature count** exceeds the
+   expected division count. **This trap applies to all GN-level work in Phases
+   5–7** (zonal statistics, MAUP) — scope by parent DS or use `adm4_pcode`.
+8. **`urban_mask()` did not exclude water** while `rural_mask()` did. With a
+   coastal CMC enclosing ~10 km² of harbour, open water would have dragged the
+   urban LST mean down and inflated SUHII — and CLAUDE.md requires water masked
+   before *any* LST statistic. Water is now excluded from urban masks under both
+   definitions. The elevation cap stays rural-only (urban cores are not
+   elevation-matched by construction).
 
 ## Phase 1d — Colab run 3 results + CMC redefinition (2026-08-08)
 
@@ -66,6 +116,25 @@ is spelling drift vs COD-AB (Wellawatta/Wellawatte, Kettarama/Khettarama). New
 plus the asset-stated area; `cmc_boundary()` raises on zero matches and **warns
 loudly on a partial match** (an undersized CMC would look plausible). Notebook 01
 runs the audit before building the geometry.
+
+### Operational trap fixed: stale modules in a live Colab runtime
+
+Run 4 failed immediately with
+`AttributeError: module 'colombo_uhi.aoi' has no attribute 'cmc_name_audit'`.
+Not a code bug — re-running a notebook in a **live** runtime keeps the previous
+run's modules in `sys.modules`, so `git pull` updates the files on disk while the
+import silently returns the OLD code. New functions look absent and fixed bugs
+look unfixed. This will recur every phase, so it is now handled structurally:
+
+- Both notebooks **purge `colombo_uhi*` from `sys.modules`** immediately before
+  importing it (the clone cell's `git pull` then actually takes effect).
+- The clone cell prints `HEAD <sha> <subject> <date>` — quote this whenever a
+  result looks impossible.
+- Notebook 01 asserts the functions it needs exist and, if not, raises with the
+  fix steps and the loaded module's `__file__` instead of a bare AttributeError.
+- Notebook 00's troubleshooting table has the symptom and remedy.
+
+Any Phase 2+ notebook must copy the purge block.
 
 ### Figure review (run 3 PNGs, decoded from the notebook)
 
@@ -312,18 +381,22 @@ water mask, both rural references and the map all built.
 
 Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
 
-## What you must run to verify Phase 1 (run 4, after the 1d CMC redefinition)
+## What you must run to verify Phase 1 (run 5, after the 1e fixes)
 
 1. Commit + push, then re-run `notebooks/01_aoi_and_boundaries.ipynb` in Colab.
-2. The **CMC audit cell** is the one that matters: expect **55/55 matched** and an
-   empty `missing` list. If names are missing, the printed `extra` list holds
-   COD-AB's spelling of each — copy those into `aoi.cmc.gn_division_names`.
-3. Confirm CMC ≈ **37 km²**, agreeing with the asset-stated area, and that the
-   ring has been recomputed around the smaller core. DS = 13, GN = 557, LCZ
-   urban/rural ≈ 477/152 km² should be unchanged.
-4. **Send back the PNGs from `figures/`** — `aoi_water_mask_core.png` should now
-   show the CMC hugging the shoreline instead of enclosing the Port harbour.
-5. Locally: `python -m pytest tests/ -q` → 87 passed.
+2. **CMC audit cell**: expect **55/55 names AND 55 features**, with `missing` and
+   `extra` both empty. Features exceeding 55 means the duplicate-name bug is back.
+3. **CMC areas**: administrative ≈ **46.9 km²** (equals the DS pair — same
+   geometry) and **land ≈ 37 km²** against the gazetted 37.31, with ~**9.6 km²**
+   of water inside the polygon. That last number is the whole story: it is the
+   Port harbour, and it also validates the water mask.
+4. Ring back to ≈ **1603 km²**, its rural mask ≈ **206 km²**. Urban masks slightly
+   smaller than run 4 (water now excluded from them too). LCZ rural ≈ 152 km².
+5. **Send back the PNGs** — `aoi_boundaries.png` and `aoi_rural_buffer_ring.png`
+   should show **one compact** CMC blob with no stray inland fragments.
+6. Locally: `python -m pytest tests/ -q` → 90 passed.
+
+If the land area lands near 37, Phase 1 is done and Phase 2 can start.
 
 ## What you must run to verify Phase 0
 
@@ -349,6 +422,14 @@ Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
   catalog Browser pane (17 ✅, 1 ❌ GSOD); wrote params.yaml, auth module,
   tests (30 passing), notebook 00, stubs, README. No LST processing code
   written (per session scope). Nothing committed to git yet.
+- **2026-08-08 — Phase 1e**: fourth Colab run. Audit caught 5 spelling errors and
+  printed COD-AB's spellings. Proved GN-union ≡ DS-pair (the 55 GN divisions tile
+  the two DS divisions exactly), so the 46.9-vs-37.31 gap is the **Port harbour**,
+  not a unit-choice error — added `cmc_land_area_km2()` to measure it. Fixed a
+  real bug: GN names are not unique within the district, so name matching pulled
+  in stray divisions (50 units measured 47.50 km², more than both parents) —
+  selection is now scoped to the parent DS divisions. Also closed a correctness
+  gap: `urban_mask()` now excludes water like `rural_mask()` does. 90 tests.
 - **2026-08-08 — Phase 1d**: third Colab run — DS/GN counts exact (13/557), ring
   and LCZ masks all correct. CMC came out 47.1 km² vs ~37; proved no COD-AB DS
   union can give 37.31, and the zoomed water figure showed why (Colombo DS

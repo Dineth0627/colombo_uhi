@@ -61,10 +61,15 @@ colombo-uhi/
 - Colombo, Sri Lanka. Centre ≈ **6.93° N, 79.85° E**. Köppen **Af** (tropical rainforest/monsoon).
 - **Colombo Municipal Council (CMC)**: ~**37 km²** (gazetted 37.31) — the urban core.
   CMC = union of the **55 GN divisions** the CMC's own GIS Unit lists as inside the
-  municipality (`aoi.cmc.gn_division_names`). Do **not** define it as the Colombo +
-  Thimbirigasyaya DS pair: with COD-AB polygons that measures **46.87 km²**, because
-  COD-AB's Colombo DS encloses the Port's outer harbour. No DS union yields 37 km².
+  municipality (`aoi.cmc.gn_division_names`). Those 55 GN divisions exactly tile the
+  Colombo + Thimbirigasyaya DS divisions, so both routes give the **same** polygon,
+  measuring **46.9 km²** in COD-AB — not 37.31. The ~9.6 km² difference is the
+  **Colombo Port outer harbour**, which COD-AB encloses: the **land-only** area
+  (`aoi.cmc_land_area_km2`) is the figure that matches the gazetted 37 km².
 - **Colombo District**: 13 Divisional Secretariat divisions, **557 Grama Niladhari (GN) divisions**.
+  **GN names are NOT unique within the district** — always scope a GN name filter to
+  its parent DS division (or use `adm4_pcode`), or unrelated same-named divisions
+  from Dehiwala/Moratuwa/Kolonnawa will be pulled in.
 - Western Province = Colombo + Gampaha + Kalutara districts.
 - Analysis CRS: **EPSG:32644 (UTM 44N)**. Analysis grid: **30 m**.
 - Water bodies to mask: Indian Ocean, **Beira Lake**, **Bolgoda Lake**, **Kelani River**,

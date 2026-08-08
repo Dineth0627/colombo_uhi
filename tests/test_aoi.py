@@ -240,6 +240,42 @@ def test_cmc_gn_list_contains_known_landmarks(params: dict[str, Any]) -> None:
         assert expected in names, expected
 
 
+def test_cmc_gn_names_use_codab_spellings(params: dict[str, Any]) -> None:
+    """Five names differ between the CMC map and COD-AB's adm4_name.
+
+    Colab run 4 matched only 50/55 and printed the asset's spellings. These are
+    the corrections; reverting any of them silently undersizes the CMC.
+    """
+    names = set(params["aoi"]["cmc"]["gn_division_names"])
+    corrections = {
+        "Ibanwala": "Ibbanwala",
+        "Kettarama": "Khettarama",
+        "Kirulapona": "Kirulapone",
+        "Kotehena East": "Kotahena East",
+        "Kotehena West": "Kotahena West",
+    }
+    for map_spelling, codab_spelling in corrections.items():
+        assert codab_spelling in names, f"missing COD-AB spelling {codab_spelling!r}"
+        assert map_spelling not in names, f"stale CMC-map spelling {map_spelling!r}"
+
+
+def test_cmc_gn_selection_is_scoped_to_parent_ds(params: dict[str, Any]) -> None:
+    # GN names are NOT unique within Colombo District: unscoped matching pulled in
+    # same-named divisions elsewhere and made 50 units measure 47.50 km2, more than
+    # both parent DS divisions combined (46.87). Colab run 4.
+    assert params["aoi"]["cmc"]["parent_ds_scope"] is True
+
+
+def test_cmc_expected_areas_separate_land_from_administrative(
+    params: dict[str, Any],
+) -> None:
+    expected = params["aoi"]["expected_areas_km2"]
+    # 37 = gazetted, checked against the LAND area; ~47 = the raw polygon, which
+    # legitimately includes the Colombo Port outer harbour.
+    assert expected["cmc"] == 37
+    assert expected["cmc_administrative"] > expected["cmc"]
+
+
 def test_lcz_scope_is_valid(params: dict[str, Any]) -> None:
     # Set 2026-08-08: unscoped LCZ masks spanned Western Province + 25 km, making
     # "urban" 2464 km2 of built-up across Gampaha and Kalutara.
@@ -269,6 +305,7 @@ def test_modules_import_without_earthengine() -> None:
         "mask_area_km2",
         "describe_asset",
         "cmc_name_audit",
+        "cmc_land_area_km2",
     ):
         assert callable(getattr(aoi, name)), name
     for name in ("bits_to_mask", "qa_clear_mask", "qa_water_flag", "scale_sr"):

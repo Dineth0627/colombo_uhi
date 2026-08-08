@@ -558,11 +558,34 @@ def _cmc_source(params: dict[str, Any]) -> tuple[str, str, str, list[str], str]:
 
 
 def _cmc_units(params: dict[str, Any]) -> "ee.FeatureCollection":
-    """The district-filtered divisions the CMC is dissolved from."""
-    definition, _, _, _, _ = _cmc_source(params)
-    if definition == "gn_union":
-        return gn_divisions(params, district_only=True)
-    return ds_divisions(params, district_only=True)
+    """The candidate divisions the CMC is dissolved from, before name matching.
+
+    For ``gn_union`` this is scoped to the CMC's parent DS divisions when
+    ``aoi.cmc.parent_ds_scope`` is set, because **GN names are not unique within
+    Colombo District**: matching names across all 557 divisions also picked up
+    same-named divisions in Dehiwala/Moratuwa/Kolonnawa, which inflated the CMC
+    to 47.50 km2 for only 50 of 55 units — larger than both parent DS divisions
+    combined (Colab run 4, 2026-08-08). Do not remove this scoping.
+    """
+    import ee  # Deferred: see module docstring.
+
+    definition, asset_id, _, _, _ = _cmc_source(params)
+    if definition != "gn_union":
+        return ds_divisions(params, district_only=True)
+
+    units = gn_divisions(params, district_only=True)
+    cmc_cfg = params["aoi"]["cmc"]
+    if not cmc_cfg.get("parent_ds_scope", True):
+        return units
+
+    ds_property = _resolve_property(
+        asset_id,
+        params["aoi"]["assets"]["ds_name_property_candidates"],
+        "DS-division name (on the GN asset)",
+    )
+    return units.filter(
+        ee.Filter.inList(ds_property, cmc_cfg["ds_division_names"])
+    )
 
 
 def cmc_name_audit(params: dict[str, Any]) -> dict[str, Any]:
@@ -580,45 +603,31 @@ def cmc_name_audit(params: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Dict with ``definition``, ``name_property``, ``expected`` (configured
         count), ``matched`` / ``missing`` (configured names present / absent in
-        the asset), ``extra`` (division names inside the CMC's parent DS
-        divisions that are NOT on the configured list — where a misspelling
-        surfaces) and ``stated_area_km2`` (sum of the asset's own area field
-        over the matched units).
+        the candidate units), ``extra`` (candidate division names NOT on the
+        configured list — where a misspelling surfaces, since the candidates are
+        scoped to the CMC's parent DS divisions), ``matched_features`` (feature
+        count; a value above ``expected`` means duplicate names slipped in) and
+        ``stated_area_km2`` (sum of the asset's own area field over the matches).
     """
     import ee  # Deferred: see module docstring.
 
     definition, _, name_property, configured, _ = _cmc_source(params)
-    cmc_cfg = params["aoi"]["cmc"]
     assets_cfg = params["aoi"]["assets"]
 
-    units = _cmc_units(params)
+    units = _cmc_units(params)   # already scoped to the parent DS divisions
     matched_fc = units.filter(ee.Filter.inList(name_property, configured))
-    present = set(matched_fc.aggregate_array(name_property).getInfo())
+    matched_names = matched_fc.aggregate_array(name_property).getInfo()
     stated = matched_fc.aggregate_sum(assets_cfg["area_property"]).getInfo()
-
-    # "extra" = names in the CMC's parent DS divisions that are not configured.
-    if definition == "gn_union":
-        ds_property = _resolve_property(
-            assets_cfg["gn_divisions"],
-            assets_cfg["ds_name_property_candidates"],
-            "DS-division name (on the GN asset)",
-        )
-        parent = units.filter(
-            ee.Filter.inList(ds_property, cmc_cfg["ds_division_names"])
-        )
-        extra = sorted(
-            set(parent.aggregate_array(name_property).getInfo()) - set(configured)
-        )
-    else:
-        extra = sorted(set(units.aggregate_array(name_property).getInfo()) - set(configured))
+    available = set(units.aggregate_array(name_property).getInfo())
 
     return {
         "definition": definition,
         "name_property": name_property,
         "expected": len(configured),
-        "matched": sorted(present),
-        "missing": sorted(set(configured) - present),
-        "extra": extra,
+        "matched": sorted(set(matched_names)),
+        "matched_features": len(matched_names),
+        "missing": sorted(set(configured) - set(matched_names)),
+        "extra": sorted(available - set(configured)),
         "stated_area_km2": stated,
     }
 
@@ -685,13 +694,50 @@ def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
         )
 
     expected_n = cmc_cfg.get("expected_gn_count") if definition == "gn_union" else None
-    if expected_n is not None and len(configured) != expected_n:
-        warnings.warn(
-            f"aoi.cmc.gn_division_names holds {len(configured)} names but "
-            f"expected_gn_count is {expected_n} - update whichever is stale.",
-            stacklevel=2,
-        )
+    if expected_n is not None:
+        if len(configured) != expected_n:
+            warnings.warn(
+                f"aoi.cmc.gn_division_names holds {len(configured)} names but "
+                f"expected_gn_count is {expected_n} - update whichever is stale.",
+                stacklevel=2,
+            )
+        # More features than names = duplicate names matched (GN names are not
+        # unique within Colombo District; see _cmc_units). That silently enlarges
+        # the CMC with polygons from other DS divisions.
+        if len(matched_names) > expected_n:
+            warnings.warn(
+                f"CMC matched {len(matched_names)} features for {expected_n} "
+                "expected divisions - duplicate names have been included, so the "
+                "CMC is TOO LARGE and scattered. Check that "
+                "aoi.cmc.parent_ds_scope is true in config/params.yaml.",
+                stacklevel=2,
+            )
     return matched.union(_MAX_ERROR_M).geometry(_MAX_ERROR_M)
+
+
+def cmc_land_area_km2(params: dict[str, Any]) -> "ee.Number":
+    """CMC area in km2 with water excluded — the land-only figure.
+
+    The administrative polygon union measures ~47 km2 against a gazetted CMC of
+    37.31 km2 because COD-AB's Colombo DS polygon encloses the Colombo Port
+    outer harbour. Masking water tests that explanation directly and yields the
+    land area that LST statistics actually cover (CLAUDE.md requires water
+    masked before any LST statistic).
+
+    Implemented by rasterising the CMC rather than differencing geometries: the
+    water mask is a raster, and a vectorised difference would be both expensive
+    and needlessly ragged.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        ``ee.Number`` land area in km2 (call ``.getInfo()`` to print).
+    """
+    cmc_mask = _paint(cmc_boundary(params), analysis_region(params)).And(
+        water_exclusion_mask(params).Not()
+    )
+    return mask_area_km2(cmc_mask, params)
 
 
 # =============================================================================
@@ -974,6 +1020,12 @@ def urban_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     * ``"lcz_based"``: LCZ built classes (1-10 by default), clipped to
       :func:`_lcz_scope_geometry` (Colombo District by default).
 
+    Water is excluded under both methods (CLAUDE.md: water bodies must be masked
+    before any LST statistic). This matters concretely here: the administrative
+    CMC encloses the Colombo Port outer harbour, and open water would drag the
+    urban LST mean down and inflate SUHII. Unlike :func:`rural_mask` there is no
+    elevation cap — the urban core is not elevation-matched by construction.
+
     Args:
         method: One of ``uhi.suhii.rural_definitions``.
         params: Parsed params mapping.
@@ -991,7 +1043,7 @@ def urban_mask(method: str, params: dict[str, Any]) -> "ee.Image":
             suhii["lcz_based"]["urban_classes"], suhii["lcz_based"]["rural_classes"]
         )
         mask = _lcz_class_mask(params, urban_classes).clip(_lcz_scope_geometry(params))
-    return mask.rename("urban")
+    return mask.And(water_exclusion_mask(params).Not()).rename("urban")
 
 
 def _elevation_cap_mask(params: dict[str, Any]) -> "ee.Image | None":

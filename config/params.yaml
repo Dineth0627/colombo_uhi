@@ -134,7 +134,15 @@ aoi:
     expected_gn_count: 55             # every name below must match the asset; aoi.cmc_name_audit()
                                       # reports any that do not (a partial match would silently
                                       # shrink the CMC)
-    gn_division_names:                # the 55 GN divisions of the CMC, per the CMC GIS Unit map
+    parent_ds_scope: true             # Restrict GN selection to ds_division_names BEFORE matching
+                                      # names. GN names are NOT unique within Colombo District:
+                                      # matching across all 557 pulled in same-named divisions from
+                                      # Dehiwala/Moratuwa/Kolonnawa and inflated the CMC to
+                                      # 47.50 km2 for only 50 of 55 units — more than both parent DS
+                                      # divisions combined (46.87 km2). Colab run 4, 2026-08-08.
+    gn_division_names:                # the 55 GN divisions of the CMC, per the CMC GIS Unit map;
+                                      # spellings reconciled against COD-AB adm4_name in run 4 —
+                                      # five differ from the map's labels (marked below)
       - "Aluthkade East"
       - "Aluthkade West"
       - "Aluthmawatha"
@@ -150,17 +158,17 @@ aoi:
       - "Grandpass South"
       - "Havelock Town"
       - "Hunupitiya"
-      - "Ibanwala"
+      - "Ibbanwala"                   # CMC map spells it "Ibanwala"
       - "Jinthupitiya"
       - "Keselwatta"
-      - "Kettarama"
+      - "Khettarama"                  # CMC map spells it "Kettarama"
       - "Kirula"
-      - "Kirulapona"
+      - "Kirulapone"                  # CMC map spells it "Kirulapona"
       - "Kochchikade North"
       - "Kochchikade South"
       - "Kollupitiya"
-      - "Kotehena East"
-      - "Kotehena West"
+      - "Kotahena East"               # CMC map spells it "Kotehena East"
+      - "Kotahena West"               # CMC map spells it "Kotehena West"
       - "Kuppiyawatta East"
       - "Kuppiyawatta West"
       - "Kurunduwatta"
@@ -191,7 +199,13 @@ aoi:
       - "Wellawatta North"
       - "Wellawatta South"
   expected_areas_km2:                 # [DEFAULT — Phase 1] notebook sanity checks only;
-    cmc: 37                           # GAUL is simplified at 500 m, expect a few % deviation
+                                      # GAUL is simplified at 500 m, expect a few % deviation
+    cmc: 37                           # gazetted CMC (37.31). Compared against the LAND-only area
+                                      # (aoi.cmc_land_area_km2), NOT the raw polygon — see below.
+    cmc_administrative: 47            # the raw GN/DS polygon union. Expected to EXCEED the gazetted
+                                      # 37.31 because COD-AB's Colombo DS polygon encloses the
+                                      # Colombo Port outer harbour (~9.6 km2 of water; visible in
+                                      # figures/aoi_water_mask_core.png). Not an error.
     district: 699
     western_province: 3684
   expected_counts:                    # [CLAUDE.md] within Colombo District, after filtering
