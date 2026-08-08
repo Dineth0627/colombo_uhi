@@ -339,6 +339,7 @@ def annual_lst(
     daynight: str,
     params: dict[str, Any],
     geometry: "ee.Geometry | None" = None,
+    region: "ee.Geometry | None" = None,
     reducer: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -359,6 +360,10 @@ def annual_lst(
         geometry: Clip target, e.g. ``aoi.cmc_boundary(params)`` or
             ``aoi.colombo_district(params).geometry()``. ``None`` leaves the
             composites unclipped.
+        region: Geometry the source granules are filtered to, forwarded to
+            :func:`lst_collection`; defaults to
+            :func:`colombo_uhi.aoi.analysis_region`. Distinct from ``geometry``:
+            this one bounds the work, that one bounds the output.
         reducer: Central-tendency reducer; defaults to
             ``composites.modis_reducer``. Pass the SAME reducer used for the
             Landsat series when comparing the two, otherwise part of the offset
@@ -377,6 +382,7 @@ def annual_lst(
         product,
         daynight,
         params,
+        region=region,
         start_date=start_date,
         end_date=end_date,
     )

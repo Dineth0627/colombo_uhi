@@ -855,7 +855,9 @@ def _water_composite_collection(
     return merged
 
 
-def water_mask(params: dict[str, Any]) -> "ee.Image":
+def water_mask(
+    params: dict[str, Any], region: "ee.Geometry | None" = None
+) -> "ee.Image":
     """Combined 0/1 water mask (1 = water) for the analysis region.
 
     OR of three independent detectors, so a miss by any one source does not
@@ -871,15 +873,22 @@ def water_mask(params: dict[str, Any]) -> "ee.Image":
     Args:
         params: Parsed params mapping (``aoi.water_mask`` section; validated
             via :func:`validate_water_mask_params`).
+        region: Geometry to build and clip the mask over; defaults to
+            :func:`analysis_region` (the Phase 1 behaviour, which the verified
+            Phase 1 areas depend on — do not change that default). Pass a
+            smaller geometry, e.g. the district, when the mask is only needed
+            there: the source reflectance composite is built over this region,
+            so narrowing it is the single biggest saving available when Earth
+            Engine reports "User memory limit exceeded".
 
     Returns:
-        Single-band 0/1 ``ee.Image`` named ``water``, clipped to
-        :func:`analysis_region`.
+        Single-band 0/1 ``ee.Image`` named ``water``, clipped to ``region``.
     """
     import ee  # Deferred: see module docstring.
 
     cfg = validate_water_mask_params(params)
-    region = analysis_region(params)
+    if region is None:
+        region = analysis_region(params)
     collection = _water_composite_collection(params, region)
 
     reducer = {"median": ee.Reducer.median(), "mean": ee.Reducer.mean()}[
@@ -908,7 +917,9 @@ def water_mask(params: dict[str, Any]) -> "ee.Image":
 
 
 def water_exclusion_mask(
-    params: dict[str, Any], shoreline_buffer_m: float | None = None
+    params: dict[str, Any],
+    shoreline_buffer_m: float | None = None,
+    region: "ee.Geometry | None" = None,
 ) -> "ee.Image":
     """Water mask dilated by an optional shoreline buffer (1 = exclude).
 
@@ -920,6 +931,7 @@ def water_exclusion_mask(
         params: Parsed params mapping.
         shoreline_buffer_m: Dilation radius in metres; ``None`` uses
             ``aoi.water_mask.shoreline_buffer_m`` (default 0 = plain water mask).
+        region: Forwarded to :func:`water_mask`.
 
     Returns:
         Single-band 0/1 ``ee.Image`` named ``water_excluded``.
@@ -931,7 +943,7 @@ def water_exclusion_mask(
     )
     if buffer_m < 0:
         raise ValueError(f"shoreline buffer must be >= 0 m, got {buffer_m}")
-    mask = water_mask(params)
+    mask = water_mask(params, region=region)
     if buffer_m > 0:
         mask = mask.focalMax(radius=buffer_m, kernelType="circle", units="meters")
     return mask.rename("water_excluded")

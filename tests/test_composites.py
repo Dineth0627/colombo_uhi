@@ -134,6 +134,30 @@ def test_min_valid_obs_defaults_to_flag_only(params: dict[str, Any]) -> None:
     assert params["composites"]["min_valid_obs"] is None
 
 
+# --- dry_season_composites --------------------------------------------------------
+def test_dry_season_rejects_an_explicit_months_argument(
+    params: dict[str, Any],
+) -> None:
+    # It sets months from time.seasons.dry_window; accepting an override would
+    # silently produce something that is not the dry season. The guard runs
+    # before any Earth Engine import, so it is reachable here.
+    with pytest.raises(TypeError, match="dry_window"):
+        composites.dry_season_composites(None, params, months=[6, 7])
+
+
+def test_dry_season_forwards_year_bounds_through_kwargs() -> None:
+    # Notebook 02 relies on start_year/end_year reaching annual_composites, to
+    # composite ONE year instead of building 26 and filtering down to one.
+    import inspect
+
+    signature = inspect.signature(composites.dry_season_composites)
+    assert any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
+    )
+    annual = inspect.signature(composites.annual_composites).parameters
+    assert "start_year" in annual and "end_year" in annual
+
+
 # --- build_inventory_frame ----------------------------------------------------------
 def test_inventory_frame_counts_by_year_and_sensor(params: dict[str, Any]) -> None:
     years = [2000, 2000, 2001, 2015, 2015, 2015]

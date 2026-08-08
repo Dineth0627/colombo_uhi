@@ -8,7 +8,7 @@ _Last updated: 2026-08-08 (Phase 2 — code written, awaiting first Colab run)_
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
-| 2 | LST pipeline (Landsat + MODIS) | 🟡 **code written, 222 tests passing — NOT yet Colab-verified** |
+| 2 | LST pipeline (Landsat + MODIS) | 🟡 **rev 2 after Colab run 1 (memory error); 224 tests passing — awaiting run 2** |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
@@ -109,6 +109,43 @@ would have cost Colab round trips:
 - **`viz.plot_annual_lst_comparison` avoids pyplot entirely** (object-oriented
   `Figure` + `FigureCanvasAgg`); forcing a backend would break Colab's inline rendering
   for every later cell.
+
+### Colab run 1 (2026-08-08) — `User memory limit exceeded`, three real bugs
+
+Run 1 got through Steps 1-2 (collection built, both scene inventories printed)
+and died on `recent.bandNames().getInfo()` in the dry-season cell. Not a quota
+problem — three genuine design faults in my code, all now fixed:
+
+1. **`ee.Algorithms.If` evaluates BOTH branches.** I used it to substitute a
+   correctly-shaped placeholder for years with no scenes, so every one of the 26
+   composites carried the placeholder graph *and* the real reduce. Replaced by
+   merging a single fully-masked image into each year's collection
+   (`composites._padding_collection`): the reducer then always emits the full
+   band set, and because masked pixels are skipped by median, percentile and
+   count alike, `obs_count` stays honest at 0 for an empty year. Cheaper and
+   simpler than the construct it replaces.
+2. **The notebook built all 26 years to use one.** `dry_season_composites(...)`
+   then `.filter(year == 2025)` forces Earth Engine to evaluate every year's
+   graph just to read its `year` property. Now composites the mapped year alone
+   via `start_year == end_year`.
+3. **Everything ran over `analysis_region`** (Western Province + 25 km) when the
+   district would do. `aoi.water_mask()` gained an optional `region` argument —
+   it builds a Landsat reflectance composite internally, so its scope dominates
+   the cost of the whole notebook. Default unchanged, so the verified Phase 1
+   numbers still reproduce exactly.
+
+Also: `bandNames().getInfo()` forces evaluation of the whole image graph purely
+to learn names that `composites.composite_band_names()` already knows
+client-side. The notebook now uses the helper, and fetches the four scene
+properties in one metadata-only `ee.Dictionary` round trip.
+
+New notebook knobs, both documented in the notebook header: `WORK_REGION`
+(shrink first if memory fails) and `ZONAL_SCALE_M` (100 m for the 26-year
+comparison series; a spatial mean over the ~47 km2 CMC is insensitive to it, and
+the scale is stated alongside the number exactly as Phase 1 does for CMC area).
+
+`modis.annual_lst()` gained `region` (bounds the work) alongside `geometry`
+(bounds the output).
 
 ### Known limitations carried into Phase 3+
 
@@ -584,6 +621,14 @@ Locally: `python -m pytest tests/ -q` → **90 passed** at the end of Phase 1;
 
 ## Session log
 
+- **2026-08-08 — Phase 2 rev 2**: first Colab run failed with `User memory limit
+  exceeded` on the dry-season cell. Three real faults, not a quota issue:
+  `ee.Algorithms.If` evaluates both branches (replaced with a merged fully-masked
+  padding image); the notebook built 26 annual composites to display one (now
+  composites the single year); and everything ran over the province-wide
+  analysis region (now district-scoped, `aoi.water_mask` gained an optional
+  `region`). Also stopped calling `bandNames().getInfo()`, which forces full
+  graph evaluation to learn names already known client-side. 224 tests passing.
 - **2026-08-08 — Phase 2**: LST pipeline written. Re-verified the Phase 2 catalog
   specifics (no discrepancies) and found three new facts, the important one being that
   MODIS `Clear_sky_days` is an 8-bit **bitmask, not a count** — reading it raw would have

@@ -198,35 +198,36 @@ def _composite_reducer(
     ).combine(ee.Reducer.count(), sharedInputs=True)
 
 
-def _empty_composite(band_names: Sequence[str], obs_count_band: str) -> "ee.Image":
-    """Correctly-shaped placeholder for a year with no usable scenes.
+def _padding_collection(band: str) -> "ee.ImageCollection":
+    """A one-image collection holding a fully-masked scene, merged into every year.
 
-    Reducing an empty collection yields a BAND-LESS image, which blows up at the
-    first ``select()`` downstream ("Pattern did not match any bands"). This
-    keeps the year on the axis — important for the Phase 4 Mann-Kendall series —
-    with the data bands masked and ``obs_count`` an honest, unmasked 0.
+    Reducing a genuinely EMPTY collection yields a BAND-LESS image, which dies at
+    the next ``select()`` ("Pattern did not match any bands"). Merging one
+    fully-masked image into each year's collection guarantees the reducer always
+    emits the full band set, while contributing nothing to any statistic: masked
+    pixels are skipped by median, percentile and count alike, so ``obs_count``
+    stays honest at 0 for a year with no real scenes.
+
+    This replaces an earlier ``ee.Algorithms.If`` placeholder. ``If`` builds and
+    evaluates BOTH branches regardless of the condition, which made every
+    composite carry the placeholder graph as well as the real one and blew the
+    Earth Engine user memory limit in Colab run 1.
 
     Args:
-        band_names: Output band names, in order.
-        obs_count_band: Which of them is the observation count.
+        band: Band name the collection being padded carries.
 
     Returns:
-        ``ee.Image`` with exactly ``band_names``, all float.
+        Single-image ``ee.ImageCollection``, fully masked.
     """
     import ee  # Deferred: see module docstring.
 
-    bands = []
-    for name in band_names:
-        if name == obs_count_band:
-            bands.append(ee.Image.constant(0).rename(name).toFloat())
-        else:
-            bands.append(
-                ee.Image.constant(0)
-                .rename(name)
-                .toFloat()
-                .updateMask(ee.Image.constant(0))
-            )
-    return ee.Image.cat(bands)
+    masked = (
+        ee.Image.constant(0)
+        .rename(band)
+        .toFloat()
+        .updateMask(ee.Image.constant(0))
+    )
+    return ee.ImageCollection([masked])
 
 
 def annual_composites(
@@ -305,7 +306,7 @@ def annual_composites(
     raw_names = reduced_band_names(target, reducer_name, pct)
     out_names = composite_band_names(target, pct, params)
     obs_band = comp["obs_count_band"]
-    blank = _empty_composite(out_names, obs_band)
+    padding = _padding_collection(target)
 
     def per_year(year: Any) -> "ee.Image":
         year_number = ee.Number(year).toInt()
@@ -315,13 +316,12 @@ def annual_composites(
         # for every element of the collection.
         yearly = source.filterDate(start, end)
 
-        renamed = yearly.reduce(combined).select(raw_names, out_names)
+        renamed = yearly.merge(padding).reduce(combined).select(raw_names, out_names)
         # An all-masked pixel must read as 0 observations, not as a hole.
-        # Rebuilt with an explicit select() rather than addBands(overwrite=True)
-        # so the band ORDER provably matches the placeholder below — the two
-        # branches of an ee.Algorithms.If must agree on bands exactly.
+        # Rebuilt with an explicit select() rather than addBands(overwrite=True),
+        # which does not guarantee band position.
         data_bands = [name for name in out_names if name != obs_band]
-        reduced = (
+        composite = (
             ee.Image.cat(
                 [renamed.select(data_bands), renamed.select(obs_band).unmask(0)]
             )
@@ -329,9 +329,7 @@ def annual_composites(
             .toFloat()
         )
 
-        composite = ee.Image(
-            ee.Algorithms.If(yearly.size().gt(0), reduced, blank)
-        )
+        # n_scenes counts REAL scenes, so the padding image must not be included.
         return composite.set(
             {
                 comp["year_property"]: year_number,
