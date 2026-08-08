@@ -87,8 +87,8 @@ aoi:
     # While these are null, aoi.ds_divisions()/gn_divisions() fall back to the
     # GAUL district with a prominent warning, and aoi.cmc_boundary() raises an
     # actionable error (notebook 01 has step-by-step upload instructions).
-    ds_divisions: null
-    gn_divisions: null
+    ds_divisions: "projects/research-uhi-484404/assets/lka_admin3"
+    gn_divisions: "projects/research-uhi-484404/assets/lka_admin4"
   cmc:
     # CMC has no boundary in any GEE dataset. It is derived by dissolving these
     # DS divisions from the ds_divisions asset (their union ~= the ~37 km2 CMC).
