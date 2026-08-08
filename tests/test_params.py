@@ -165,6 +165,48 @@ def test_suhii_needs_two_rural_definitions(params: dict[str, Any]) -> None:
     assert "buffer_ring" in rural and "lcz_based" in rural
 
 
+def test_phase1_aoi_sections(params: dict[str, Any]) -> None:
+    aoi = params["aoi"]
+    # Sub-district boundary assets: nullable slots must exist (GAUL stops at
+    # district level for Sri Lanka — decision recorded 2026-08-08).
+    assert "ds_divisions" in aoi["assets"]
+    assert "gn_divisions" in aoi["assets"]
+    # CMC = dissolve of these DS divisions from the ds_divisions asset.
+    assert aoi["cmc"]["ds_division_names"] == ["Colombo", "Thimbirigasyaya"]
+    assert aoi["cmc"]["ds_name_property"]
+    # Notebook sanity-check areas.
+    expected = aoi["expected_areas_km2"]
+    assert expected["cmc"] == 37
+    assert expected["district"] == 699
+    assert expected["western_province"] == 3684
+    # GHSL urban-extent thresholding (asset-free buffer-ring base).
+    ue = aoi["urban_extent"]
+    assert ue["ghsl_epoch"] == 2020
+    assert 0 < ue["built_surface_threshold_m2"] <= 10000  # m2 per 100 m cell
+    assert ue["vectorize_scale_m"] == 100
+
+
+def test_phase1_water_mask_section(params: dict[str, Any]) -> None:
+    wm = params["aoi"]["water_mask"]
+    assert -1.0 <= wm["mndwi_threshold"] <= 1.0
+    assert 0.0 <= wm["qa_water_freq_threshold"] <= 1.0
+    assert 0 <= wm["jrc_occurrence_threshold_pct"] <= 100
+    assert wm["shoreline_buffer_m"] >= 0
+    comp = wm["composite"]
+    assert comp["landsat_sources"] == ["landsat8", "landsat9"]
+    assert comp["start_year"] <= comp["end_year"]
+    assert comp["months"] == params["time"]["seasons"]["dry_window"]["months"]
+    assert comp["reducer"] in ("median", "mean")
+
+
+def test_phase1_rural_reference_settings(params: dict[str, Any]) -> None:
+    suhii = params["uhi"]["suhii"]
+    assert suhii["buffer_ring"]["base"] in ("urban_extent", "cmc")
+    assert suhii["lcz_based"]["urban_classes"] == list(range(1, 11))
+    # Rural = LCZ A-G (11-17), user decision 2026-08-08; water mask removes G.
+    assert suhii["lcz_based"]["rural_classes"] == list(range(11, 18))
+
+
 def test_trend_settings(params: dict[str, Any]) -> None:
     t = params["trends"]
     assert t["series_basis"] == "annual_composite"

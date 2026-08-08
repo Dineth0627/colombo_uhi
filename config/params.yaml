@@ -78,12 +78,46 @@ aoi:
     district_property: "ADM2_NAME"    # ADM2 = district level in GAUL
     district_value: "Colombo"
   assets:
-    # GN-division polygons are NOT in GAUL/GADM [CLAUDE.md]. Upload your own
-    # shapefile/GeoJSON as an EE asset and put the full asset id here, e.g.
-    #   "projects/<your-ee-project>/assets/colombo_gn_divisions"
-    # Any code needing GN divisions must fail with a clear, actionable message
-    # while this is null.
+    # Sub-district boundaries are NOT in GAUL (Sri Lanka GAUL stops at ADM2 =
+    # district; verified 2026-08-08, decision recorded in PROGRESS.md).
+    # Free source: OCHA/HDX "Sri Lanka - Subnational Administrative Boundaries"
+    # (admin3 = DS divisions, admin4 = GN divisions). Download the shapefiles,
+    # upload each as an EE table asset, then put the full asset ids here, e.g.
+    #   "projects/research-uhi-484404/assets/lka_ds_divisions"
+    # While these are null, aoi.ds_divisions()/gn_divisions() fall back to the
+    # GAUL district with a prominent warning, and aoi.cmc_boundary() raises an
+    # actionable error (notebook 01 has step-by-step upload instructions).
+    ds_divisions: null
     gn_divisions: null
+  cmc:
+    # CMC has no boundary in any GEE dataset. It is derived by dissolving these
+    # DS divisions from the ds_divisions asset (their union ~= the ~37 km2 CMC).
+    ds_division_names: ["Colombo", "Thimbirigasyaya"]
+    ds_name_property: "ADM3_EN"       # [DEFAULT — Phase 1] attribute holding the DS name in the
+                                      # uploaded asset; ADM3_EN matches the OCHA/HDX admin3 layer
+  expected_areas_km2:                 # [DEFAULT — Phase 1] notebook sanity checks only;
+    cmc: 37                           # GAUL is simplified at 500 m, expect a few % deviation
+    district: 699
+    western_province: 3684
+  urban_extent:
+    # Asset-free "urban extent" for the buffer-ring rural reference: GHSL built
+    # surface above a threshold, vectorised. [DEFAULT — Phase 1] values.
+    ghsl_epoch: 2020                  # GHSL 5-year epoch to use
+    built_surface_threshold_m2: 2000  # >= 20% of the 100 m cell counts as built
+    vectorize_scale_m: 100            # native GHSL resolution
+  water_mask:
+    # Combined water mask = MNDWI OR QA_PIXEL-water-frequency OR JRC occurrence.
+    # All values [DEFAULT — Phase 1]; revisit before final statistics.
+    mndwi_threshold: 0.0              # MNDWI > this = water (Xu 2006 default)
+    qa_water_freq_threshold: 0.5      # fraction of clear obs with QA water bit set
+    jrc_occurrence_threshold_pct: 50  # mirrors datasets.surface_water.occurrence_threshold_pct
+    shoreline_buffer_m: 0             # optional dilation for coastal mixed pixels; 0 = off
+    composite:                        # reflectance composite for MNDWI + QA frequency
+      landsat_sources: ["landsat8", "landsat9"]   # keys under `datasets`
+      start_year: 2023
+      end_year: 2025
+      months: [1, 2, 3]               # dry window = clearest skies
+      reducer: "median"
 
 # =============================================================================
 # DATASETS — all IDs verified in the GEE catalog on 2026-08-08
@@ -349,13 +383,17 @@ uhi:
     # [CLAUDE.md] compute under >= 2 rural definitions and report sensitivity:
     rural_definitions: ["buffer_ring", "lcz_based"]
     buffer_ring:                      # [DEFAULT — Phase 3] revisit distances before final numbers
+      base: "urban_extent"            # ring base: "urban_extent" (GHSL-derived, asset-free) or
+                                      # "cmc" (needs aoi.assets.ds_divisions uploaded)
       inner_km: 15                    # ring starts this far beyond the urban-core boundary
       outer_km: 25                    # ring ends here
       exclude: ["water", "built_up"]  # rural reference excludes water + built pixels
     lcz_based:
       urban_classes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]   # LCZ built classes 1-10 (Demuzere et al. 2022)
-      rural_classes: [11, 12, 14]     # [DEFAULT — Phase 3] A=11 dense trees, B=12 scattered trees,
-                                      # D=14 low plants; adjust after inspecting Colombo's LCZ map
+      rural_classes: [11, 12, 13, 14, 15, 16, 17]      # rural = LCZ A-G (user decision 2026-08-08).
+                                      # G=17 water is removed by the water mask; E=15 (bare
+                                      # rock/paved) stays in KNOWINGLY — possible slight warm
+                                      # bias; Phase 3 sensitivity runs swap this list.
   utfvi:
     definition: "(Ts - Tmean) / Tmean"                  # [CLAUDE.md]
     breaks: [0.0, 0.005, 0.010, 0.015, 0.020]           # [CLAUDE.md] five thresholds -> six classes
