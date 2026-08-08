@@ -647,6 +647,13 @@ composites:
   year_property: "year"               # properties set on every scene and composite
   sensor_property: "sensor"
   season_property: "season"
+  zonal_batch_years: 4                # [DEFAULT — Phase 2] years fetched per request by
+                                      # composites.zonal_annual_means. A single request
+                                      # covering all 26 annual composites has to hold 26 full
+                                      # image graphs at once and exceeds the Earth Engine user
+                                      # memory limit (Colab run 2, 2026-08-08). Batching changes
+                                      # no numbers, only the number of round trips. Lower it to
+                                      # 1 if memory is still exceeded.
   reduce_max_pixels: 10000000000      # [DEFAULT — Phase 2] explicit ceiling for reduceRegion.
   tile_scale: 4                       # [DEFAULT — Phase 2] shrinks reducer tiles to avoid
                                       # out-of-memory errors. Preferred over bestEffort=True,

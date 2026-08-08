@@ -93,7 +93,9 @@ def resolve_percentile(percentile: int | None, params: dict[str, Any]) -> int:
     return resolved
 
 
-def reduced_band_names(band: str, reducer_name: str, percentile: int) -> list[str]:
+def reduced_band_names(
+    band: str, reducer_name: str, percentile: int | None
+) -> list[str]:
     """Band names Earth Engine produces from the combined reducer.
 
     ``ImageCollection.reduce`` prefixes single-input reducer outputs with the
@@ -103,37 +105,42 @@ def reduced_band_names(band: str, reducer_name: str, percentile: int) -> list[st
     Args:
         band: Input band name.
         reducer_name: A name from :data:`CENTRAL_REDUCERS`.
-        percentile: Integer percentile.
+        percentile: Integer percentile, or ``None`` to omit the percentile band.
 
     Returns:
-        The three raw output band names, in reducer order.
+        The raw output band names, in reducer order.
     """
-    return [f"{band}_{reducer_name}", f"{band}_p{percentile}", f"{band}_count"]
+    names = [f"{band}_{reducer_name}"]
+    if percentile is not None:
+        names.append(f"{band}_p{percentile}")
+    names.append(f"{band}_count")
+    return names
 
 
 def composite_band_names(
-    band: str, percentile: int, params: dict[str, Any]
+    band: str, percentile: int | None, params: dict[str, Any]
 ) -> list[str]:
     """Band names a composite is renamed to, in order.
 
     The central-tendency band keeps the plain input name (``LST_C``) rather than
     a reducer-suffixed one, so downstream phases have a stable band to select
     regardless of which reducer produced it; the reducer is recorded as an image
-    property instead.
+    property instead. ``obs_count`` is always present (CLAUDE.md caveat 2).
 
     Args:
         band: Input band name.
-        percentile: Integer percentile.
+        percentile: Integer percentile, or ``None`` to omit the percentile band.
         params: Parsed params mapping (``composites.obs_count_band``).
 
     Returns:
-        ``[band, f"{band}_p{percentile}", obs_count_band]``.
+        ``[band, f"{band}_p{percentile}", obs_count_band]``, with the middle
+        entry omitted when ``percentile`` is ``None``.
     """
-    return [
-        band,
-        f"{band}_p{percentile}",
-        params["composites"]["obs_count_band"],
-    ]
+    names = [band]
+    if percentile is not None:
+        names.append(f"{band}_p{percentile}")
+    names.append(params["composites"]["obs_count_band"])
+    return names
 
 
 # =============================================================================
@@ -169,33 +176,39 @@ def valid_obs_count(
 
 
 def _composite_reducer(
-    reducer_name: str, percentile: int
+    reducer_name: str, percentile: int | None
 ) -> "ee.Reducer":
-    """Combined central-tendency + percentile + count reducer.
+    """Combined central-tendency (+ percentile) + count reducer.
 
-    One pass over a shared sorted accumulator, which is cheaper than three
-    separate reduce calls.
+    One pass over a shared accumulator, cheaper than separate reduce calls.
+
+    Omitting the percentile is a large saving, not a cosmetic one: a percentile
+    reducer must retain every observation per pixel to sort them, whereas mean
+    and count are streaming accumulators. Over a 26-year series that difference
+    is what decides whether the request fits in the Earth Engine memory limit.
 
     Args:
         reducer_name: A name from :data:`CENTRAL_REDUCERS`.
-        percentile: Integer percentile.
+        percentile: Integer percentile, or ``None`` to omit it.
 
     Returns:
         The combined ``ee.Reducer``.
     """
     import ee  # Deferred: see module docstring.
 
-    central = {
+    reducer = {
         "median": ee.Reducer.median,
         "mean": ee.Reducer.mean,
     }[reducer_name]()
     # sharedInputs=True is load-bearing: without it the combined reducer reports
-    # three INPUTS, ImageCollection.reduce switches to using output names
+    # multiple INPUTS, ImageCollection.reduce switches to using output names
     # directly, and the bands come back as bare median/p90/count (and error
-    # unless the collection happens to have exactly three bands).
-    return central.combine(
-        ee.Reducer.percentile([percentile]), sharedInputs=True
-    ).combine(ee.Reducer.count(), sharedInputs=True)
+    # unless the collection happens to have exactly that many bands).
+    if percentile is not None:
+        reducer = reducer.combine(
+            ee.Reducer.percentile([percentile]), sharedInputs=True
+        )
+    return reducer.combine(ee.Reducer.count(), sharedInputs=True)
 
 
 def _padding_collection(band: str) -> "ee.ImageCollection":
@@ -239,6 +252,7 @@ def annual_composites(
     percentile: int | None = None,
     start_year: int | None = None,
     end_year: int | None = None,
+    with_percentile: bool = True,
 ) -> "ee.ImageCollection":
     """One composite per calendar year, each with a valid-observation count.
 
@@ -276,6 +290,12 @@ def annual_composites(
         percentile: Upper percentile; defaults to ``composites.percentile``.
         start_year: First year; defaults to ``time.start_year``.
         end_year: Last year, inclusive; defaults to ``time.end_year``.
+        with_percentile: Set ``False`` to omit the percentile band. A percentile
+            reducer must retain every observation per pixel in order to sort
+            them; mean and count are streaming. Turning it off is the cheapest
+            way to fit a long series inside the Earth Engine memory limit, and
+            it costs nothing when only the central-tendency band is wanted (as
+            in the Landsat-vs-MODIS comparison).
 
     Returns:
         ``ee.ImageCollection`` with one image per year, ascending.
@@ -287,7 +307,7 @@ def annual_composites(
     comp = params["composites"]
     target = band or params["landsat_c2l2"]["lst_band_name"]
     reducer_name = resolve_reducer_name(reducer, params)
-    pct = resolve_percentile(percentile, params)
+    pct = resolve_percentile(percentile, params) if with_percentile else None
 
     first_year = int(params["time"]["start_year"] if start_year is None else start_year)
     last_year = int(params["time"]["end_year"] if end_year is None else end_year)
@@ -330,15 +350,17 @@ def annual_composites(
         )
 
         # n_scenes counts REAL scenes, so the padding image must not be included.
-        return composite.set(
-            {
-                comp["year_property"]: year_number,
-                comp["n_scenes_property"]: yearly.size(),
-                "reducer": reducer_name,
-                "percentile": pct,
-                "system:time_start": start.millis(),
-            }
-        )
+        # `percentile` is omitted rather than set to None when the band is not
+        # produced; ee.Image.set rejects a null value.
+        properties: dict[str, Any] = {
+            comp["year_property"]: year_number,
+            comp["n_scenes_property"]: yearly.size(),
+            "reducer": reducer_name,
+            "system:time_start": start.millis(),
+        }
+        if pct is not None:
+            properties["percentile"] = pct
+        return composite.set(properties)
 
     years = ee.List.sequence(first_year, last_year)
     return ee.ImageCollection.fromImages(years.map(per_year))
@@ -480,6 +502,9 @@ def zonal_annual_means(
     params: dict[str, Any],
     band: str | None = None,
     scale_m: int | None = None,
+    batch_years: int | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
 ) -> "pd.DataFrame":
     """Year -> spatial mean table over one geometry, with a valid-pixel count.
 
@@ -487,10 +512,16 @@ def zonal_annual_means(
     valid pixels the mean rests on, so CLAUDE.md caveat 2 applies to the table
     and not only to the rasters.
 
-    Implemented as one ``FeatureCollection.getInfo()`` rather than
+    Each request uses a ``FeatureCollection.getInfo()`` rather than
     ``aggregate_array``: when a year is fully masked, ``reduceRegion`` still
     returns the key with a null value, so the row survives as ``NaN`` instead of
     silently shortening the array and misaligning every later year.
+
+    The series is fetched in **batches of years**, because a single request
+    covering 26 annual composites has to hold 26 full image graphs at once and
+    exceeds the Earth Engine user memory limit (observed in Colab run 2). The
+    batches are cut on a client-side year list, so no extra round trip is needed
+    to discover them, and the numbers are identical to an unbatched fetch.
 
     Args:
         collection: Composites (or any collection) carrying the year property.
@@ -499,22 +530,38 @@ def zonal_annual_means(
         band: Band to average; defaults to ``landsat_c2l2.lst_band_name``.
         scale_m: Reduction scale; defaults to ``crs.analysis_scale_m``. Pass
             the sensor's native scale for MODIS (``modis_lst.reduction_scale_m``).
+        batch_years: Years per request; defaults to
+            ``composites.zonal_batch_years``. Lower it if Earth Engine still
+            reports a memory limit; 1 is valid and simply means one request per
+            year.
+        start_year: First year to request; defaults to ``time.start_year``.
+        end_year: Last year, inclusive; defaults to ``time.end_year``.
 
     Returns:
         ``pandas.DataFrame`` with columns ``year``, ``mean``, ``valid_pixels``,
         sorted by year.
 
     Raises:
+        ValueError: If ``batch_years`` is less than 1.
         RuntimeError: If Earth Engine returns unexpected property names, rather
             than quietly producing an all-NaN table.
     """
-    import ee  # Deferred: see module docstring.
-    import pandas as pd
-
     comp = params["composites"]
     target = band or params["landsat_c2l2"]["lst_band_name"]
     scale = int(scale_m or params["crs"]["analysis_scale_m"])
     year_prop = comp["year_property"]
+
+    # Validation runs BEFORE the deferred import so it stays unit-testable on a
+    # machine without earthengine-api.
+    batch = int(comp["zonal_batch_years"] if batch_years is None else batch_years)
+    if batch < 1:
+        raise ValueError(f"batch_years must be >= 1, got {batch}")
+
+    import ee  # Deferred: see module docstring.
+
+    first_year = int(params["time"]["start_year"] if start_year is None else start_year)
+    last_year = int(params["time"]["end_year"] if end_year is None else end_year)
+    all_years = list(range(first_year, last_year + 1))
 
     reducer = ee.Reducer.mean().combine(ee.Reducer.count(), sharedInputs=True)
 
@@ -529,12 +576,12 @@ def zonal_annual_means(
         # ee.Feature(None, ...) keeps the payload to properties only.
         return ee.Feature(None, stats.set(year_prop, image.get(year_prop)))
 
-    rows = [
-        feature["properties"]
-        for feature in ee.FeatureCollection(collection.map(to_feature)).getInfo()[
-            "features"
-        ]
-    ]
+    rows: list[dict[str, Any]] = []
+    for offset in range(0, len(all_years), batch):
+        chunk = all_years[offset : offset + batch]
+        subset = collection.filter(ee.Filter.inList(year_prop, chunk))
+        features = ee.FeatureCollection(subset.map(to_feature)).getInfo()["features"]
+        rows.extend(feature["properties"] for feature in features)
     return build_zonal_frame(rows, target, params)
 
 

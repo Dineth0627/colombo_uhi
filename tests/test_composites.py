@@ -123,10 +123,60 @@ def test_composite_band_names_align_with_reduced_names(
         assert len(raw) == len(out) == 3
 
 
+# --- zonal batching ----------------------------------------------------------------
+def test_zonal_batch_size_is_configured(params: dict[str, Any]) -> None:
+    assert params["composites"]["zonal_batch_years"] >= 1
+
+
+def test_zonal_batching_covers_the_study_period_exactly() -> None:
+    # Mirrors the chunking in zonal_annual_means: every year requested once,
+    # none dropped, none duplicated - a batching bug would silently truncate
+    # the series rather than fail.
+    for batch in (1, 3, 4, 7, 26, 100):
+        years = list(range(2000, 2026))
+        chunks = [years[i : i + batch] for i in range(0, len(years), batch)]
+        flattened = [year for chunk in chunks for year in chunk]
+        assert flattened == years, batch
+        assert all(1 <= len(chunk) <= batch for chunk in chunks)
+
+
+def test_zonal_annual_means_rejects_a_zero_batch(params: dict[str, Any]) -> None:
+    # Guard runs before any Earth Engine work; batch 0 would loop forever.
+    with pytest.raises(ValueError, match="batch_years"):
+        composites.zonal_annual_means(
+            None, None, params, batch_years=0
+        )
+
+
 def test_obs_count_band_is_always_present(params: dict[str, Any]) -> None:
     # CLAUDE.md caveat 2: no composite may exist without its observation count.
-    names = composites.composite_band_names("LST_C", 90, params)
-    assert params["composites"]["obs_count_band"] in names
+    for percentile in (90, None):
+        names = composites.composite_band_names("LST_C", percentile, params)
+        assert params["composites"]["obs_count_band"] in names
+
+
+def test_band_names_drop_the_percentile_when_it_is_none(
+    params: dict[str, Any],
+) -> None:
+    # with_percentile=False avoids the sorted accumulator a percentile reducer
+    # needs, which is what keeps a 26-year series inside the EE memory limit.
+    assert composites.reduced_band_names("LST_C", "mean", None) == [
+        "LST_C_mean",
+        "LST_C_count",
+    ]
+    assert composites.composite_band_names("LST_C", None, params) == [
+        "LST_C",
+        "obs_count",
+    ]
+
+
+def test_band_name_lists_stay_the_same_length(params: dict[str, Any]) -> None:
+    # annual_composites renames positionally, so raw and output lists must match
+    # in length whether or not the percentile band is produced.
+    for percentile in (90, None):
+        raw = composites.reduced_band_names("LST_C", "mean", percentile)
+        out = composites.composite_band_names("LST_C", percentile, params)
+        assert len(raw) == len(out)
 
 
 def test_min_valid_obs_defaults_to_flag_only(params: dict[str, Any]) -> None:

@@ -8,7 +8,7 @@ _Last updated: 2026-08-08 (Phase 2 — code written, awaiting first Colab run)_
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
-| 2 | LST pipeline (Landsat + MODIS) | 🟡 **rev 2 after Colab run 1 (memory error); 224 tests passing — awaiting run 2** |
+| 2 | LST pipeline (Landsat + MODIS) | 🟡 **rev 3 after Colab runs 1-2 (memory errors); 229 tests passing — awaiting run 3** |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
@@ -146,6 +146,34 @@ the scale is stated alongside the number exactly as Phase 1 does for CMC area).
 
 `modis.annual_lst()` gained `region` (bounds the work) alongside `geometry`
 (bounds the output).
+
+### Colab run 2 (2026-08-08) — memory again, this time in the comparison series
+
+Run 2 got through Steps 1-5 (collection, inventories, dry-season map,
+observation counts, MODIS) and died in `zonal_annual_means` on the Landsat
+series. Cause: **one request cannot hold 26 annual composite graphs at once.**
+The single-round-trip design was right for alignment and wrong for memory. Two
+fixes, neither of which changes any number:
+
+1. **`annual_composites(..., with_percentile=False)`** — the biggest saving. A
+   percentile reducer must retain every observation per pixel in order to sort
+   them; mean and count are streaming accumulators. The comparison plot uses
+   only the mean, so `p90` was pure cost across 26 years. The percentile is
+   still produced by default everywhere else (the dry-season map keeps it).
+2. **Batched fetching** in `zonal_annual_means` (`composites.zonal_batch_years`,
+   default 4, `batch_years=` to override, 1 is valid). Batches are cut on a
+   client-side year list, so no extra round trip is needed to discover them, and
+   the alignment guarantee that motivated the single-request design is preserved
+   *within* each batch — a fully-masked year still comes back as a `NaN` row.
+
+The notebook also splits the Landsat and MODIS series into separate cells, so a
+failure in one does not cost the other, and its header now lists the four memory
+levers in order of effect.
+
+**Lesson for Phases 4-7**, where 26-year series get much heavier: assume any
+whole-series `getInfo` will exceed the memory limit, and reach for
+drop-unneeded-reducers → batch → narrow region → coarsen scale, in that order.
+Only the last one changes the numbers.
 
 ### Known limitations carried into Phase 3+
 
@@ -621,6 +649,12 @@ Locally: `python -m pytest tests/ -q` → **90 passed** at the end of Phase 1;
 
 ## Session log
 
+- **2026-08-08 — Phase 2 rev 3**: second Colab run cleared Steps 1-5 and died in
+  `zonal_annual_means` — one request cannot hold 26 annual composite graphs.
+  Added `with_percentile=False` (a percentile reducer retains every observation
+  per pixel to sort them; mean/count stream) and batched the fetch
+  (`composites.zonal_batch_years`, default 4). Neither changes a number. Landsat
+  and MODIS series split into separate notebook cells. 229 tests passing.
 - **2026-08-08 — Phase 2 rev 2**: first Colab run failed with `User memory limit
   exceeded` on the dry-season cell. Three real faults, not a quota issue:
   `ee.Algorithms.If` evaluates both branches (replaced with a merged fully-masked
