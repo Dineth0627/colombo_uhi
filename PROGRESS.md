@@ -1,13 +1,13 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 1 session)_
+_Last updated: 2026-08-08 (Phase 1b session)_
 
 ## Status snapshot
 
 | Phase | Content | Status |
 |---|---|---|
-| 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done (Colab verification pending — see below) |
-| 1 | AOI & boundaries | ✅ code done (Colab run + DS/GN asset upload pending — see below) |
+| 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
+| 1 | AOI & boundaries | 🔄 Colab run 1 done; 3 bugs fixed, re-run pending (see Phase 1b) |
 | 2 | LST pipeline (Landsat + MODIS) | ⬜ |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
@@ -28,6 +28,69 @@ _Last updated: 2026-08-08 (Phase 1 session)_
 - [x] `notebooks/00_setup_and_auth.ipynb` (functional) + 01–08 stubs
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
+
+## Phase 1b — Colab run 1 results + fixes (2026-08-08)
+
+User uploaded `projects/research-uhi-484404/assets/lka_admin3` (DS) and
+`.../lka_admin4` (GN) and ran notebook 01 end-to-end. **No crashes**; EE auth,
+water mask, both rural references and the map all built.
+
+| Check | Result | Verdict |
+|---|---|---|
+| Colombo District | 1 feature, **685.6 km²** (exp. 699) | ✅ |
+| Western Province | 3 features (Colombo/Gampaha/Kalutara), **3761.7 km²** (exp. 3684) | ✅ |
+| DS divisions | **339** (expected 13) | ❌ → fixed |
+| GN divisions | **14043** (expected 557) | ❌ → fixed |
+| CMC | **0.0 km²** (expected ~37) | ❌ → fixed |
+| Urban extent (GHSL) | 510.7 km² | ✅ plausible |
+| Rural buffer ring | **4049 km²** | ⚠️ → base changed |
+
+### Bugs found and fixed
+
+1. **No district filter.** 339 / 14 043 are Sri Lanka's *national* DS/GN counts
+   — the assets are correct, but the loaders returned the raw country-wide
+   collections. Fixed: `ds_divisions()` / `gn_divisions()` take
+   `district_only=True` and filter by the asset's parent-district column, or —
+   when the asset has none — by a centroid-within-GAUL-district spatial test.
+2. **CMC returned 0 km² silently.** The `ADM3_EN` guess did not match, and an
+   empty filter + `union()` yields an empty geometry indistinguishable from a
+   real answer. Root cause: HDX serves **two** Sri Lanka boundary products with
+   different schemas — OCHA COD-AB (`ADM3_EN`, `ADM2_EN`) and geoBoundaries
+   (`shapeName`, no parent-district column) — and we cannot know which was
+   downloaded. Fixed three ways:
+   - `aoi.assets.*_candidates` lists in params; `_resolve_property()` picks the
+     first present and otherwise **raises listing the asset's real property
+     names** (one `getInfo` per asset per session, cached).
+   - `cmc_boundary()` now **raises when zero DS divisions match**, printing the
+     DS names actually present in Colombo District.
+   - `aoi.describe_asset()` + a new first notebook cell print each asset's
+     count, schema and sample values up front.
+3. **Ring base.** 4049 km² because the ring was built around the province-wide
+   GHSL urban extent (every built patch), not Colombo's core.
+
+### Phase 1b decisions (user-approved 2026-08-08)
+
+5. **`buffer_ring.base` → `"cmc"`** — textbook SUHII: a 15–25 km ring around the
+   ~37 km² municipal core. `urban_extent()` stays as a map layer and an
+   alternative base.
+6. **Rural elevation cap = 100 m** (`uhi.suhii.rural_filters.max_elevation_m`,
+   SRTM), applied to rural masks under **both** definitions, urban masks
+   untouched. Rationale: the ring reaches inland relief (~50–150 m); at a
+   ~6.5 °C/km lapse rate that is up to ~0.65 °C of elevation-driven cooling
+   contaminating SUHII.
+
+### Also added
+
+- `src/colombo_uhi/viz.py` — `outline_image`, `elevation_backdrop`,
+  `save_thumbnail`. Notebook 01 now writes **four PNGs to `figures/`**
+  (`aoi_boundaries`, `aoi_water_mask`, `aoi_rural_lcz`,
+  `aoi_rural_buffer_ring`). The `geemap.Map` widget renders nothing once a
+  notebook is saved, so those PNGs are the reviewable evidence.
+- `aoi.mask_area_km2()` + a notebook cell printing every mask's area — the guard
+  against the elevation cap silently emptying the rural reference.
+- Notebook 01 degrades gracefully: if the CMC still fails, the LCZ method, water
+  mask and their figures still run.
+- 82 tests passing (was 71).
 
 ## Phase 1 — done this session (2026-08-08)
 
@@ -134,18 +197,18 @@ _Last updated: 2026-08-08 (Phase 1 session)_
 
 Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
 
-## What you must run to verify Phase 1
+## What you must run to verify Phase 1 (re-run after the 1b fixes)
 
-1. Commit + push, then open `notebooks/01_aoi_and_boundaries.ipynb` in Colab
-   and run all cells (needs the working notebook-00 auth from Phase 0).
-2. Work through the **visual verification checklist** at the bottom of the
-   notebook: district ≈ 699 km² (1 feature), province ≈ 3684 km² (3 features),
-   water mask covers all five named water bodies, ring sits 15–25 km outside
-   the urban extent, LCZ masks look sane.
-3. When ready, follow the notebook's HDX upload instructions and fill
-   `aoi.assets.ds_divisions` / `gn_divisions`; re-run to check DS = 13,
-   GN = 557, CMC ≈ 37 km².
-4. Locally: `python -m pytest tests/ -q` → 71 passed.
+1. Commit + push, then re-run `notebooks/01_aoi_and_boundaries.ipynb` in Colab.
+2. The new **first cell** prints each uploaded asset's property names — that
+   output is what tells us whether the assets are COD-AB or geoBoundaries.
+3. Confirm: DS = **13**, GN = **557**, CMC ≈ **37 km²**, ring far smaller than
+   4049 km², and no mask flagged near-empty.
+   If CMC still fails, the error now lists the DS names present — paste the
+   right ones into `aoi.cmc.ds_division_names`.
+4. **Send back the four PNGs from `figures/`** (or the saved notebook) so the
+   water mask and rural references can be reviewed before Phase 2.
+5. Locally: `python -m pytest tests/ -q` → 82 passed.
 
 ## What you must run to verify Phase 0
 
@@ -171,6 +234,13 @@ Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
   catalog Browser pane (17 ✅, 1 ❌ GSOD); wrote params.yaml, auth module,
   tests (30 passing), notebook 00, stubs, README. No LST processing code
   written (per session scope). Nothing committed to git yet.
+- **2026-08-08 — Phase 1b**: first Colab run of notebook 01. Boundaries/areas
+  correct; found 3 bugs (no district filter on the uploaded assets → 339/14043;
+  silent 0 km² CMC from an unmatched attribute name; ring based on the
+  province-wide GHSL extent → 4049 km²). Fixed with candidate-based schema
+  resolution + loud failures, district filtering (attribute or centroid
+  fallback), `base: "cmc"`, and a 100 m SRTM cap on rural masks. Added `viz.py`
+  + four persistent PNGs and `mask_area_km2` emptiness guard. 82 tests passing.
 - **2026-08-08 — Phase 1**: study-area layer. Confirmed GAUL has no DS/GN/CMC
   for Sri Lanka → asset-slot design approved by user; LCZ rural set to A–G.
   Wrote `aoi.py` (boundaries, urban extent, water mask, dual rural refs),

@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from colombo_uhi import aoi, landsat, load_params
+from colombo_uhi import aoi, landsat, load_params, viz
 
 
 @pytest.fixture(scope="module")
@@ -148,6 +148,57 @@ def test_water_mask_params_rejects_bad_values(
         aoi.validate_water_mask_params(params_copy)
 
 
+# --- aoi.validate_property_candidates -------------------------------------------
+def test_property_candidates_from_params_are_valid(params: dict[str, Any]) -> None:
+    assets = params["aoi"]["assets"]
+    for key in (
+        "ds_name_property_candidates",
+        "gn_name_property_candidates",
+        "district_property_candidates",
+    ):
+        resolved = aoi.validate_property_candidates(assets[key], key)
+        assert resolved == assets[key]
+
+
+@pytest.mark.parametrize(
+    "candidates",
+    [
+        [],                          # empty
+        ["ADM3_EN", "ADM3_EN"],      # duplicate
+        ["ADM3_EN", ""],             # blank
+        ["ADM3_EN", "   "],          # whitespace only
+        ["ADM3_EN", None],           # non-string
+        ["ADM3_EN", 3],              # non-string
+    ],
+)
+def test_property_candidates_rejects_bad_lists(candidates: list[Any]) -> None:
+    with pytest.raises(ValueError):
+        aoi.validate_property_candidates(candidates, "test")
+
+
+def test_property_candidates_error_names_the_label() -> None:
+    with pytest.raises(ValueError, match="DS-division name"):
+        aoi.validate_property_candidates([], "DS-division name")
+
+
+# --- Phase 1b config expectations -------------------------------------------------
+def test_expected_counts_match_claude_md(params: dict[str, Any]) -> None:
+    counts = params["aoi"]["expected_counts"]
+    assert counts["ds_divisions"] == params["aoi"]["district"]["ds_divisions"] == 13
+    assert counts["gn_divisions"] == params["aoi"]["district"]["gn_divisions"] == 557
+
+
+def test_buffer_ring_base_is_cmc(params: dict[str, Any]) -> None:
+    # Set 2026-08-08: basing the ring on the province-wide GHSL urban extent
+    # produced a 4049 km2 ring that was not centred on Colombo.
+    assert params["uhi"]["suhii"]["buffer_ring"]["base"] == "cmc"
+
+
+def test_rural_elevation_cap(params: dict[str, Any]) -> None:
+    max_elev = params["uhi"]["suhii"]["rural_filters"]["max_elevation_m"]
+    assert max_elev is None or max_elev > 0
+
+
 # --- import hygiene -------------------------------------------------------------
 def test_modules_import_without_earthengine() -> None:
     # Deferred `import ee` rule: importing the modules must never require
@@ -168,7 +219,11 @@ def test_modules_import_without_earthengine() -> None:
         "rural_mask",
         "rural_reference",
         "area_km2",
+        "mask_area_km2",
+        "describe_asset",
     ):
         assert callable(getattr(aoi, name)), name
     for name in ("bits_to_mask", "qa_clear_mask", "qa_water_flag", "scale_sr"):
         assert callable(getattr(landsat, name)), name
+    for name in ("outline_image", "elevation_backdrop", "save_thumbnail"):
+        assert callable(getattr(viz, name)), name

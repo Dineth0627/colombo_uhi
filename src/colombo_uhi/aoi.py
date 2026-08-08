@@ -41,6 +41,10 @@ _MAX_ERROR_M = 10
 LCZ_BUILT_RANGE = (1, 10)
 LCZ_NATURAL_RANGE = (11, 17)
 
+#: Cache of {asset_id: [property names]} so schema resolution costs one
+#: round-trip per asset per session (see :func:`_asset_property_names`).
+_PROPERTY_CACHE: dict[str, list[str]] = {}
+
 
 # =============================================================================
 # Pure-Python validation helpers (unit-tested; no Earth Engine)
@@ -178,6 +182,137 @@ def validate_water_mask_params(params: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+def validate_property_candidates(candidates: Sequence[str], label: str) -> list[str]:
+    """Validate a list of candidate attribute names for an uploaded asset.
+
+    Args:
+        candidates: Candidate property names, tried in order.
+        label: Human-readable name of what is being resolved (for errors).
+
+    Returns:
+        The candidates as a list of strings.
+
+    Raises:
+        ValueError: If the list is empty, holds a non-string or blank entry,
+            or repeats a name.
+    """
+    if not candidates:
+        raise ValueError(f"{label}: candidate property list must not be empty")
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            raise ValueError(
+                f"{label}: candidate property names must be non-empty strings, "
+                f"got {candidate!r}"
+            )
+    duplicates = {c for c in candidates if list(candidates).count(c) > 1}
+    if duplicates:
+        raise ValueError(f"{label}: duplicate candidate properties {sorted(duplicates)}")
+    return list(candidates)
+
+
+# =============================================================================
+# Uploaded-asset schema resolution (the only client-side calls in this module)
+# =============================================================================
+# The DS/GN assets are user-uploaded, so their attribute schema is not knowable
+# in advance: OCHA COD-AB uses ADM3_EN/ADM2_EN, geoBoundaries uses shapeName and
+# carries no parent-district column at all. Guessing wrong once already cost a
+# Colab round trip and produced a silent 0 km2 CMC (2026-08-08), so these
+# helpers read the asset's real schema and fail loudly with it. Each does ONE
+# getInfo per asset per session (cached) — never inside a loop.
+def _asset_property_names(asset_id: str) -> list[str]:
+    """Return (and cache) the property names of an uploaded FeatureCollection."""
+    import ee  # Deferred: see module docstring.
+
+    if asset_id not in _PROPERTY_CACHE:
+        first = ee.FeatureCollection(asset_id).first()
+        _PROPERTY_CACHE[asset_id] = list(first.propertyNames().getInfo())
+    return _PROPERTY_CACHE[asset_id]
+
+
+def _resolve_property(
+    asset_id: str,
+    candidates: Sequence[str],
+    label: str,
+    override: str | None = None,
+    required: bool = True,
+) -> str | None:
+    """Resolve an attribute name on an uploaded asset from candidates.
+
+    Args:
+        asset_id: Earth Engine table asset id.
+        candidates: Property names to try, in order.
+        label: What is being resolved, e.g. ``"DS-division name"``.
+        override: Explicit property name from params; used verbatim if set.
+        required: When True, raise if nothing matches; when False, return None
+            (used for the optional parent-district column).
+
+    Returns:
+        The resolved property name, or None when ``required`` is False and no
+        candidate is present.
+
+    Raises:
+        ValueError: If no candidate matches and ``required`` is True. The
+            message lists the asset's ACTUAL property names so the fix is a
+            one-line params edit rather than another guess.
+    """
+    validate_property_candidates(candidates, label)
+    available = _asset_property_names(asset_id)
+
+    if override:
+        if override not in available:
+            raise ValueError(
+                f"{label}: property '{override}' (set in config/params.yaml) is "
+                f"not in asset '{asset_id}'. Available properties: {available}"
+            )
+        return override
+
+    for candidate in candidates:
+        if candidate in available:
+            return candidate
+
+    if not required:
+        return None
+    raise ValueError(
+        f"{label}: none of the candidate properties {list(candidates)} exist in "
+        f"asset '{asset_id}'. Available properties: {available}\n"
+        "Fix: add the correct name to the matching *_candidates list under "
+        "aoi.assets in config/params.yaml (or set the explicit override)."
+    )
+
+
+def describe_asset(asset_id: str, n_samples: int = 3) -> dict[str, Any]:
+    """Diagnostic: report an uploaded asset's size, schema and sample values.
+
+    Call this from a notebook when a filter unexpectedly matches nothing — it
+    shows the attribute names and example values to filter on. Unlike the rest
+    of this module it is *meant* to evaluate client-side.
+
+    Args:
+        asset_id: Earth Engine table asset id.
+        n_samples: Number of features to sample property values from.
+
+    Returns:
+        Dict with ``asset_id``, ``count``, ``properties`` and ``samples``
+        (a list of per-feature property dicts).
+    """
+    import ee  # Deferred: see module docstring.
+
+    fc = ee.FeatureCollection(asset_id)
+    properties = _asset_property_names(asset_id)
+    samples = (
+        fc.limit(n_samples)
+        .toList(n_samples)
+        .map(lambda f: ee.Feature(f).toDictionary())
+        .getInfo()
+    )
+    return {
+        "asset_id": asset_id,
+        "count": fc.size().getInfo(),
+        "properties": properties,
+        "samples": samples,
+    }
+
+
 # =============================================================================
 # Administrative boundaries
 # =============================================================================
@@ -250,15 +385,71 @@ def _missing_asset_fallback(kind: str, params: dict[str, Any]) -> "ee.FeatureCol
     return colombo_district(params)
 
 
-def ds_divisions(params: dict[str, Any]) -> "ee.FeatureCollection":
+def _filter_to_district(
+    fc: "ee.FeatureCollection", asset_id: str, params: dict[str, Any]
+) -> "ee.FeatureCollection":
+    """Restrict a nationwide boundary asset to Colombo District.
+
+    Prefers an attribute filter on the asset's parent-district column. The
+    geoBoundaries products carry no such column, so the fallback is spatial:
+    keep features whose CENTROID falls inside the GAUL district (plain
+    ``filterBounds`` would also pull in neighbouring districts' units that
+    merely touch the 500 m-simplified GAUL edge).
+    """
+    import ee  # Deferred: see module docstring.
+
+    assets_cfg = params["aoi"]["assets"]
+    district_property = _resolve_property(
+        asset_id,
+        assets_cfg["district_property_candidates"],
+        "parent-district",
+        required=False,
+    )
+    if district_property is not None:
+        return fc.filter(
+            ee.Filter.eq(district_property, assets_cfg["district_value"])
+        )
+
+    warnings.warn(
+        f"asset '{asset_id}' has no parent-district column "
+        f"(tried {assets_cfg['district_property_candidates']}); falling back to "
+        "a centroid-within-GAUL-district spatial filter. Counts may differ by a "
+        "unit or two along the district edge - verify against the expected "
+        "13 DS / 557 GN.",
+        stacklevel=3,
+    )
+    district_geom = colombo_district(params).geometry(_MAX_ERROR_M)
+
+    def tag_centroid(feature: "ee.Feature") -> "ee.Feature":
+        centroid = feature.geometry().centroid(_MAX_ERROR_M)
+        return feature.set(
+            "_centroid_in_district",
+            district_geom.contains(centroid, _MAX_ERROR_M),
+        )
+
+    return (
+        fc.filterBounds(district_geom)          # cheap pre-filter
+        .map(tag_centroid)
+        # ee.Boolean is backed by a number server-side, so compare against 1.
+        .filter(ee.Filter.eq("_centroid_in_district", 1))
+    )
+
+
+def ds_divisions(
+    params: dict[str, Any], district_only: bool = True
+) -> "ee.FeatureCollection":
     """Divisional Secretariat (DS) divisions of Colombo District (13 expected).
 
-    Loads the user-uploaded EE asset at ``aoi.assets.ds_divisions``. While
-    that is null, warns prominently and falls back to the GAUL district
+    Loads the user-uploaded EE asset at ``aoi.assets.ds_divisions``. The
+    uploaded layers cover all of Sri Lanka (339 DS features), so the result is
+    filtered to Colombo District unless ``district_only`` is False. While the
+    asset id is null, warns prominently and falls back to the GAUL district
     (a single coarse feature — unusable for sub-district statistics).
 
     Args:
         params: Parsed params mapping.
+        district_only: Restrict to Colombo District (default) or return the
+            whole uploaded layer.
 
     Returns:
         ``ee.FeatureCollection`` of DS divisions, or the 1-feature fallback.
@@ -268,18 +459,24 @@ def ds_divisions(params: dict[str, Any]) -> "ee.FeatureCollection":
     asset_id = params["aoi"]["assets"]["ds_divisions"]
     if not asset_id:
         return _missing_asset_fallback("DS-division", params)
-    return ee.FeatureCollection(asset_id)
+    fc = ee.FeatureCollection(asset_id)
+    return _filter_to_district(fc, asset_id, params) if district_only else fc
 
 
-def gn_divisions(params: dict[str, Any]) -> "ee.FeatureCollection":
+def gn_divisions(
+    params: dict[str, Any], district_only: bool = True
+) -> "ee.FeatureCollection":
     """Grama Niladhari (GN) divisions of Colombo District (557 expected).
 
-    Loads the user-uploaded EE asset at ``aoi.assets.gn_divisions``. While
-    that is null, falls back (with a prominent warning) to the DS-division
-    asset if configured, else to the GAUL district.
+    Loads the user-uploaded EE asset at ``aoi.assets.gn_divisions`` (14 043
+    features nationwide) and filters it to Colombo District unless
+    ``district_only`` is False. While the asset id is null, falls back (with a
+    prominent warning) to the DS-division asset if configured, else to GAUL.
 
     Args:
         params: Parsed params mapping.
+        district_only: Restrict to Colombo District (default) or return the
+            whole uploaded layer.
 
     Returns:
         ``ee.FeatureCollection`` of GN divisions, or the best available fallback.
@@ -294,9 +491,10 @@ def gn_divisions(params: dict[str, Any]) -> "ee.FeatureCollection":
                 "(13 units instead of 557; MAUP sensitivity applies)",
                 stacklevel=2,
             )
-            return ds_divisions(params)
+            return ds_divisions(params, district_only=district_only)
         return _missing_asset_fallback("GN-division", params)
-    return ee.FeatureCollection(asset_id)
+    fc = ee.FeatureCollection(asset_id)
+    return _filter_to_district(fc, asset_id, params) if district_only else fc
 
 
 def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
@@ -304,10 +502,14 @@ def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
 
     CMC exists in no GEE dataset; it is dissolved from the DS divisions named
     in ``aoi.cmc.ds_division_names`` (Colombo + Thimbirigasyaya) of the
-    user-uploaded DS asset. Notebook 01 sanity-checks the area against
-    ``aoi.expected_areas_km2.cmc``. If the name filter matches nothing the
-    result is an empty geometry — the notebook's area print (0 km2) catches
-    that; check ``aoi.cmc.ds_name_property`` against the asset's schema.
+    user-uploaded DS asset. The name attribute is auto-resolved from
+    ``aoi.assets.ds_name_property_candidates`` unless
+    ``aoi.cmc.ds_name_property`` overrides it. Notebook 01 sanity-checks the
+    area against ``aoi.expected_areas_km2.cmc``.
+
+    A name filter that matches nothing raises rather than returning an empty
+    geometry — the earlier silent 0 km2 result (Colab run 2026-08-08) was
+    indistinguishable from a real answer.
 
     Args:
         params: Parsed params mapping.
@@ -316,13 +518,16 @@ def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
         Dissolved ``ee.Geometry`` of the CMC.
 
     Raises:
-        RuntimeError: While ``aoi.assets.ds_divisions`` is null, with the
-            exact steps to fix it.
+        RuntimeError: While ``aoi.assets.ds_divisions`` is null (with the exact
+            steps to fix it), or when no DS division matches the configured
+            names (listing the names actually present in the district).
+        ValueError: If the DS name attribute cannot be resolved.
     """
     import ee  # Deferred: see module docstring.
 
     cmc_cfg = params["aoi"]["cmc"]
-    asset_id = params["aoi"]["assets"]["ds_divisions"]
+    assets_cfg = params["aoi"]["assets"]
+    asset_id = assets_cfg["ds_divisions"]
     if not asset_id:
         raise RuntimeError(
             "Cannot build the CMC boundary: aoi.assets.ds_divisions is null in "
@@ -334,19 +539,31 @@ def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
             "(Code Editor > Assets > New > Shape files).\n"
             "  3. Set aoi.assets.ds_divisions to the asset id in "
             "config/params.yaml.\n"
-            f"CMC will then be the dissolve of {cmc_cfg['ds_division_names']} "
-            f"(matched on property '{cmc_cfg['ds_name_property']}')."
+            f"CMC will then be the dissolve of {cmc_cfg['ds_division_names']}."
         )
-    dissolved = (
-        ee.FeatureCollection(asset_id)
-        .filter(
-            ee.Filter.inList(
-                cmc_cfg["ds_name_property"], cmc_cfg["ds_division_names"]
-            )
-        )
-        .union(_MAX_ERROR_M)
+
+    name_property = _resolve_property(
+        asset_id,
+        assets_cfg["ds_name_property_candidates"],
+        "DS-division name",
+        override=cmc_cfg["ds_name_property"],
     )
-    return dissolved.geometry(_MAX_ERROR_M)
+    district_ds = ds_divisions(params, district_only=True)
+    matched = district_ds.filter(
+        ee.Filter.inList(name_property, cmc_cfg["ds_division_names"])
+    )
+
+    # One client-side check: an empty match must not masquerade as a 0 km2 CMC.
+    if matched.size().getInfo() == 0:
+        available = sorted(district_ds.aggregate_array(name_property).getInfo())
+        raise RuntimeError(
+            f"No DS division matched {cmc_cfg['ds_division_names']} on property "
+            f"'{name_property}' in asset '{asset_id}' (within Colombo District).\n"
+            f"DS names actually present: {available}\n"
+            "Fix: set aoi.cmc.ds_division_names in config/params.yaml to the "
+            "spellings above that make up the Colombo Municipal Council."
+        )
+    return matched.union(_MAX_ERROR_M).geometry(_MAX_ERROR_M)
 
 
 # =============================================================================
@@ -621,6 +838,26 @@ def urban_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     return mask.rename("urban")
 
 
+def _elevation_cap_mask(params: dict[str, Any]) -> "ee.Image | None":
+    """0/1 mask of pixels at or below ``rural_filters.max_elevation_m``.
+
+    Colombo sits on the coastal lowland, but the 15-25 km rural ring reaches
+    inland relief (~50-150 m). At a ~6.5 degC/km environmental lapse rate that
+    is up to ~0.65 degC of elevation-driven cooling — a large fraction of a
+    typical SUHII — so the rural reference is capped to comparable elevations.
+
+    Returns:
+        The 0/1 ``ee.Image``, or None when the cap is disabled (null in params).
+    """
+    import ee  # Deferred: see module docstring.
+
+    max_elev = params["uhi"]["suhii"].get("rural_filters", {}).get("max_elevation_m")
+    if max_elev is None:
+        return None
+    srtm_cfg = params["datasets"]["srtm"]
+    return ee.Image(srtm_cfg["id"]).select(srtm_cfg["band"]).lte(max_elev)
+
+
 def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     """0/1 rural-reference mask for SUHII under the given method.
 
@@ -629,6 +866,10 @@ def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
       built-up via the LCZ built classes).
     * ``"lcz_based"``: LCZ natural classes (A-G = 11-17 by default) minus the
       water exclusion (which removes class G plus any shoreline buffer).
+
+    Both definitions then get the SRTM elevation cap from
+    ``uhi.suhii.rural_filters.max_elevation_m`` (see
+    :func:`_elevation_cap_mask`). Urban masks are deliberately NOT capped.
 
     Args:
         method: One of ``uhi.suhii.rural_definitions``.
@@ -655,6 +896,10 @@ def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
             mask = mask.And(_lcz_class_mask(params, urban_classes).Not())
     else:  # lcz_based
         mask = _lcz_class_mask(params, rural_classes).clip(region).And(not_water)
+
+    elevation_ok = _elevation_cap_mask(params)
+    if elevation_ok is not None:
+        mask = mask.And(elevation_ok)
     return mask.rename("rural")
 
 
@@ -691,3 +936,38 @@ def area_km2(geometry: "ee.Geometry") -> "ee.Number":
         ``ee.Number`` area in km2.
     """
     return geometry.area(_MAX_ERROR_M).divide(1e6)
+
+
+def mask_area_km2(
+    mask: "ee.Image", params: dict[str, Any], scale_m: int | None = None
+) -> "ee.Number":
+    """Area covered by a 0/1 mask, in km2 (server-side).
+
+    Use it to check that a mask is not accidentally empty — e.g. that the
+    elevation cap has not eliminated the rural reference.
+
+    Args:
+        mask: 0/1 ``ee.Image``.
+        params: Parsed params mapping (analysis scale and region).
+        scale_m: Reduction scale; defaults to ``crs.analysis_scale_m``. Pass a
+            coarser value for a faster approximate check.
+
+    Returns:
+        ``ee.Number`` area in km2.
+    """
+    import ee  # Deferred: see module docstring.
+
+    scale = scale_m or params["crs"]["analysis_scale_m"]
+    total = (
+        ee.Image.pixelArea()
+        .updateMask(mask)
+        .reduceRegion(
+            reducer=ee.Reducer.sum(),
+            geometry=analysis_region(params),
+            scale=scale,
+            maxPixels=1e10,
+            bestEffort=True,
+        )
+        .get("area")
+    )
+    return ee.Number(total).divide(1e6)

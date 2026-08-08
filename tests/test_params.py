@@ -173,7 +173,11 @@ def test_phase1_aoi_sections(params: dict[str, Any]) -> None:
     assert "gn_divisions" in aoi["assets"]
     # CMC = dissolve of these DS divisions from the ds_divisions asset.
     assert aoi["cmc"]["ds_division_names"] == ["Colombo", "Thimbirigasyaya"]
-    assert aoi["cmc"]["ds_name_property"]
+    # null = auto-resolve from aoi.assets.ds_name_property_candidates.
+    assert aoi["cmc"]["ds_name_property"] is None or isinstance(
+        aoi["cmc"]["ds_name_property"], str
+    )
+    assert aoi["assets"]["district_value"] == "Colombo"
     # Notebook sanity-check areas.
     expected = aoi["expected_areas_km2"]
     assert expected["cmc"] == 37

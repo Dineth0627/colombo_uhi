@@ -37,6 +37,7 @@
 # --- Earth Engine + interactive mapping (earthengine-api is preinstalled) ----
 earthengine-api>=1.5
 geemap>=0.35
+requests>=2.32          # preinstalled; used by viz.save_thumbnail to fetch PNGs
 
 # --- Core scientific stack (ALL preinstalled in Colab; floors only) ----------
 numpy>=2.0,<3
