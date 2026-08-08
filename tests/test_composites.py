@@ -129,23 +129,52 @@ def test_zonal_batch_size_is_configured(params: dict[str, Any]) -> None:
 
 
 def test_zonal_batching_covers_the_study_period_exactly() -> None:
-    # Mirrors the chunking in zonal_annual_means: every year requested once,
+    # Mirrors the loop in zonal_annual_means_by_year: every year built once,
     # none dropped, none duplicated - a batching bug would silently truncate
     # the series rather than fail.
     for batch in (1, 3, 4, 7, 26, 100):
-        years = list(range(2000, 2026))
-        chunks = [years[i : i + batch] for i in range(0, len(years), batch)]
-        flattened = [year for chunk in chunks for year in chunk]
-        assert flattened == years, batch
-        assert all(1 <= len(chunk) <= batch for chunk in chunks)
+        first, last = 2000, 2025
+        spans = [
+            (low, min(low + batch - 1, last))
+            for low in range(first, last + 1, batch)
+        ]
+        covered = [year for low, high in spans for year in range(low, high + 1)]
+        assert covered == list(range(first, last + 1)), batch
+        assert all(low <= high for low, high in spans)
 
 
-def test_zonal_annual_means_rejects_a_zero_batch(params: dict[str, Any]) -> None:
+def test_zonal_by_year_rejects_a_zero_batch(params: dict[str, Any]) -> None:
     # Guard runs before any Earth Engine work; batch 0 would loop forever.
     with pytest.raises(ValueError, match="batch_years"):
-        composites.zonal_annual_means(
-            None, None, params, batch_years=0
-        )
+        composites.zonal_annual_means_by_year(None, None, params, batch_years=0)
+
+
+def test_zonal_annual_means_takes_no_batching_argument(
+    params: dict[str, Any],
+) -> None:
+    # The single-request version deliberately has no batch_years: batching it
+    # by ee.Filter was worthless, because filtering a collection built from
+    # ee.List.map() materialises every element's graph anyway. Year selection
+    # must happen at construction time - that is zonal_annual_means_by_year.
+    import inspect
+
+    assert "batch_years" not in inspect.signature(composites.zonal_annual_means).parameters
+    by_year = inspect.signature(composites.zonal_annual_means_by_year).parameters
+    assert "batch_years" in by_year
+    # It builds composites itself, so it needs the compositing knobs too.
+    for name in ("reducer", "months", "with_percentile", "mask"):
+        assert name in by_year, name
+
+
+def test_zonal_by_year_defaults_to_no_percentile() -> None:
+    # A zonal mean never uses a percentile, and the sorted accumulator it needs
+    # is the expensive part of a long reduction.
+    import inspect
+
+    default = inspect.signature(
+        composites.zonal_annual_means_by_year
+    ).parameters["with_percentile"].default
+    assert default is False
 
 
 def test_obs_count_band_is_always_present(params: dict[str, Any]) -> None:

@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 2 — code written, awaiting first Colab run)_
+_Last updated: 2026-08-08 (Phase 2 rev 5 — Steps 1-5 Colab-verified, Step 6 pending)_
 
 ## Status snapshot
 
@@ -8,7 +8,7 @@ _Last updated: 2026-08-08 (Phase 2 — code written, awaiting first Colab run)_
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
-| 2 | LST pipeline (Landsat + MODIS) | 🟡 **Steps 1-5 Colab-verified (run 3); Step 6 rev 4 — 231 tests passing** |
+| 2 | LST pipeline (Landsat + MODIS) | 🟡 **Steps 1-5 Colab-verified; Step 6 rev 5 — 233 tests passing** |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
@@ -29,13 +29,16 @@ _Last updated: 2026-08-08 (Phase 2 — code written, awaiting first Colab run)_
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
 
-## 🟡 PHASE 2 — LST pipeline written (2026-08-08), awaiting Colab run 1
+## 🟡 PHASE 2 — LST pipeline; Steps 1-5 Colab-verified, Step 6 pending
 
 `landsat.py`, `indices.py`, `composites.py`, `modis.py`, a `viz.py` addition and
-`notebooks/02_lst_pipeline.ipynb` are complete. **222 tests pass locally** (was 90);
-every module still imports without `earthengine-api`. **No Earth Engine code in this
-phase has been executed** — Claude Code has no credentials. Until notebook 02 runs,
-treat every EE path as unverified.
+`notebooks/02_lst_pipeline.ipynb` are complete. **233 tests pass locally** (was 90);
+every module still imports without `earthengine-api`. Notebook Steps 1-5 are verified
+in Colab (run 3, table below); Step 6 (the Landsat-vs-MODIS comparison) has failed on
+the Earth Engine memory limit four times and is at rev 5 — see the run notes.
+
+Sections below are in reverse chronological order: latest run first, then the
+as-designed record from before any run.
 
 ### Catalog re-verification (CLAUDE.md requires it before writing code)
 
@@ -88,9 +91,10 @@ A review pass against the installed `earthengine-api` source caught several thin
 would have cost Colab round trips:
 
 - **Empty-year composites.** Reducing a year with no scenes yields a *band-less* image
-  that dies at the next `select()`. `composites._empty_composite()` supplies a
-  correctly-shaped masked placeholder with `obs_count == 0`, so the year axis stays
-  complete for Phase 4 Mann-Kendall.
+  that dies at the next `select()`. Originally fixed with an `ee.Algorithms.If`
+  placeholder; **superseded after run 1** by `composites._padding_collection()` (see
+  the run 1 notes above) because `If` evaluates both branches. Either way the year
+  axis stays complete for Phase 4 Mann-Kendall, with `obs_count == 0`.
 - **`neq("L2SR")`, not `eq("L2SP")`.** `neq` is `eq().Not()`, so a renamed
   `PROCESSING_LEVEL` fails **open** instead of silently emptying the collection.
   Notebook 02 prints filtered vs unfiltered counts per sensor as the backstop.
@@ -202,7 +206,35 @@ Two findings worth carrying forward:
    "2012-05" implies. Relevant to Phase 4: that stretch of the series rests on
    SLC-off ETM+ alone.
 
-### Colab run 3 — Step 6 still exceeded memory; rev 4
+### Colab run 4 — the actual cause: filtering a computed collection
+
+`BATCH_YEARS = 1` still failed, which ruled out sheer volume and exposed the
+real bug. **Batching by `ee.Filter` saves nothing.** An annual series is built
+with `ee.ImageCollection.fromImages(ee.List.map(...))`; calling
+`.filter(year == 2000)` on it forces Earth Engine to materialise **all 26**
+composite graphs just to evaluate the predicate on each one. Every "batch" was
+therefore the full 26-year computation plus a filter.
+
+This is exactly the trap I had already identified and fixed in Step 4 (build one
+year rather than filter 26) and then failed to apply to the batching itself.
+
+Fixed by splitting the API so the distinction is impossible to miss:
+
+* **`composites.zonal_annual_means_by_year(source, ...)`** — takes the SCENE
+  collection and calls `annual_composites(start_year=lo, end_year=hi)` once per
+  batch, so only those years' graphs are ever constructed. It also owns the
+  compositing knobs (`reducer`, `months`, `with_percentile`, `mask`) because it
+  builds the composites, and `progress=True` prints per batch so a slow run
+  visibly advances. This is what any long series should use.
+* **`composites.zonal_annual_means(collection, ...)`** — unchanged single-request
+  version for collections that are already small. `batch_years` was **removed**
+  from it rather than left as a false promise, and its docstring now carries the
+  warning. A test pins that it takes no batching argument.
+
+**Rule for Phases 4-7:** never subset a computed `ee` collection with `.filter()`
+to save work — it does the opposite. Rebuild the subset you want.
+
+### Colab run 3 — Step 6 exceeded memory; rev 4 changes
 
 Batching to 4 years was not enough. The cost I had not accounted for: **a mask
 built by compositing gets embedded into every image it masks.**
@@ -696,6 +728,15 @@ Locally: `python -m pytest tests/ -q` → **90 passed** at the end of Phase 1;
 
 ## Session log
 
+- **2026-08-08 — Phase 2 rev 5**: `BATCH_YEARS = 1` still failed, which ruled
+  out volume and exposed the real bug: **batching by `ee.Filter` saves
+  nothing**, because filtering a collection built from `ee.List.map()`
+  materialises every element's graph to test the predicate. The same trap I
+  had already fixed in Step 4 and failed to apply to the batching itself.
+  Split the API: `zonal_annual_means_by_year` builds each batch's composites
+  from the scene collection via `start_year`/`end_year`, so only those years
+  exist; `zonal_annual_means` keeps the single-request path and **lost** its
+  `batch_years` argument rather than keep a false promise. 233 tests passing.
 - **2026-08-08 — Phase 2 rev 4**: third Colab run **verified Steps 1-5** (1674
   scenes, inventory exactly as predicted, dry-2025 `obs_count` min 4 / median 10
   over the CMC, both PNGs rendered). Step 6 still exceeded memory: the cost I had

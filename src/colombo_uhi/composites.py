@@ -496,32 +496,65 @@ def build_inventory_frame(
     return table
 
 
+def _zonal_feature(
+    image: "ee.Image",
+    geometry: "ee.Geometry",
+    band: str,
+    scale: int,
+    params: dict[str, Any],
+) -> "ee.Feature":
+    """Reduce one image over a geometry into a property-only feature.
+
+    Args:
+        image: Image to reduce.
+        geometry: Region to reduce over.
+        band: Band to average.
+        scale: Reduction scale in metres.
+        params: Parsed params mapping.
+
+    Returns:
+        ``ee.Feature`` with no geometry, carrying the year plus the reducer
+        outputs.
+    """
+    import ee  # Deferred: see module docstring.
+
+    comp = params["composites"]
+    reducer = ee.Reducer.mean().combine(ee.Reducer.count(), sharedInputs=True)
+    stats = image.select([band]).reduceRegion(
+        reducer=reducer,
+        geometry=geometry,
+        scale=scale,
+        maxPixels=comp["reduce_max_pixels"],
+        tileScale=comp["tile_scale"],
+    )
+    # ee.Feature(None, ...) keeps the payload to properties only.
+    return ee.Feature(
+        None, stats.set(comp["year_property"], image.get(comp["year_property"]))
+    )
+
+
 def zonal_annual_means(
     collection: "ee.ImageCollection",
     geometry: "ee.Geometry",
     params: dict[str, Any],
     band: str | None = None,
     scale_m: int | None = None,
-    batch_years: int | None = None,
-    start_year: int | None = None,
-    end_year: int | None = None,
 ) -> "pd.DataFrame":
-    """Year -> spatial mean table over one geometry, with a valid-pixel count.
+    """Year -> spatial mean table for an ALREADY-BUILT collection, in one request.
 
-    Used for the Landsat-vs-MODIS comparison. Each row carries the number of
-    valid pixels the mean rests on, so CLAUDE.md caveat 2 applies to the table
-    and not only to the rasters.
+    Each row carries the number of valid pixels the mean rests on, so CLAUDE.md
+    caveat 2 applies to the table and not only to the rasters.
 
-    Each request uses a ``FeatureCollection.getInfo()`` rather than
-    ``aggregate_array``: when a year is fully masked, ``reduceRegion`` still
-    returns the key with a null value, so the row survives as ``NaN`` instead of
-    silently shortening the array and misaligning every later year.
+    Uses ``FeatureCollection.getInfo()`` rather than ``aggregate_array``: when a
+    year is fully masked, ``reduceRegion`` still returns the key with a null
+    value, so the row survives as ``NaN`` instead of silently shortening the
+    array and misaligning every later year.
 
-    The series is fetched in **batches of years**, because a single request
-    covering 26 annual composites has to hold 26 full image graphs at once and
-    exceeds the Earth Engine user memory limit (observed in Colab run 2). The
-    batches are cut on a client-side year list, so no extra round trip is needed
-    to discover them, and the numbers are identical to an unbatched fetch.
+    .. warning::
+        This evaluates the WHOLE collection in one request. For a multi-decade
+        annual series that exceeds the Earth Engine user memory limit — use
+        :func:`zonal_annual_means_by_year`, which builds the composites a few
+        years at a time. This function is for collections that are already small.
 
     Args:
         collection: Composites (or any collection) carrying the year property.
@@ -530,12 +563,85 @@ def zonal_annual_means(
         band: Band to average; defaults to ``landsat_c2l2.lst_band_name``.
         scale_m: Reduction scale; defaults to ``crs.analysis_scale_m``. Pass
             the sensor's native scale for MODIS (``modis_lst.reduction_scale_m``).
-        batch_years: Years per request; defaults to
-            ``composites.zonal_batch_years``. Lower it if Earth Engine still
-            reports a memory limit; 1 is valid and simply means one request per
-            year.
-        start_year: First year to request; defaults to ``time.start_year``.
+
+    Returns:
+        ``pandas.DataFrame`` with columns ``year``, ``mean``, ``valid_pixels``,
+        sorted by year.
+
+    Raises:
+        RuntimeError: If Earth Engine returns unexpected property names, rather
+            than quietly producing an all-NaN table.
+    """
+    import ee  # Deferred: see module docstring.
+
+    target = band or params["landsat_c2l2"]["lst_band_name"]
+    scale = int(scale_m or params["crs"]["analysis_scale_m"])
+
+    features = ee.FeatureCollection(
+        collection.map(
+            lambda image: _zonal_feature(image, geometry, target, scale, params)
+        )
+    ).getInfo()["features"]
+    return build_zonal_frame(
+        [feature["properties"] for feature in features], target, params
+    )
+
+
+def zonal_annual_means_by_year(
+    source: "ee.ImageCollection",
+    geometry: "ee.Geometry",
+    params: dict[str, Any],
+    band: str | None = None,
+    scale_m: int | None = None,
+    reducer: str | None = None,
+    months: Sequence[int] | None = None,
+    with_percentile: bool = False,
+    mask: "ee.Image | None" = None,
+    batch_years: int | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    progress: bool = False,
+) -> "pd.DataFrame":
+    """Year -> spatial mean table, building the composites a few years at a time.
+
+    This is the memory-safe way to pull a multi-decade series out of Earth
+    Engine, and the distinction from :func:`zonal_annual_means` is the whole
+    point of it:
+
+    **Filtering a computed collection does not reduce the work.** An annual
+    series is built with ``ee.ImageCollection.fromImages(ee.List.map(...))``, so
+    ``.filter(year == 2000)`` on it forces Earth Engine to materialise all 26
+    composite graphs just to evaluate the predicate on each. Batching by filter
+    is therefore worthless — it was tried, and still exceeded the memory limit at
+    one year per request (Colab run 4, 2026-08-08).
+
+    So this takes the SCENE collection and calls :func:`annual_composites`
+    separately per batch with ``start_year``/``end_year`` set, which constructs
+    only those years' graphs. The numbers are identical to an unbatched fetch.
+
+    Args:
+        source: The scene-level collection — a harmonised Landsat collection or
+            MODIS granules — NOT pre-built annual composites.
+        geometry: Region to average over, e.g. ``aoi.cmc_boundary(params)``.
+        params: Parsed params mapping.
+        band: Band to average; defaults to ``landsat_c2l2.lst_band_name``.
+        scale_m: Reduction scale; defaults to ``crs.analysis_scale_m``.
+        reducer: Central-tendency reducer for the composites. Use the SAME one
+            for every series being compared, or part of the difference between
+            them is a reducer artefact rather than a sensor difference.
+        months: Optional calendar-month restriction.
+        with_percentile: Defaults to ``False`` here — a percentile reducer must
+            retain every observation per pixel in order to sort them, and a
+            zonal mean never uses the result.
+        mask: Optional 0/1 image applied to each composite, e.g. a land mask.
+            Prefer :func:`colombo_uhi.aoi.static_water_mask` over
+            :func:`colombo_uhi.aoi.water_mask`: the latter composites Landsat
+            internally, and that composite is instantiated once per image masked.
+        batch_years: Years built per request; defaults to
+            ``composites.zonal_batch_years``. 1 is valid.
+        start_year: First year; defaults to ``time.start_year``.
         end_year: Last year, inclusive; defaults to ``time.end_year``.
+        progress: Print a line per batch, so a slow run visibly advances.
 
     Returns:
         ``pandas.DataFrame`` with columns ``year``, ``mean``, ``valid_pixels``,
@@ -543,45 +649,44 @@ def zonal_annual_means(
 
     Raises:
         ValueError: If ``batch_years`` is less than 1.
-        RuntimeError: If Earth Engine returns unexpected property names, rather
-            than quietly producing an all-NaN table.
     """
     comp = params["composites"]
     target = band or params["landsat_c2l2"]["lst_band_name"]
     scale = int(scale_m or params["crs"]["analysis_scale_m"])
-    year_prop = comp["year_property"]
 
-    # Validation runs BEFORE the deferred import so it stays unit-testable on a
-    # machine without earthengine-api.
+    # Validation before the deferred import, so it stays unit-testable.
     batch = int(comp["zonal_batch_years"] if batch_years is None else batch_years)
     if batch < 1:
         raise ValueError(f"batch_years must be >= 1, got {batch}")
+    first_year = int(params["time"]["start_year"] if start_year is None else start_year)
+    last_year = int(params["time"]["end_year"] if end_year is None else end_year)
 
     import ee  # Deferred: see module docstring.
 
-    first_year = int(params["time"]["start_year"] if start_year is None else start_year)
-    last_year = int(params["time"]["end_year"] if end_year is None else end_year)
-    all_years = list(range(first_year, last_year + 1))
-
-    reducer = ee.Reducer.mean().combine(ee.Reducer.count(), sharedInputs=True)
-
-    def to_feature(image: "ee.Image") -> "ee.Feature":
-        stats = image.select([target]).reduceRegion(
-            reducer=reducer,
-            geometry=geometry,
-            scale=scale,
-            maxPixels=comp["reduce_max_pixels"],
-            tileScale=comp["tile_scale"],
-        )
-        # ee.Feature(None, ...) keeps the payload to properties only.
-        return ee.Feature(None, stats.set(year_prop, image.get(year_prop)))
-
     rows: list[dict[str, Any]] = []
-    for offset in range(0, len(all_years), batch):
-        chunk = all_years[offset : offset + batch]
-        subset = collection.filter(ee.Filter.inList(year_prop, chunk))
-        features = ee.FeatureCollection(subset.map(to_feature)).getInfo()["features"]
+    for low in range(first_year, last_year + 1, batch):
+        high = min(low + batch - 1, last_year)
+        annual = annual_composites(
+            source,
+            params,
+            band=target,
+            reducer=reducer,
+            months=months,
+            with_percentile=with_percentile,
+            start_year=low,
+            end_year=high,
+        )
+        if mask is not None:
+            annual = annual.map(lambda image: image.updateMask(mask))
+        features = ee.FeatureCollection(
+            annual.map(
+                lambda image: _zonal_feature(image, geometry, target, scale, params)
+            )
+        ).getInfo()["features"]
         rows.extend(feature["properties"] for feature in features)
+        if progress:
+            print(f"  years {low}-{high} done ({len(rows)} rows)")
+
     return build_zonal_frame(rows, target, params)
 
 
