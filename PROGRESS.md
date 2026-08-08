@@ -1,14 +1,14 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 1e session)_
+_Last updated: 2026-08-08 (Phase 1f — Phase 1 signed off)_
 
 ## Status snapshot
 
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
-| 1 | AOI & boundaries | 🔄 runs 1–4 done; CMC area explained + 2 bugs fixed — run 5 pending (Phase 1e) |
-| 2 | LST pipeline (Landsat + MODIS) | ⬜ |
+| 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
+| 2 | LST pipeline (Landsat + MODIS) | ⬜ **next** |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
@@ -28,6 +28,53 @@ _Last updated: 2026-08-08 (Phase 1e session)_
 - [x] `notebooks/00_setup_and_auth.ipynb` (functional) + 01–08 stubs
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
+
+## ✅ PHASE 1 SIGNED OFF — verified reference values (Colab run 5, 2026-08-08)
+
+These are the authoritative Phase 1 outputs. Quote them in the report; re-running
+notebook 01 should reproduce them.
+
+| Quantity | Verified | Note |
+|---|---|---|
+| Colombo District | **685.6 km²**, 1 feature | GAUL 500 m-simplified (gazetted 699) |
+| Western Province | **3761.7 km²**, 3 features | Colombo + Gampaha + Kalutara |
+| DS / GN divisions in district | **13** / **557** | both match CLAUDE.md exactly |
+| CMC name audit | **55/55 names, 55 features** | `missing` and `extra` both empty |
+| CMC administrative | **47.07 km²** | = the DS pair (46.87 stated); the 55 GN divisions tile it exactly |
+| CMC land @ 30 m | **40.18 km²** | +7.7% vs gazetted 37.31 |
+| CMC land @ 300 m | **37.70 km²** | +1.0% — same quantity, coarser grid |
+| water inside CMC | **6.89 km²** | Port harbour + Beira + Kelani mouth |
+| Rural buffer ring (geometry) | **1603.5 km²** | 15–25 km annulus around the CMC |
+| rural mask — buffer_ring | **206.1 km²** | after water, built-up, 100 m cap |
+| urban mask — buffer_ring | **37.7 km²** | water excluded from urban masks too |
+| urban / rural mask — LCZ | **458.5** / **152.2 km²** | district-scoped |
+| water mask (analysis region) | **3700.2 km²** | mostly ocean, as expected |
+
+Both Phase 1e bugs are confirmed fixed in the strongest available way: the ring
+(1603.5) and its rural mask (206.1) returned to run 3's values **to the decimal**,
+which only happens if the stray duplicate-name polygons are gone. `extra` coming
+back empty independently proves the 55-name CMC list is complete and correct.
+
+Figures all reviewed: `aoi_water_mask_core.png` confirms **Beira**, **Diyawanna**
+and the **Kelani**; `aoi_water_mask.png` confirms ocean, **Bolgoda** and the
+Labugama/Kalatuwawa reservoirs; `aoi_boundaries.png` shows one compact CMC nested
+correctly; `aoi_rural_buffer_ring.png` shows a single coastal core with a
+landward-only ring stopping short of the high ground.
+
+### ⚠️ Caveats that must travel into later phases
+
+1. **CMC area is scale-dependent** (40.18 km² @30 m vs 37.70 @300 m). Always
+   quote the reduction scale. The residual over the gazetted 37.31 km² is COD-AB
+   polygon generalisation plus the `aoi.water_mask` thresholds — report it as
+   sensitivity, never tune it away.
+2. **GN names are NOT unique within Colombo District.** Every GN-level filter must
+   be scoped to its parent DS division (or use `adm4_pcode`). Directly relevant to
+   the GN-level zonal statistics and MAUP work in **Phases 5–7**.
+3. The two rural definitions differ **by design** (CMC-vs-ring vs
+   built-vs-vegetated inside the district), so their SUHII values will differ.
+   Reporting both is the CLAUDE.md requirement, not a discrepancy to resolve.
+4. Still open from Phase 0: **the GSOD replacement decision** for air-temperature
+   validation (ERA5-Land / NCEI CSV / BigQuery) — needed by Phase 2.
 
 ## Phase 1e — Colab run 4 results + fixes (2026-08-08)
 
@@ -381,22 +428,29 @@ water mask, both rural references and the map all built.
 
 Still open: GSOD replacement decision (discrepancy #1) — needed by Phase 2.
 
-## What you must run to verify Phase 1 (run 5, after the 1e fixes)
+## Phase 1 → Phase 2 handover
 
-1. Commit + push, then re-run `notebooks/01_aoi_and_boundaries.ipynb` in Colab.
-2. **CMC audit cell**: expect **55/55 names AND 55 features**, with `missing` and
-   `extra` both empty. Features exceeding 55 means the duplicate-name bug is back.
-3. **CMC areas**: administrative ≈ **46.9 km²** (equals the DS pair — same
-   geometry) and **land ≈ 37 km²** against the gazetted 37.31, with ~**9.6 km²**
-   of water inside the polygon. That last number is the whole story: it is the
-   Port harbour, and it also validates the water mask.
-4. Ring back to ≈ **1603 km²**, its rural mask ≈ **206 km²**. Urban masks slightly
-   smaller than run 4 (water now excluded from them too). LCZ rural ≈ 152 km².
-5. **Send back the PNGs** — `aoi_boundaries.png` and `aoi_rural_buffer_ring.png`
-   should show **one compact** CMC blob with no stray inland fragments.
-6. Locally: `python -m pytest tests/ -q` → 90 passed.
+**Nothing is required to close Phase 1** — run 5 verified it. Optionally re-run
+notebook 01 once to capture the refreshed sign-off table and the paired
+30 m/300 m land-area lines in a saved notebook for the report appendix.
 
-If the land area lands near 37, Phase 1 is done and Phase 2 can start.
+One decision is outstanding before Phase 2 code is written:
+
+- **GSOD replacement** for air-temperature validation. `NOAA/GSOD` is not in the
+  Earth Engine catalog (Phase 0 discrepancy #1). Options: (a) ERA5-Land
+  `temperature_2m`, already in the stack and in `datasets`; (b) NOAA NCEI GSOD
+  CSVs for Katunayake (WMO 43450) loaded with pandas; (c) BigQuery public
+  `bigquery-public-data.noaa_gsod`. Needed for Phase 2's validation design.
+
+Phase 2 scope (`02_lst_pipeline.ipynb` plus `src/colombo_uhi/landsat.py`,
+`modis.py`, `composites.py`): harmonised L5/L7/L8/L9 C2 L2 LST with `L2SP`
+filtering and the standard QA mask — `landsat.py` already carries
+`bits_to_mask`, `qa_clear_mask`, `qa_water_flag` and `scale_sr` from Phase 1;
+MOD11A2/MYD11A2 with explicit `QC_Day`/`QC_Night` filtering; annual and
+dry-season composites, each shipping a **per-pixel valid-observation count**
+(CLAUDE.md caveat 2).
+
+Locally: `python -m pytest tests/ -q` → **90 passed**.
 
 ## What you must run to verify Phase 0
 
@@ -422,6 +476,14 @@ If the land area lands near 37, Phase 1 is done and Phase 2 can start.
   catalog Browser pane (17 ✅, 1 ❌ GSOD); wrote params.yaml, auth module,
   tests (30 passing), notebook 00, stubs, README. No LST processing code
   written (per session scope). Nothing committed to git yet.
+- **2026-08-08 — Phase 1f**: fifth Colab run — **Phase 1 signed off**. Audit
+  clean (55/55 names, 55 features, no leftovers); both 1e bugs confirmed fixed by
+  the ring and rural mask returning to run-3 values to the decimal; all five
+  figures reviewed. Resolved the last inconsistency: "CMC minus water" was being
+  reported at two reduction scales (40.18 @30 m vs 37.70 @300 m), so
+  `cmc_land_area_km2` now takes an explicit `scale_m` and the notebook prints
+  both as a labelled sensitivity pair rather than one number chosen for looking
+  closest to 37.31. 90 tests passing.
 - **2026-08-08 — Phase 1e**: fourth Colab run. Audit caught 5 spelling errors and
   printed COD-AB's spellings. Proved GN-union ≡ DS-pair (the 55 GN divisions tile
   the two DS divisions exactly), so the 46.9-vs-37.31 gap is the **Port harbour**,

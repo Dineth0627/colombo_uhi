@@ -180,11 +180,14 @@ def test_phase1_aoi_sections(params: dict[str, Any]) -> None:
     for key in ("ds_name_property", "gn_name_property"):
         assert aoi["cmc"][key] is None or isinstance(aoi["cmc"][key], str)
     assert aoi["assets"]["district_value"] == "Colombo"
-    # Notebook sanity-check areas. cmc = gazetted (checked against the LAND area);
-    # cmc_administrative = raw polygon, which includes the Colombo Port harbour.
+    # Three distinct CMC numbers (Colab run 5): gazetted 37.31, the raw polygon
+    # 47.07 (includes the Colombo Port harbour), and polygon-minus-water 40.18 at
+    # the 30 m grid. Ordering must hold: gazetted < land < administrative.
     expected = aoi["expected_areas_km2"]
     assert expected["cmc"] == 37
+    assert expected["cmc_land_at_30m"] == 40
     assert expected["cmc_administrative"] == 47
+    assert expected["cmc"] < expected["cmc_land_at_30m"] < expected["cmc_administrative"]
     assert expected["district"] == 699
     assert expected["western_province"] == 3684
     # GHSL urban-extent thresholding (asset-free buffer-ring base).

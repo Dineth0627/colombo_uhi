@@ -270,10 +270,10 @@ def test_cmc_expected_areas_separate_land_from_administrative(
     params: dict[str, Any],
 ) -> None:
     expected = params["aoi"]["expected_areas_km2"]
-    # 37 = gazetted, checked against the LAND area; ~47 = the raw polygon, which
-    # legitimately includes the Colombo Port outer harbour.
+    # 37 = gazetted; 40 = polygon minus water at 30 m; 47 = raw polygon, which
+    # legitimately includes the Colombo Port outer harbour (Colab run 5).
     assert expected["cmc"] == 37
-    assert expected["cmc_administrative"] > expected["cmc"]
+    assert expected["cmc"] < expected["cmc_land_at_30m"] < expected["cmc_administrative"]
 
 
 def test_lcz_scope_is_valid(params: dict[str, Any]) -> None:

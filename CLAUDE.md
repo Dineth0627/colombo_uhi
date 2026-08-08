@@ -63,9 +63,13 @@ colombo-uhi/
   CMC = union of the **55 GN divisions** the CMC's own GIS Unit lists as inside the
   municipality (`aoi.cmc.gn_division_names`). Those 55 GN divisions exactly tile the
   Colombo + Thimbirigasyaya DS divisions, so both routes give the **same** polygon,
-  measuring **46.9 km²** in COD-AB — not 37.31. The ~9.6 km² difference is the
-  **Colombo Port outer harbour**, which COD-AB encloses: the **land-only** area
-  (`aoi.cmc_land_area_km2`) is the figure that matches the gazetted 37 km².
+  measuring **47.07 km²** in COD-AB — not 37.31. The difference is the **Colombo
+  Port outer harbour**, which COD-AB encloses (**6.89 km²** of water inside the
+  polygon). The land-only area (`aoi.cmc_land_area_km2`) is **40.18 km² at 30 m**
+  and **37.70 km² at 300 m** — it is **scale-dependent, so always quote the
+  reduction scale with any CMC area**. The residual over 37.31 is COD-AB polygon
+  generalisation plus the `aoi.water_mask` thresholds: report it as sensitivity,
+  do not tune it away.
 - **Colombo District**: 13 Divisional Secretariat divisions, **557 Grama Niladhari (GN) divisions**.
   **GN names are NOT unique within the district** — always scope a GN name filter to
   its parent DS division (or use `adm4_pcode`), or unrelated same-named divisions

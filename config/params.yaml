@@ -200,12 +200,19 @@ aoi:
       - "Wellawatta South"
   expected_areas_km2:                 # [DEFAULT — Phase 1] notebook sanity checks only;
                                       # GAUL is simplified at 500 m, expect a few % deviation
-    cmc: 37                           # gazetted CMC (37.31). Compared against the LAND-only area
-                                      # (aoi.cmc_land_area_km2), NOT the raw polygon — see below.
-    cmc_administrative: 47            # the raw GN/DS polygon union. Expected to EXCEED the gazetted
-                                      # 37.31 because COD-AB's Colombo DS polygon encloses the
-                                      # Colombo Port outer harbour (~9.6 km2 of water; visible in
+    # THREE different CMC numbers — never mix them up:
+    cmc: 37                           # (a) gazetted CMC, 37.31. The external reference value.
+    cmc_administrative: 47            # (b) the raw GN/DS polygon union (measured 47.07). Legitimately
+                                      # EXCEEDS the gazetted figure: COD-AB's Colombo DS polygon
+                                      # encloses the Colombo Port outer harbour — 6.89 km2 of water
+                                      # sits inside it (Colab run 5; see
                                       # figures/aoi_water_mask_core.png). Not an error.
+    cmc_land_at_30m: 40               # (c) polygon minus water at the 30 m analysis grid (40.18).
+                                      # SCALE-DEPENDENT: the same quantity is 37.70 km2 at 300 m, a
+                                      # 6.6% spread from raster discretisation of a ragged coastal
+                                      # mask. Always quote the scale alongside the number; the
+                                      # residual over 37.31 is COD-AB generalisation + the
+                                      # aoi.water_mask thresholds, i.e. a sensitivity to report.
     district: 699
     western_province: 3684
   expected_counts:                    # [CLAUDE.md] within Colombo District, after filtering

@@ -715,14 +715,24 @@ def cmc_boundary(params: dict[str, Any]) -> "ee.Geometry":
     return matched.union(_MAX_ERROR_M).geometry(_MAX_ERROR_M)
 
 
-def cmc_land_area_km2(params: dict[str, Any]) -> "ee.Number":
+def cmc_land_area_km2(
+    params: dict[str, Any], scale_m: int | None = None
+) -> "ee.Number":
     """CMC area in km2 with water excluded — the land-only figure.
 
-    The administrative polygon union measures ~47 km2 against a gazetted CMC of
+    The administrative polygon measures ~47 km2 against a gazetted CMC of
     37.31 km2 because COD-AB's Colombo DS polygon encloses the Colombo Port
-    outer harbour. Masking water tests that explanation directly and yields the
-    land area that LST statistics actually cover (CLAUDE.md requires water
-    masked before any LST statistic).
+    outer harbour (6.89 km2 of water sits inside it, measured in Colab run 5).
+    Masking water yields the land area that LST statistics actually cover
+    (CLAUDE.md requires water masked before any LST statistic).
+
+    **The result is scale-dependent and must be quoted with its scale**: run 5
+    gave 40.18 km2 at the 30 m analysis grid and 37.70 km2 at 300 m — a 6.6%
+    spread from raster discretisation of a ragged coastal mask, not from a
+    different definition. Quote the 30 m figure by default. The residual over
+    37.31 km2 comes from COD-AB polygon generalisation plus the water-mask
+    thresholds in ``aoi.water_mask``; it is a sensitivity to report, not an error
+    to tune away.
 
     Implemented by rasterising the CMC rather than differencing geometries: the
     water mask is a raster, and a vectorised difference would be both expensive
@@ -730,6 +740,7 @@ def cmc_land_area_km2(params: dict[str, Any]) -> "ee.Number":
 
     Args:
         params: Parsed params mapping.
+        scale_m: Reduction scale; defaults to ``crs.analysis_scale_m`` (30 m).
 
     Returns:
         ``ee.Number`` land area in km2 (call ``.getInfo()`` to print).
@@ -737,7 +748,7 @@ def cmc_land_area_km2(params: dict[str, Any]) -> "ee.Number":
     cmc_mask = _paint(cmc_boundary(params), analysis_region(params)).And(
         water_exclusion_mask(params).Not()
     )
-    return mask_area_km2(cmc_mask, params)
+    return mask_area_km2(cmc_mask, params, scale_m=scale_m)
 
 
 # =============================================================================
