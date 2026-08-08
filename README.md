@@ -55,19 +55,19 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 ├── src/colombo_uhi/
 │   ├── __init__.py          # load_params(), repo_root()
 │   ├── auth.py              # Colab-friendly EE auth/init (idempotent)
-│   ├── aoi.py               # stub — Phase 1
-│   ├── landsat.py           # stub — Phase 2
-│   ├── modis.py             # stub — Phase 2
-│   ├── indices.py           # stub — Phase 2
-│   ├── composites.py        # stub — Phase 2
+│   ├── aoi.py               # Phase 1 — boundaries, CMC, water mask, rural refs
+│   ├── landsat.py           # Phase 2 — harmonised L5/7/8/9 C2 L2 LST collection
+│   ├── modis.py             # Phase 2 — MOD11A2/MYD11A2 + real QC bit filtering
+│   ├── indices.py           # Phase 2 — NDVI, NDBI, MNDWI, EVI, SAVI, albedo
+│   ├── composites.py        # Phase 2 — annual/dry-season + valid-obs counts
+│   ├── viz.py               # Phase 2 — thumbnails + series plots (Phase 8 extends)
 │   ├── uhi_metrics.py       # stub — Phase 3
 │   ├── trends.py            # stub — Phase 4
 │   ├── spatial_stats.py     # stub — Phase 5
 │   ├── prediction.py        # stub — Phase 6
 │   ├── greening.py          # stub — Phase 7
-│   ├── exports.py           # stub — Phase 2+
-│   └── viz.py               # stub — Phase 8
-├── notebooks/               # 00 works; 01–08 are stubs
+│   └── exports.py           # stub — Phase 2+
+├── notebooks/               # 00–02 written; 03–08 are stubs
 ├── data/
 │   ├── raw/                 # git-ignored
 │   ├── interim/
@@ -80,9 +80,9 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 
 | Phase | Notebook | Content | Status |
 |---|---|---|---|
-| 0 | `00_setup_and_auth` | scaffold, config, EE auth | ✅ done |
-| 1 | `01_aoi_and_boundaries` | AOI geometries, GN asset, water mask | ⬜ |
-| 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | ⬜ |
+| 0 | `00_setup_and_auth` | scaffold, config, EE auth | ✅ done + Colab-verified |
+| 1 | `01_aoi_and_boundaries` | AOI geometries, GN asset, water mask | ✅ done + Colab-verified |
+| 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | 🟡 written; **awaiting Colab run** |
 | 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ⬜ |
 | 4 | `04_trend_analysis` | MK + Sen's slope, FDR | ⬜ |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR | ⬜ |

@@ -812,10 +812,14 @@ def analysis_region(params: dict[str, Any]) -> "ee.Geometry":
 # Water mask
 # =============================================================================
 def _month_filter(months: Sequence[int]) -> "ee.Filter":
-    """Calendar filter matching any of the given months (handles Dec-Feb wrap)."""
-    import ee  # Deferred: see module docstring.
+    """Calendar filter matching any of the given months (handles Dec-Feb wrap).
 
-    return ee.Filter.Or(*[ee.Filter.calendarRange(m, m, "month") for m in months])
+    Delegates to :func:`colombo_uhi.landsat.month_filter`. The implementation
+    lives in ``landsat`` because Phase 2 needs it too and this module already
+    depends on ``landsat`` — putting the shared helper the other way round
+    would make the imports circular.
+    """
+    return landsat.month_filter(months)
 
 
 def _water_composite_collection(

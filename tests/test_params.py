@@ -254,3 +254,118 @@ def test_caveats_present(params: dict[str, Any]) -> None:
         "sensitivity_reporting",
     ):
         assert caveats.get(key), f"missing caveat text: {key}"
+
+
+# =============================================================================
+# Phase 2 additions (LST pipeline) — verified against the GEE catalog 2026-08-08
+# =============================================================================
+def test_phase2_sections_present(params: dict[str, Any]) -> None:
+    for section in ("indices", "composites"):
+        assert section in params, f"missing top-level section: {section}"
+
+
+def test_landsat_phase2_band_names(params: dict[str, Any]) -> None:
+    c = params["landsat_c2l2"]
+    # ST_QA exists on ALL FOUR collections, L5 included (catalog-verified).
+    assert c["st_qa_band"] == "ST_QA"
+    assert c["lst_band_name"] == "LST_C"
+    assert c["st_qa_band_name"] == "ST_QA_K"
+    assert c["harmonised_sr_bands"] == [
+        "blue",
+        "green",
+        "red",
+        "nir",
+        "swir1",
+        "swir2",
+    ]
+
+
+def test_landsat_sensor_keys_cover_all_four(params: dict[str, Any]) -> None:
+    keys = params["landsat_c2l2"]["sensor_keys"]
+    assert keys == ["landsat5", "landsat7", "landsat8", "landsat9"]
+    for key in keys:
+        dataset = params["datasets"][key]
+        assert dataset["st_band"] in ("ST_B6", "ST_B10")
+        assert set(dataset["sr_bands"]) >= set(
+            params["landsat_c2l2"]["harmonised_sr_bands"]
+        )
+
+
+def test_processing_level_filter_fails_open(params: dict[str, Any]) -> None:
+    # Implemented as neq(L2SR), not eq(L2SP): a missing property must let the
+    # scene through rather than silently emptying the collection.
+    c = params["landsat_c2l2"]
+    assert c["processing_level_exclude"] == "L2SR"
+    assert c["processing_level_required"] == "L2SP"
+    assert isinstance(c["processing_level_filter_enabled"], bool)
+
+
+def test_landsat_phase2_defaults_are_the_user_decisions(
+    params: dict[str, Any],
+) -> None:
+    c = params["landsat_c2l2"]
+    # SLC-off included: excluding it would empty 2012-05..2013-03 entirely.
+    assert c["include_l7_slc_off"] is True
+    # ST_QA filter off by default; the ST_QA_K band is still always emitted.
+    assert c["st_qa_max_kelvin"] is None
+    low, high = c["lst_plausible_range_c"]
+    assert low < high
+
+
+def test_landsat7_slc_off_date(params: dict[str, Any]) -> None:
+    # filterDate's end is exclusive, so this is the last SLC-ON day and the
+    # code must advance one day past it.
+    assert params["datasets"]["landsat7"]["slc_off_after"] == "2003-05-31"
+
+
+def test_season_partition_is_total_and_disjoint(params: dict[str, Any]) -> None:
+    seen: dict[int, int] = {month: 0 for month in range(1, 13)}
+    for key in params["time"]["season_partition"]:
+        for month in params["time"]["seasons"][key]["months"]:
+            seen[month] += 1
+    assert all(count == 1 for count in seen.values()), seen
+
+
+def test_inter_monsoon_fills_the_gap_claude_md_leaves(params: dict[str, Any]) -> None:
+    assert params["time"]["seasons"]["inter_monsoon"]["months"] == [3, 4, 10, 11]
+
+
+def test_composites_defaults(params: dict[str, Any]) -> None:
+    c = params["composites"]
+    assert c["obs_count_band"] == "obs_count"
+    assert c["annual_reducer"] in ("median", "mean")
+    assert isinstance(c["percentile"], int) and 0 <= c["percentile"] <= 100
+    # User decision: flag with obs_count, never mask pixels away.
+    assert c["min_valid_obs"] is None
+    assert c["reduce_max_pixels"] > 0
+    assert c["tile_scale"] >= 1
+
+
+def test_modis_phase2_additions(params: dict[str, Any]) -> None:
+    m = params["modis_lst"]
+    assert m["products"] == {"terra": "modis_terra_lst", "aqua": "modis_aqua_lst"}
+    assert m["clear_sky_day_band"] == "Clear_sky_days"
+    assert m["clear_sky_night_band"] == "Clear_sky_nights"
+    # Bitmask, NOT a count — 8 bits, one per day of the 8-day window.
+    assert m["clear_sky_is_bitmask"] is True
+    assert m["clear_sky_bits"] == 8
+    assert m["valid_dn_range"] == [7500, 65535]
+    assert m["reduction_scale_m"] == 1000
+
+
+def test_modis_aqua_launch_date_is_recorded(params: dict[str, Any]) -> None:
+    # No Aqua data for the first 2.5 years of the study period.
+    assert params["datasets"]["modis_aqua_lst"]["availability"][0] == "2002-07-04"
+    assert params["datasets"]["modis_terra_lst"]["availability"][0] == "2000-02-18"
+
+
+def test_albedo_uses_one_coefficient_set(params: dict[str, Any]) -> None:
+    # Decision reversal recorded in PROGRESS.md: a single set across all four
+    # sensors preserves continuity at the 2013 OLI transition; swapping in a
+    # different published fit there would CREATE the step change.
+    albedo = params["indices"]["albedo"]
+    assert albedo["active_set"] == "liang2001"
+    assert "liang2001" in albedo["sets"]
+    for entry in albedo["sets"].values():
+        assert entry["weights"], "an albedo set needs weights"
+        assert "source" in entry, "every albedo set must cite its source"

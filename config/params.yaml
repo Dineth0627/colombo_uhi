@@ -49,9 +49,22 @@ time:
     ne_monsoon:                       # [CLAUDE.md] NE monsoon Dec-Feb
       months: [12, 1, 2]
       label: "NE monsoon (Dec-Feb)"
+    inter_monsoon:                    # [DEFAULT — Phase 2] the months CLAUDE.md leaves
+      months: [3, 4, 10, 11]          # unnamed. SW(5-9) + NE(12,1,2) + inter(3,4,10,11) is a
+      label: "Inter-monsoon"          # COMPLETE, NON-OVERLAPPING partition of all 12 months,
+                                      # which is what landsat.monsoon_season() needs to tag
+                                      # every scene exactly once (first two Sri Lanka
+                                      # inter-monsoons: Mar-Apr and Oct-Nov).
     dry_window:                       # [CLAUDE.md] driest/clearest window; the
       months: [1, 2, 3]               # primary "dry season" comparison window
       label: "Dry season (Jan-Mar)"
+      # NOTE: dry_window is a comparison WINDOW, not a season. It deliberately
+      # overlaps ne_monsoon (Jan, Feb) and inter_monsoon (Mar). Only the three
+      # seasons named in `season_partition` below partition the year.
+  season_partition:                   # the ONLY entries landsat.monsoon_season() may iterate.
+    - sw_monsoon                      # Together they cover months 1-12 exactly once. Never
+    - ne_monsoon                      # derive this by iterating seasons.keys(): that would
+    - inter_monsoon                   # include dry_window and map January to two seasons.
 
 # --- Study area ---------------------------------------------------------------
 aoi:
@@ -453,8 +466,53 @@ landsat_c2l2:
   st_fill_dn: 0                       # [CLAUDE.md] fill value
   processing_level_property: "PROCESSING_LEVEL"  # [GEE catalog] ST bands are FULLY MASKED when 'L2SR'
   processing_level_required: "L2SP"   # [GEE catalog] keep only L2SP scenes for LST work
+  processing_level_exclude: "L2SR"    # Implemented as ee.Filter.neq(prop, "L2SR"), NOT
+                                      # eq(prop, "L2SP"). Both keep the same scenes, but `neq`
+                                      # fails OPEN if the property is ever missing or renamed
+                                      # (neq == eq().Not(), so a missing property passes),
+                                      # whereas `eq` would fail CLOSED to a silently empty
+                                      # collection. Notebook 02 prints filtered vs unfiltered
+                                      # scene counts so the filter can never nuke the run unseen.
+  processing_level_filter_enabled: true
+                                      # [DEFAULT — Phase 2] On L2SR scenes the ST bands are
+                                      # PRESENT BUT FULLY MASKED, so dropping them is a speed
+                                      # optimisation for LST, not a correctness requirement —
+                                      # and it also discards usable SURFACE REFLECTANCE. Set
+                                      # false when building an index-only collection where the
+                                      # extra NDVI/albedo observations are worth more.
   qa_pixel_band: "QA_PIXEL"           # [CLAUDE.md][GEE catalog]
   qa_radsat_band: "QA_RADSAT"         # [CLAUDE.md][GEE catalog]
+  # --- Phase 2 additions (band names verified in the GEE catalog 2026-08-08 on
+  #     LC08 *and* LT05 — ST_QA / ST_EMIS exist on ALL FOUR collections) -------
+  sensor_keys:                        # the four C2 L2 collections, oldest first; keys into
+    - landsat5                        # `datasets`. Lives here, not in src/, so a sensitivity
+    - landsat7                        # run (e.g. OLI-only) is a config change.
+    - landsat8
+    - landsat9
+  st_qa_band: "ST_QA"                 # [GEE catalog] per-pixel LST uncertainty, DN
+  lst_band_name: "LST_C"              # output band name for LST in degrees Celsius
+  st_qa_band_name: "ST_QA_K"          # output band name for scaled ST_QA (Kelvin)
+  harmonised_sr_bands:                # sensor-agnostic SR band names every downstream
+    - blue                            # module (indices.py) sees. The per-sensor source
+    - green                           # bands are datasets.<sensor>.sr_bands, which differ
+    - red                             # between TM/ETM+ (B1-B5,B7) and OLI (B2-B7).
+    - nir
+    - swir1
+    - swir2
+  include_l7_slc_off: true            # [DEFAULT — Phase 2] keep Landsat 7 scenes after the
+                                      # 2003-05-31 SLC failure. Median compositing over many
+                                      # scenes dilutes the striping, and excluding them would
+                                      # empty 2012-05..2013-03 entirely (L5 ended, L8 not yet
+                                      # launched). Set false for an SLC-off sensitivity run.
+  st_qa_max_kelvin: null              # [DEFAULT — Phase 2] optional per-pixel ST_QA filter.
+                                      # null = OFF (user decision 2026-08-08): the ST_QA_K band
+                                      # is always emitted so the real uncertainty distribution
+                                      # can be inspected in Colab before a threshold is chosen.
+                                      # Set e.g. 2.0 or 3.0 (Kelvin) to enable.
+  lst_plausible_range_c: [-10, 70]    # [DEFAULT — Phase 2] physical sanity gate on LST in degC.
+                                      # st_valid_dn_range is extremely permissive (DN 293 maps
+                                      # to about -123 degC), so this catches residual bad
+                                      # retrievals. Applied to LST_C ONLY, never to the SR bands.
   qa_pixel_bits:                      # [GEE catalog] full layout (CLAUDE.md omits 12-13)
     fill: 0
     dilated_cloud: 1
@@ -471,7 +529,13 @@ landsat_c2l2:
     cirrus_confidence: [14, 15]
   standard_mask:
     require_zero_bits: [0, 1, 2, 3, 4]  # [CLAUDE.md] Fill, Dilated Cloud, Cirrus/Unused, Cloud, Shadow
-    require_qa_radsat_value: 0          # [CLAUDE.md] no saturated bands
+    require_qa_radsat_value: 0          # [CLAUDE.md] no saturated bands.
+                                        # [GEE catalog] QA_RADSAT is bits 0-6 = band 1-7
+                                        # saturation, bit 8 = band 9, bit 11 = TERRAIN
+                                        # OCCLUSION. Requiring the whole word to be 0 therefore
+                                        # also drops terrain-occluded pixels — slightly stricter
+                                        # than CLAUDE.md's wording, and harmless on flat coastal
+                                        # Colombo. Noted so nobody "fixes" it later.
   harmonisation: "none"               # [CLAUDE.md] C2 is inter-calibrated across TM/ETM+/OLI;
                                       # no manual coefficients — but verify empirically on overlap years
 
@@ -479,6 +543,14 @@ landsat_c2l2:
 modis_lst:
   lst_scale: 0.02                     # [CLAUDE.md][GEE catalog] DN -> Kelvin
   kelvin_to_celsius_offset: 273.15    # [CLAUDE.md]
+  products:                           # short name -> key under `datasets`
+    terra: modis_terra_lst            # MOD11A2, overpass ~10:30 (closest to Landsat)
+    aqua: modis_aqua_lst              # MYD11A2, overpass ~13:30 (near peak heating)
+  valid_dn_range: [7500, 65535]       # [GEE catalog] stated valid range of LST_Day_1km /
+                                      # LST_Night_1km; fill = 0. Gate BEFORE scaling.
+                                      # 7500 * 0.02 = 150 K — the same physical floor as the
+                                      # Landsat st_valid_dn_range gate.
+  fill_dn: 0                          # [GEE catalog]
   view_time_scale: 0.1                # [GEE catalog] Day/Night_view_time DN -> local solar hours
   qc_filter:                          # [CLAUDE.md] "good quality" AND "avg error <= 1 K";
                                       # MOD11A2 is a plain average of MOD11A1 with NO built-in
@@ -487,6 +559,21 @@ modis_lst:
     mandatory_qa_required_value: 0
     lst_error_bits: [6, 7]            # [GEE catalog] value 0 = avg LST error <= 1 K
     lst_error_required_value: 0
+    # Both `*_required_value` keys are treated as MAXIMA (<=), not equalities: the
+    # QC fields are ordinal with 0 = best (mandatory QA 0/1/2/3 = good/unreliable/
+    # cloud/other; LST error 0/1/2/3 = <=1K/<=2K/<=3K/>3K). With both at 0 this is
+    # exactly CLAUDE.md's "good quality AND avg error <= 1 K". Phase 3 sensitivity
+    # runs can relax them via arguments to modis.qc_mask() without editing params.
+  clear_sky_day_band: "Clear_sky_days"      # [GEE catalog] present on MOD11A2 AND MYD11A2
+  clear_sky_night_band: "Clear_sky_nights"  # [GEE catalog]
+  clear_sky_is_bitmask: true          # [GEE catalog, verified 2026-08-08] CRITICAL: these are
+  clear_sky_bits: 8                   # 8-BIT BITMASKS (one bit per day of the 8-day window),
+                                      # NOT counts. The clear-day count is the POPCOUNT of the
+                                      # byte — reading the raw value would report 255 for a
+                                      # fully clear 8-day period instead of 8. See
+                                      # modis.clear_sky_count().
+  reduction_scale_m: 1000             # [GEE catalog] native 1 km grid; reduce MODIS at its own
+                                      # scale, never at the 30 m Landsat analysis grid.
   overpass_local_time:                # [CLAUDE.md] approximate local solar times
     terra_day: "10:30"
     terra_night: "22:30"
@@ -496,6 +583,76 @@ modis_lst:
 # =============================================================================
 # METHOD PARAMETERS
 # =============================================================================
+# --- Spectral indices (Phase 2) ----------------------------------------------
+# All indices are computed on the HARMONISED band names (landsat_c2l2
+# .harmonised_sr_bands), so they are sensor-agnostic — with one documented
+# exception, `albedo`, whose coefficients are sensor-specific.
+indices:
+  evi:                                # Huete et al. (2002), the MODIS EVI formulation
+    gain: 2.5                         # G
+    c1: 6.0                           # aerosol resistance coefficient for red
+    c2: 7.5                           # aerosol resistance coefficient for blue
+    soil_l: 1.0                       # canopy background adjustment
+  savi:
+    soil_l: 0.5                       # Huete (1988); 0.5 is the standard intermediate-density
+                                      # vegetation value. Ranges 0 (dense) to 1 (bare).
+  albedo:
+    # [DEFAULT — Phase 2, VERIFY AGAINST YOUR SOURCE] Narrowband-to-broadband
+    # shortwave albedo, as a plain weighted sum over the HARMONISED band names
+    # plus a constant. indices.albedo() reads whichever bands the active set
+    # lists, so swapping formulation is an edit HERE, never in src/.
+    #
+    # ONE SET FOR ALL FOUR SENSORS — and that is the choice that preserves trend
+    # continuity, contrary to the intuition that per-sensor fits must be better:
+    #   * Liang (2001) predates OLI by 12 years; there is no "Liang OLI" fit. The
+    #     universally-cited Landsat 8 form is these SAME coefficients applied to
+    #     the wavelength-matched OLI bands (B2,B4,B5,B6,B7 vs TM B1,B3,B4,B5,B7).
+    #     Our blue/red/nir/swir1/swir2 rename already performs that matching.
+    #   * Substituting a genuinely different fit (Silva, below) at 2013 would
+    #     INJECT a step change into the 2000-2025 series exactly where the
+    #     Mann-Kendall trend is most vulnerable. Coefficient CONTINUITY beats
+    #     per-sensor fit quality in a multi-decadal trend study.
+    # Spot-check the digits against whichever reference your supervisor expects.
+    active_set: "liang2001"
+    clamp: [0.0, 1.0]                 # C2 L2 SR legitimately goes slightly negative over water
+                                      # and deep shadow, where the linear fit is undefined.
+    sets:
+      liang2001:
+        source: "Liang (2001) Eq. 8 (Landsat TM/ETM+; applied to wavelength-matched OLI bands)"
+        weights: {blue: 0.356, red: 0.130, nir: 0.373, swir1: 0.085, swir2: 0.072}
+        constant: -0.0018
+        divisor: 1.0                  # Liang's published Eq. 8 does NOT normalise. A widely
+                                      # used variant (Smith 2010) divides by the coefficient
+                                      # sum, 1.016 — set `divisor: 1.016` to reproduce it.
+      silva2016_oli:                  # SENSITIVITY VARIANT ONLY — do not mix with liang2001
+        source: "Silva et al. (2016), fitted for Landsat 8 OLI"   # inside one time series.
+        weights: {blue: 0.300, green: 0.277, red: 0.233, nir: 0.143, swir1: 0.036, swir2: 0.012}
+        constant: 0.0
+        divisor: 1.0
+
+# --- Composites + valid-observation counts (Phase 2) -------------------------
+composites:
+  obs_count_band: "obs_count"         # [CLAUDE.md caveat 2] EVERY composite ships this band.
+  annual_reducer: "median"            # [DEFAULT — Phase 2] robust to residual cloud edges
+  percentile: 90                      # [DEFAULT — Phase 2] configurable upper percentile,
+                                      # emitted alongside the median. 90th is the usual choice
+                                      # for heat work (hot-tail behaviour, not central tendency).
+  min_valid_obs: null                 # [DEFAULT — Phase 2] null = FLAG ONLY, NEVER MASK
+                                      # (user decision 2026-08-08). obs_count is always emitted,
+                                      # but no pixel is dropped, so nothing is silently hidden.
+                                      # Phase 4 sets its own floor for trend fitting.
+  modis_reducer: "mean"               # [DEFAULT — Phase 2] MODIS 8-day granules are already
+                                      # means of clear-sky daily retrievals.
+  n_scenes_property: "n_scenes"       # per-composite property: scenes entering that composite
+  year_property: "year"               # properties set on every scene and composite
+  sensor_property: "sensor"
+  season_property: "season"
+  reduce_max_pixels: 10000000000      # [DEFAULT — Phase 2] explicit ceiling for reduceRegion.
+  tile_scale: 4                       # [DEFAULT — Phase 2] shrinks reducer tiles to avoid
+                                      # out-of-memory errors. Preferred over bestEffort=True,
+                                      # which silently COARSENS the scale and makes the
+                                      # resulting number non-reproducible.
+
 uhi:
   suhii:
     definition: "mean_urban_LST_minus_mean_rural_LST"   # [CLAUDE.md]

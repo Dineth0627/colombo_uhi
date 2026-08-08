@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 1f — Phase 1 signed off)_
+_Last updated: 2026-08-08 (Phase 2 — code written, awaiting first Colab run)_
 
 ## Status snapshot
 
@@ -8,7 +8,7 @@ _Last updated: 2026-08-08 (Phase 1f — Phase 1 signed off)_
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
-| 2 | LST pipeline (Landsat + MODIS) | ⬜ **next** |
+| 2 | LST pipeline (Landsat + MODIS) | 🟡 **code written, 222 tests passing — NOT yet Colab-verified** |
 | 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
@@ -28,6 +28,117 @@ _Last updated: 2026-08-08 (Phase 1f — Phase 1 signed off)_
 - [x] `notebooks/00_setup_and_auth.ipynb` (functional) + 01–08 stubs
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
+
+## 🟡 PHASE 2 — LST pipeline written (2026-08-08), awaiting Colab run 1
+
+`landsat.py`, `indices.py`, `composites.py`, `modis.py`, a `viz.py` addition and
+`notebooks/02_lst_pipeline.ipynb` are complete. **222 tests pass locally** (was 90);
+every module still imports without `earthengine-api`. **No Earth Engine code in this
+phase has been executed** — Claude Code has no credentials. Until notebook 02 runs,
+treat every EE path as unverified.
+
+### Catalog re-verification (CLAUDE.md requires it before writing code)
+
+Re-checked on the GEE catalog 2026-08-08 for the Phase 2 specifics. **No discrepancies**
+with CLAUDE.md or params for: L5/L7 `ST_B6`, L8/L9 `ST_B10`; `ST_QA`/`ST_EMIS`/`QA_PIXEL`/
+`QA_RADSAT`/`PROCESSING_LEVEL` on **all four** collections (confirmed on LT05, not only
+LC08); ST `0.00341802`/`149`; SR `2.75e-05`/`-0.2`; `ST_QA` `0.01` K; TM vs OLI band
+numbering; MODIS QC bits 0-1 (mandatory QA) and 6-7 (LST error), LST scale `0.02`.
+
+Three **new** facts, now in params:
+
+1. **`Clear_sky_days`/`Clear_sky_nights` are 8-bit BITMASKS, not counts** — one bit per
+   day of the 8-day window. A fully clear period reads as **255**, not 8. `modis
+   .clear_sky_count()` does the popcount. This one would have produced a wrong number
+   that looked like a number.
+2. **MODIS `LST_*_1km` valid DN range starts at 7500** (fill 0) → `modis_lst
+   .valid_dn_range`, gated before scaling. 7500 × 0.02 = 150 K, the same physical floor
+   as the Landsat DN gate.
+3. `QA_RADSAT` bit 11 is **terrain occlusion**, not saturation, so `QA_RADSAT == 0` is
+   marginally stricter than CLAUDE.md's wording. Harmless on flat coastal Colombo;
+   recorded in params so nobody "fixes" it.
+
+Also confirmed: Aqua `MYD11A2` runs 2002-07-04 → current, QC layout identical to Terra.
+
+### Phase 2 decisions (user-approved 2026-08-08)
+
+1. **Valid-observation floor: flag, never mask.** Every composite emits `obs_count`;
+   no pixel is dropped. `composites.min_valid_obs: null` so Phase 4 sets its own floor.
+2. **ST_QA uncertainty filter off by default**, `ST_QA_K` band always emitted
+   (`landsat_c2l2.st_qa_max_kelvin: null`) — pick a threshold from the real distribution
+   in Colab, not from a guess.
+3. **Air-temperature validation deferred to Phase 3.** Phase 2 validates Landsat LST
+   against MODIS LST. `NOAA/GSOD` stays parked under `non_ee_sources` (Phase 0
+   discrepancy #1 remains open, but is no longer blocking).
+4. **Albedo — DECISION REVERSED after design review; needs your sign-off.** You approved
+   *per-sensor* coefficient sets on my recommendation, for the stated purpose of avoiding
+   a step change at the 2013 L7→L8 transition. That recommendation was wrong on the
+   facts: Liang (2001) predates OLI by twelve years, so there is **no separate "Liang OLI"
+   fit** — the universally-cited Landsat 8 form is the *same* coefficients applied to the
+   wavelength-matched OLI bands, which our `blue…swir2` rename already performs.
+   Substituting a genuinely different published fit (Silva 2016) at 2013 would **create**
+   the discontinuity the decision existed to prevent. Shipped as **one set
+   (`liang2001`) across all four sensors**, with Silva available as
+   `indices.albedo.sets.silva2016_oli` for sensitivity runs — flip
+   `indices.albedo.active_set` if you disagree.
+
+### Design-review corrections applied before the first run
+
+A review pass against the installed `earthengine-api` source caught several things that
+would have cost Colab round trips:
+
+- **Empty-year composites.** Reducing a year with no scenes yields a *band-less* image
+  that dies at the next `select()`. `composites._empty_composite()` supplies a
+  correctly-shaped masked placeholder with `obs_count == 0`, so the year axis stays
+  complete for Phase 4 Mann-Kendall.
+- **`neq("L2SR")`, not `eq("L2SP")`.** `neq` is `eq().Not()`, so a renamed
+  `PROCESSING_LEVEL` fails **open** instead of silently emptying the collection.
+  Notebook 02 prints filtered vs unfiltered counts per sensor as the backstop.
+- **`sharedInputs=True`** on every `Reducer.combine`, and `.select([band])` *before*
+  `.reduce(...)` — otherwise a single-input reducer runs on all 8 bands (24 outputs).
+- **`ee.Image()` cast around `copyProperties`**, which returns an `ee.Element` and would
+  otherwise fail inside `.map()`.
+- **SLC-off off-by-one.** `filterDate`'s end is exclusive and `slc_off_after` is the last
+  SLC-*on* day, so the code advances one day.
+- **`month_filter` moved into `landsat.py`** with `aoi._month_filter` delegating to it —
+  `aoi` already imports `landsat`, so the shared helper had to move *down* the dependency
+  arrow or the import would be circular.
+- **`time.season_partition`** added: `monsoon_season()` must iterate a declared partition,
+  because `time.seasons` also holds `dry_window` (Jan-Mar), which overlaps `ne_monsoon`
+  and would map January to two seasons.
+- **`viz.plot_annual_lst_comparison` avoids pyplot entirely** (object-oriented
+  `Figure` + `FigureCanvasAgg`); forcing a backend would break Colab's inline rendering
+  for every later cell.
+
+### Known limitations carried into Phase 3+
+
+1. **`LST_C_p90` is near-max at low observation counts.** With a handful of clear scenes
+   per pixel per year, the 90th percentile is close to the sample maximum. Use it as
+   hot-tail behaviour, not a stable statistic; Phase 4 should fit trends on the
+   central-tendency band under an `obs_count` floor.
+2. **Calendar-year slicing breaks wrapping seasons.** `annual_composites(months=[12,1,2])`
+   groups December with the January/February of the *same* calendar year, which is not
+   one continuous NE monsoon. The Jan-Mar dry window is unaffected. Documented in the
+   docstring; fix it properly if Phase 3 wants NE-monsoon composites.
+3. **Reducer mismatch is a comparison trap.** Landsat composites default to `median`,
+   MODIS to `mean`. Notebook 02 uses `mean` for **both** sides of the comparison plot so
+   the offset is not partly a reducer artefact. Keep that discipline in Phase 3.
+4. **Clear-sky sampling bias is uncorrected.** Every LST number here is a clear-sky
+   value; the true annual mean is cooler. Not corrected anywhere in the pipeline.
+5. **C2 inter-calibration is assumed, not yet verified.** `landsat_c2l2.harmonisation:
+   none` per CLAUDE.md. Verify empirically on the overlap years (2000-2012 L5/L7,
+   2021-2024 L8/L9) before quoting cross-sensor trends.
+
+### What you must run in Colab (Phase 2)
+
+1. Push, then open `notebooks/02_lst_pipeline.ipynb` in Colab and run top to bottom.
+2. Report back with: the two scenes-per-year tables, the `L2SP only` vs unfiltered
+   counts, the observation-count statistics, and the three PNGs
+   (`figures/lst_dry_season_2025.png`, `figures/lst_obs_count_2025.png`,
+   `figures/lst_landsat_vs_modis_cmc.png`).
+3. Success looks like: explainable gaps only (L7-only 2012-05→2013-03, no Aqua before
+   2002-07); a warm CMC core with water absent; non-zero `obs_count` across the CMC;
+   Landsat and MODIS Terra-day tracking in shape with a reportable offset.
 
 ## ✅ PHASE 1 SIGNED OFF — verified reference values (Colab run 5, 2026-08-08)
 
@@ -450,7 +561,8 @@ MOD11A2/MYD11A2 with explicit `QC_Day`/`QC_Night` filtering; annual and
 dry-season composites, each shipping a **per-pixel valid-observation count**
 (CLAUDE.md caveat 2).
 
-Locally: `python -m pytest tests/ -q` → **90 passed**.
+Locally: `python -m pytest tests/ -q` → **90 passed** at the end of Phase 1;
+**222 passed** after Phase 2.
 
 ## What you must run to verify Phase 0
 
@@ -472,6 +584,19 @@ Locally: `python -m pytest tests/ -q` → **90 passed**.
 
 ## Session log
 
+- **2026-08-08 — Phase 2**: LST pipeline written. Re-verified the Phase 2 catalog
+  specifics (no discrepancies) and found three new facts, the important one being that
+  MODIS `Clear_sky_days` is an 8-bit **bitmask, not a count** — reading it raw would have
+  reported 255 clear days instead of 8. Wrote `landsat.harmonised_collection` (four
+  sensors, one schema, thermal-only quality gates so bad LST does not delete good
+  reflectance), `indices` (six indices, one albedo coefficient set), `composites`
+  (annual + dry-season, `obs_count` on every product, single-round-trip tables), `modis`
+  (real QC bit filtering, clear-sky popcount, Aqua launch clamp), and notebook 02. A
+  design-review pass caught the empty-year band-less-image bug, the `eq`-vs-`neq`
+  fail-closed filter, the missing `sharedInputs=True`, and an SLC-off off-by-one — all
+  fixed before the first Colab run. **Reversed the albedo decision** (one coefficient set,
+  not per-sensor) and flagged it for user sign-off. 222 tests passing. Nothing
+  Colab-verified yet.
 - **2026-08-08 — Phase 0**: scaffolded repo; verified 18 datasets in the GEE
   catalog Browser pane (17 ✅, 1 ❌ GSOD); wrote params.yaml, auth module,
   tests (30 passing), notebook 00, stubs, README. No LST processing code
