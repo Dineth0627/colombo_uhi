@@ -82,7 +82,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 |---|---|---|---|
 | 0 | `00_setup_and_auth` | scaffold, config, EE auth | ✅ done + Colab-verified |
 | 1 | `01_aoi_and_boundaries` | AOI geometries, GN asset, water mask | ✅ done + Colab-verified |
-| 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | 🟡 written; **awaiting Colab run** |
+| 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | ✅ done + Colab-verified |
 | 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ⬜ |
 | 4 | `04_trend_analysis` | MK + Sen's slope, FDR | ⬜ |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR | ⬜ |

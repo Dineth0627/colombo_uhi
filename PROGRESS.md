@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 2 rev 6 — notebook runs end to end; night QC + offset decomposition pending run 6)_
+_Last updated: 2026-08-08 (Phase 2 signed off — Colab run 6)_
 
 ## Status snapshot
 
@@ -8,8 +8,8 @@ _Last updated: 2026-08-08 (Phase 2 rev 6 — notebook runs end to end; night QC 
 |---|---|---|
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
-| 2 | LST pipeline (Landsat + MODIS) | 🟡 **runs end to end (run 5); rev 6 fixes night QC + offset decomposition — 249 tests passing** |
-| 3 | UHI metrics (SUHII, UTFVI) | ⬜ |
+| 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
+| 3 | UHI metrics (SUHII, UTFVI) | ⬜ **next** |
 | 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
@@ -29,14 +29,12 @@ _Last updated: 2026-08-08 (Phase 2 rev 6 — notebook runs end to end; night QC 
 - [x] `tests/` — 30 tests, all passing locally (`python -m pytest tests/ -q`)
 - [ ] **USER: run notebook 00 in Colab end-to-end** (see "What you must run")
 
-## 🟡 PHASE 2 — LST pipeline; runs end to end, two findings pending run 6
+## PHASE 2 — LST pipeline (complete)
 
 `landsat.py`, `indices.py`, `composites.py`, `modis.py`, a `viz.py` addition and
-`notebooks/02_lst_pipeline.ipynb` are complete. **249 tests pass locally** (was 90);
-every module still imports without `earthengine-api`. The notebook **runs end to end**
-as of Colab run 5. Two findings from that run are fixed in rev 6 and need one more run
-to confirm: MODIS night-time LST (empty under strict QC) and the Landsat-vs-MODIS
-offset (not yet attributable).
+`notebooks/02_lst_pipeline.ipynb`. **249 tests pass locally** (was 90); every module
+still imports without `earthengine-api`. Six Colab iterations; the verified outputs
+are in the sign-off table below.
 
 Sections below are in reverse chronological order: latest run first, then the
 as-designed record from before any run.
@@ -206,6 +204,77 @@ Two findings worth carrying forward:
    the L7-only gap is really **2012-01 to 2013-03**, wider than CLAUDE.md's
    "2012-05" implies. Relevant to Phase 4: that stretch of the series rests on
    SLC-off ETM+ alone.
+
+## ✅ PHASE 2 SIGNED OFF — verified reference values (Colab run 6, 2026-08-08)
+
+These are the authoritative Phase 2 outputs. Quote them in the report; re-running
+notebook 02 should reproduce them.
+
+| Quantity | Verified | Note |
+|---|---|---|
+| Landsat scenes over the district, 2000–2025 | **1674** | L5 214 / L7 402 / L8 794 / L9 264 |
+| `PROCESSING_LEVEL` filter effect | **none** | identical counts filtered/unfiltered, all four sensors |
+| Dry-window years with zero scenes | **none** | min 2 (2000), typically 15–36 |
+| Dry-season 2025 `obs_count` over CMC | **min 4, median 10, max 14** | healthy; no zero-coverage pixels |
+| Static vs combined water mask, CMC 2025 mean | **−0.074 °C** | the cheap mask is a fair substitute for series work |
+| Landsat annual mean, CMC (100 m) | **37.3–42.2 °C** | 4206 valid pixels every year |
+| MODIS Terra day, CMC | **31.7–35.1 °C** | only 13–23 of 40 possible 1 km pixels |
+| MODIS Aqua day, CMC | **35.5–39.0 °C** | warmer than Terra day, correct for 13:30 |
+| MODIS Terra night, CMC | **22.7–25.2 °C** | 40/40 pixels — full coverage |
+| MODIS Aqua night, CMC | **22.5–24.1 °C** | 40/40 pixels |
+| MODIS Terra night, District | **20.8–23.0 °C** | 643/643 pixels |
+| Index means, CMC Jan–Mar 2025 | NDVI 0.372, NDBI 0.025, MNDWI −0.415, EVI 0.196, SAVI 0.192, albedo 0.124 | all physically plausible |
+
+**A nocturnal UHI signal is already visible**: CMC Terra night runs ~2 °C above
+Colombo District Terra night in every year. That is Phase 3's result arriving
+early, and it is the cleanest signal in the whole dataset — night has full pixel
+coverage where daytime MODIS does not.
+
+### Landsat-vs-MODIS offset, decomposed (the run 6 deliverable)
+
+| Comparison | Mean offset | Attributes to |
+|---|---|---|
+| CMC, Landsat 100 m vs Terra day | **+5.92 °C** | (baseline) |
+| CMC, Landsat 1000 m vs Terra day | **+5.13 °C** | resolution ≈ **0.79 °C** |
+| District, Landsat 100 m vs Terra day | **+3.20 °C** | scope/sample ≈ **2.72 °C** |
+
+So the ~6 °C CMC gap is mostly **small-sample and scope**, only ~0.8 °C is
+resolution, and roughly **+3.2 °C** survives as a genuine sensor/sampling
+difference. That residual — not the 5.9 — is the number the report may quote,
+and it must be quoted with its cause stated: Landsat is an instantaneous
+clear-sky snapshot, MOD11A2 is an 8-day average of clear-sky daily retrievals,
+and the two carry different emissivity treatments. At district scale the two
+series track each other closely in shape, which is the meaningful agreement.
+
+### ⚠️ Caveats that must travel into later phases
+
+1. **The strict daytime MODIS QC is spatially biased.** Measured over the CMC:
+   mandatory-QA class 0 is only **3.7%** of daytime observations, so the
+   CLAUDE.md policy discards ~96% of them on that field alone — and it fails
+   hardest exactly where the UHI lives. The CMC keeps 13–23 of 40 possible 1 km
+   pixels per year (32–58%); Colombo District keeps 594–611 of ~643 (92–95%).
+   **Phase 3 must run a relaxed sensitivity** (`modis.annual_lst(mandatory_qa_max=1)`,
+   now supported) and report both, rather than treat the strict CMC daytime
+   series as authoritative.
+2. **Night is accepted at ≤3 K uncertainty, day at ≤1 K** (decision 7). Night-time
+   SUHII is weaker evidence than daytime SUHII and must never be presented as an
+   equal-confidence pair.
+3. **`obs_count` has geometric structure, not just meteorological.** The 2025
+   observation-count map shows clear WRS-2 **path side-lap banding** — coverage
+   roughly doubles in the overlap strips, one of which runs through the CMC.
+   Phase 4 trend confidence therefore varies with orbit geometry as well as
+   cloud, and any map of trend significance will inherit those stripes.
+4. **Day and night trends diverge.** Terra night rises ~+2 °C over 2000–2025 in
+   both zones while Terra day CMC falls. Before reading anything into that,
+   Phase 4 must account for **Terra's orbital drift after ~2020**, which moves
+   its overpass time and contaminates end-of-series daytime trends. Aqua and
+   Landsat do not share that drift and can be used to test it.
+5. **The ~40 °C Landsat annual means are not air temperature and not corrected
+   for clear-sky sampling bias.** They are clear-sky, ~10:30, 30 m land-surface
+   values over a dense urban core. Both facts belong in the report.
+6. **Landsat 5 has zero 2012 scenes** — it stopped acquiring in November 2011,
+   so the L7-only gap is **2012-01 to 2013-03**, wider than CLAUDE.md's
+   "2012-05" implies. That stretch rests on SLC-off ETM+ alone.
 
 ### ✅ Colab run 5 (2026-08-08) — notebook 02 runs end to end
 
@@ -795,6 +864,14 @@ Locally: `python -m pytest tests/ -q` → **90 passed** at the end of Phase 1;
 
 ## Session log
 
+- **2026-08-08 — Phase 2 SIGNED OFF**: run 6 confirmed both rev-6 fixes. The QC
+  histogram proved the night diagnosis exactly — mandatory-QA class 0 is **0.0%** at
+  night — and incidentally exposed that the strict DAY policy keeps only 3.7% of
+  observations and fails hardest over the coastal core, which is now a Phase 3
+  sensitivity requirement. Night LST returned 22.5-25.2 °C with full pixel coverage,
+  and CMC night runs ~2 °C above district night — a nocturnal UHI signal already
+  visible. The offset decomposition attributed the ~6 °C CMC gap to scope (2.7),
+  resolution (0.8) and a ~3.2 °C genuine sensor residual. All four figures reviewed.
 - **2026-08-08 — Phase 2 rev 6**: notebook 02 ran end to end (run 5). Two defects in the
   results: MODIS **night** LST was empty for all 26 years on both satellites under the
   strict QC, and the pipeline **said nothing** about a 100%-empty series. Split

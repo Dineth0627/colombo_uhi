@@ -570,21 +570,42 @@ modis_lst:
     # Thresholds are MAXIMA (<=), not equalities: both QC fields are ordinal with
     # 0 = best. They are split by overpass because the two are not comparable in
     # quality — see the night note below.
+    # MEASURED QC class distribution over the CMC, MOD11A2, 2000-2025
+    # (modis.qc_class_histogram, Colab run 6, 2026-08-08). These numbers are the
+    # evidence for the thresholds below — re-measure before changing either.
+    #
+    #                        DAY                          NIGHT
+    #   mandatory_qa   0: 3.7%   1: 60.2%          0:  0.0%   1: 44.5%
+    #                  2: 18.8%  3: 17.4%          2: 37.3%   3: 18.2%
+    #   lst_error      0: 43.3%  1: 53.9%          0: 68.3%   1: 31.2%
+    #                  2: 2.8%   3:  0.0%          2:  0.5%   3:  0.0%
     day:
       mandatory_qa_max: 0             # [CLAUDE.md] "good quality"
       lst_error_max: 0                # [CLAUDE.md] "avg error <= 1 K"
+      # KNOWN COST, measured above: mandatory_qa class 0 is only 3.7% of daytime
+      # observations, so this policy discards ~96% of them on that field alone.
+      # Worse, it fails DISPROPORTIONATELY over the dense coastal core: the CMC
+      # retains 13-23 of 40 possible 1 km pixels per year (32-58%), while Colombo
+      # District retains 594-611 of ~643 (92-95%). The surviving CMC sample is a
+      # spatially biased subset of exactly the area the UHI signal lives in.
+      # Kept at 0/0 because CLAUDE.md specifies it — but Phase 3 should run a
+      # relaxed sensitivity via modis.annual_lst(mandatory_qa_max=1) and report
+      # both, rather than treat the strict CMC daytime series as authoritative.
     night:
       # *** DELIBERATE DEVIATION FROM CLAUDE.md — do not "correct" this to 0/0. ***
-      # MEASURED, Colab run 5 (2026-08-08): applying the strict day thresholds to
-      # QC_Night returned ZERO valid pixels over the CMC for ALL 26 years, on both
-      # Terra and Aqua. MOD11A2/MYD11A2 night retrievals over the humid tropical
-      # coast are routinely flagged "unreliable" and rarely reach the <=1 K error
-      # class. Strict night QC therefore does not produce a conservative answer, it
-      # produces NO answer — and MODIS is the only night-time source in this
-      # project (CLAUDE.md caveat 4), so night-time UHI would be unobtainable.
+      # PROVEN, Colab runs 5 and 6: mandatory_qa class 0 is **0.0%** at night —
+      # MOD11A2/MYD11A2 never assign "good quality" to a night retrieval here. The
+      # strict policy therefore returned ZERO night pixels for ALL 26 years on both
+      # satellites. That is not a conservative answer, it is no answer — and MODIS
+      # is the only night-time source in this project (CLAUDE.md caveat 4), so
+      # night-time UHI would be unobtainable.
       #
-      # CONSEQUENCE THAT MUST TRAVEL INTO PHASE 3: night LST carries a stated
-      # uncertainty of up to 3 K, versus <= 1 K for day. Night-time SUHII is
+      # Note the LST-error field tells the opposite story: night is BETTER than day
+      # (68.3% in the <=1 K class vs 43.3%). It is the mandatory-QA flag alone that
+      # blocks night, and relaxing it to 1 recovers 44.5% of observations.
+      #
+      # CONSEQUENCE THAT MUST TRAVEL INTO PHASE 3: night LST is accepted at up to
+      # 3 K stated uncertainty versus <= 1 K for day. Night-time SUHII is
       # correspondingly weaker evidence than daytime SUHII and must be reported
       # with that asymmetry stated, never as an equal-confidence pair.
       mandatory_qa_max: 1             # allow "produced, unreliable quality"

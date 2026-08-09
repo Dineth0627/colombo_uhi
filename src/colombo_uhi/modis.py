@@ -522,6 +522,8 @@ def annual_lst(
     reducer: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    mandatory_qa_max: int | None = None,
+    lst_error_max: int | None = None,
     **kwargs: Any,
 ) -> "ee.ImageCollection":
     """Annual MODIS LST composites, optionally clipped to a study geometry.
@@ -549,6 +551,12 @@ def annual_lst(
             between them is a reducer artefact rather than a sensor difference.
         start_date: Inclusive start; clamped to the product's launch date.
         end_date: Exclusive end.
+        mandatory_qa_max: QC override forwarded to :func:`qc_mask`. Phase 3 will
+            want this: the strict DAY policy keeps only ~4% of observations on
+            the mandatory-QA field (measured, Colab run 6) and fails hardest
+            over the dense coastal core, so a relaxed sensitivity run is worth
+            having without editing params.
+        lst_error_max: QC override forwarded to :func:`qc_mask`.
         **kwargs: Forwarded to
             :func:`colombo_uhi.composites.annual_composites`.
 
@@ -564,6 +572,8 @@ def annual_lst(
         region=region,
         start_date=start_date,
         end_date=end_date,
+        mandatory_qa_max=mandatory_qa_max,
+        lst_error_max=lst_error_max,
     )
     annual = composites.annual_composites(
         collection,
