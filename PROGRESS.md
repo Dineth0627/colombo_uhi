@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-09 (Colab run 8 — mask diagnosis confirmed; figure fixes pending a push)_
+_Last updated: 2026-08-09 (Colab run 9 — **PHASE 3 COMPLETE**, all checks pass, figures verified)_
 
 ## Status snapshot
 
@@ -9,8 +9,8 @@ _Last updated: 2026-08-09 (Colab run 8 — mask diagnosis confirmed; figure fixe
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
-| 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (run 7, first pass) |
-| 4 | Trend analysis (MK/Sen + FDR) | ⬜ **next** |
+| 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
+| 4 | Trend analysis (MK/Sen + FDR) | ⬜ **next — unblocked** |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
@@ -182,12 +182,46 @@ current tree.
 > likely cause, plus the hand-uploaded-notebook case where the `.ipynb` and `src/`
 > can sit at different revisions.
 
-### To pick up in Colab
+## PHASE 3 SIGNED OFF — Colab run 9 (2026-08-09, HEAD 7d5896d)
 
-**Commit and push the Phase 3b changes first** — the notebook runs against the
-pushed repo, so local edits are invisible to it. Then re-run from the clone cell.
-Everything upstream of the figures is unchanged and already verified twice, so
-only the figure cells and Step 1 produce new output.
+Ran clean against the pushed Phase 3b commit. **Every check passes and all three
+figures render correctly on real data.** Phase 3 is complete.
+
+### All five scale-matched mask checks PASS
+
+| mask | scale | measured | Phase 1 | Δ |
+|---|---|---|---|---|
+| buffer_ring/urban | 30 m | 40.69 | 40.18 | +1.3 % |
+| buffer_ring/urban | 300 m | 38.17 | 37.70 | +1.2 % |
+| buffer_ring/rural | 300 m | 206.18 | 206.10 | **+0.0 %** |
+| lcz_based/urban | 300 m | 458.96 | 458.50 | **+0.1 %** |
+| lcz_based/rural | 300 m | 152.42 | 152.20 | **+0.1 %** |
+
+Three of the five reproduce Phase 1 to a tenth of a percent — the Phase 3 masks
+are demonstrably the Phase 1 masks. The residual on `buffer_ring/urban` is the
+water-mask substitution (**+0.44 km²**; the combined mask returns 37.72 against
+Phase 1's 37.70), not a geometry change.
+
+### Figures verified on real data
+
+The SUHII figure is now small multiples with a **two-entry legend**, panel gaps
+matching the summary table exactly: `landsat_dry` **3.21 °C**, `aqua_day` 2.89,
+`aqua_night` 1.91, `terra_day_relaxed` 1.81, `terra_night` 1.69, `terra_day` 1.42.
+The UTFVI legend sits below the axes with all six classes visible including
+"Worst". The scatter carries a labelled OLS fit clipped to the 1st–99th
+percentile.
+
+`ee.Reducer.stdDev()` re-confirmed as `ddof=0`; Terra-night buffer_ring SUHII
+re-confirmed at **+2.29 °C**.
+
+### Phase 3 deliverables (all in `data/outputs/`)
+
+`suhii_2000_2025.csv` · `utfvi_class_shares_2000_2025.csv` ·
+`lst_by_gn_2020s.csv` (557 rows) · `lst_by_ds_2020s.csv` (13 rows) ·
+`lst_driver_ols_by_year.csv` · `lst_driver_correlations_by_year.csv`, plus the
+figures in `figures/`.
+
+**Phase 4 (Mann-Kendall + Sen's slope + Benjamini-Hochberg FDR) is unblocked.**
 
 ## PHASE 3 — implementation record (code written 2026-08-09)
 
