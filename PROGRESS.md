@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-08 (Phase 2 signed off — Colab run 6)_
+_Last updated: 2026-08-09 (Phase 3 code written — NOT yet Colab-verified)_
 
 ## Status snapshot
 
@@ -9,12 +9,123 @@ _Last updated: 2026-08-08 (Phase 2 signed off — Colab run 6)_
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
-| 3 | UHI metrics (SUHII, UTFVI) | ⬜ **next** |
-| 4 | Trend analysis (MK/Sen + FDR) | ⬜ |
+| 3 | UHI metrics (SUHII, UTFVI) | 🟡 **code written, 366 tests pass — AWAITING COLAB RUN 7** |
+| 4 | Trend analysis (MK/Sen + FDR) | ⬜ next after Phase 3 sign-off |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+## PHASE 3 — UHI metrics (code written 2026-08-09, unverified)
+
+`uhi_metrics.py` (new, replacing the stub), three `viz.py` figures, an additive
+`aoi.py` change, one `composites.py` reuse refactor, `config/params.yaml` additions,
+`tests/test_uhi_metrics.py` (new) and `notebooks/03_uhi_metrics.ipynb` (rebuilt from
+the 1-cell stub). **366 tests pass locally** (was 249).
+
+> **Nothing here has been executed against Earth Engine.** Claude Code has no EE
+> credentials. Every server-side function is unverified until notebook 03 runs.
+
+### User decisions taken this session (2026-08-09)
+
+1. **UTFVI reference = per-year AOI mean** (`uhi.utfvi.reference`), the standard
+   formulation, so the published class breaks keep their meaning. **Consequence that
+   must travel with every UTFVI output:** the index measures *within*-year spatial
+   structure, so a uniformly warming city shows **no class change at all**. Epoch-to-
+   epoch drift is redistribution of heat, never evidence of warming.
+2. **Six SUHII sources**: Landsat dry-season, MODIS Terra day/night, Aqua day/night,
+   plus `terra_day_relaxed` — the relaxed-QC daytime run Phase 2 sign-off required.
+3. **Driver OLS on sampled pixels**, 5000/year at 100 m (not GN-aggregated).
+
+### Two blockers found and fixed
+
+1. **`aoi.urban_mask`/`rural_mask` hard-coded `water_exclusion_mask(params)`** with no
+   region and no override. That function composites Landsat internally and the composite
+   is re-instantiated *for every image it masks* — the Colab run 3 failure, which across
+   26 years × 6 sources would have been unrunnable. All three rural-reference functions
+   now take an optional `water` image, **defaulting to `None` = existing behaviour**, so
+   Phase 1's notebooks and call sites are untouched. Phase 3 passes
+   `aoi.static_water_mask`. Cost of that substitution is the already-measured **−0.074 °C**
+   on the CMC 2025 mean (notebook 02) — do not re-derive it.
+2. **No mask-based zonal reduction existed.** Every `composites.py` zonal path takes an
+   `ee.Geometry`. `uhi_metrics.masked_pair_image` stacks the LST band masked to every
+   method's urban and rural mask into one image, so a **single `reduceRegion` returns all
+   four means and all four counts** for both rural definitions at once.
+
+### Open question NOT resolved — settle it in Colab
+
+**`ee.Reducer.stdDev()`: population (ddof 0) or sample (ddof 1)?** The Earth Engine API
+docs do not state it, and a separate `ee.Reducer.sampleStdDev()` exists — which suggests,
+but does not prove, that `stdDev` is the population form. Rather than guess,
+`uhi.zscore.ddof` is an explicit params value (currently **0**) and **notebook 03 Step 6
+measures it** on a known probe array in three lines. Until that runs, the unit-tested
+`zscore_array` and the server-side `lst_zscore` are only guaranteed to agree to O(1/n).
+**Record the measured value in params AND here once known.**
+
+### Bug found and fixed while testing
+
+`pandas.Series.std(ddof=0)` of a **constant** column is not reliably exactly `0.0` — it
+came back as `2.78e-17` in one frame construction and `0.0` in another. Both the
+`fit_drivers` constant-predictor guard and the `plot_lst_vs_index` fit guard used
+`std() == 0` / `std() > 0`, so a constant predictor slipped through into a singular
+design matrix (statsmodels returns a NaN row that reads like a coefficient; `np.polyfit`
+emitted `RankWarning` and drew a meaningless line). All three sites now count distinct
+values (`nunique() <= 1`), which is exact. Pinned by parametrised regression tests.
+
+### Catalog verification for the Phase 3 additions
+
+Re-checked `JRC/GHSL/P2023A/GHS_BUILT_S` on the GEE catalog 2026-08-09: `built_surface`
+is **m² of built surface per 100 m cell**, 5-year epochs 1975–2030. So the built **fraction**
+is `built_surface / 10000` → `datasets.ghsl_built.cell_area_m2: 10000` and
+`epoch_interval_years: 5`. `uhi_metrics.built_up_fraction()` snaps the requested year
+**down** to its epoch and sets an `epoch` property: a 2023 built fraction is really the
+2020 layer, and must be reported as such. No discrepancy with CLAUDE.md or params.
+
+### Round-trip budget (what to expect in Colab)
+
+| Product | Round trips |
+|---|---|
+| SUHII table, 6 sources × 2 definitions × 26 yr, batched 4 | ~42 |
+| UTFVI class series, 26 yr batched 4 | ~7 |
+| UTFVI epoch maps + thumbnails | ~6 |
+| z-scores, hot-pixel areas, thumbnails | ~5 |
+| Zonal by division (GN + DS) | 2 |
+| Drivers, 1 sample per year | 26 |
+
+### New caveats that must travel into Phase 4+
+
+1. **UTFVI's per-year reference hides uniform warming.** The epoch maps show
+   redistribution only. Phase 4's Mann-Kendall/Sen products are what measure trend, and
+   must never be described as "confirming" the UTFVI maps.
+2. **MODIS SUHII is a coarse-unit statistic.** At the 1 km reduction scale the 100 m LCZ
+   masks and the rasterised CMC polygon are resampled, so a 1 km pixel with *any* urban
+   fraction counts as urban. The CMC holds ~40 MODIS pixels (Phase 2, measured), so the
+   MODIS urban mean is edge-contaminated. Always read it against `urban_pixels`.
+3. **Day and night are not an equal-confidence pair** — 1 K vs 3 K accepted uncertainty
+   (Phase 2 caveat 2, unchanged and still binding).
+4. **Driver p-values are anti-conservative.** Sampled pixels are spatially autocorrelated;
+   OLS standard errors are too small. This is a screening device until Phase 5 runs
+   residual Moran's I → spatial lag/error → GWR/MGWR.
+5. **Built-up fraction is a 5-year epoch value**, not an annual measurement.
+6. **The two rural definitions differ by construction** (Phase 1 caveat 3, unchanged):
+   their spread is the required sensitivity, not a discrepancy to reconcile.
+
+### What you must run before Phase 4
+
+Run `notebooks/03_uhi_metrics.ipynb` top to bottom in Colab, then work the
+**"What to check before signing Phase 3 off"** checklist in its final cell. The two
+cells designed to fail loudly if something is wrong:
+
+* **Step 1** cross-checks the mask areas against Phase 1's verified values
+  (buffer_ring urban 37.7 / rural 206.1 km²; LCZ urban 458.5 / rural 152.2 km², at 100 m)
+  and flags any that moved >5%. A move means the static water mask changed the geometry.
+* **Step 3** checks Terra-night buffer_ring SUHII lands near **+1 to +2 °C**, consistent
+  with the ~+2 °C CMC-vs-District nocturnal difference Phase 2 already measured. Negative
+  or >6 °C means a mask is wrong.
+
+Expected and **not** a bug: Aqua rows for 2000–mid-2002 come back empty with
+`urban_pixels = 0` (Aqua launched 2002-07-04), and may trigger the caveat-2
+"mostly empty" warning.
 
 ## Phase 0 — done this session (2026-08-08)
 

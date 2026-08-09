@@ -189,3 +189,227 @@ def test_plot_does_not_touch_the_global_matplotlib_backend(
         {"Landsat": landsat_series}, tmp_path / "backend.png", params
     )
     assert matplotlib.get_backend() == before
+
+
+# =============================================================================
+# Phase 3 figures
+# =============================================================================
+@pytest.fixture()
+def suhii_frame() -> pd.DataFrame:
+    """Tidy SUHII table shaped exactly like uhi_metrics.suhii_all_sources."""
+    rows = []
+    for source, urban, rural, pixels in (
+        ("landsat_dry", 34.0, 31.0, 4200),
+        ("terra_night", 24.5, 22.6, 40),
+    ):
+        for method, offset in (("buffer_ring", 0.0), ("lcz_based", -0.9)):
+            for index, year in enumerate((2000, 2001, 2002)):
+                rows.append(
+                    {
+                        "year": year,
+                        "source": source,
+                        "rural_definition": method,
+                        "urban_mean": urban + index * 0.1,
+                        "rural_mean": rural + offset,
+                        "suhii": (urban + index * 0.1) - (rural + offset),
+                        "urban_pixels": pixels,
+                        "rural_pixels": pixels * 4,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture()
+def utfvi_share_frame(params: dict[str, Any]) -> pd.DataFrame:
+    labels = params["uhi"]["utfvi"]["labels"]
+    rows = []
+    for year in (2000, 2001, 2002):
+        shares = dict(zip(labels, [30.0, 25.0, 20.0, 12.0, 8.0, 5.0]))
+        rows.append({"year": year, **shares, "pixel_count": 5000})
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture()
+def driver_sample_frame() -> pd.DataFrame:
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    ndvi = rng.uniform(0.0, 0.8, size=300)
+    ndbi = rng.uniform(-0.3, 0.4, size=300)
+    return pd.DataFrame(
+        {
+            "LST_C": 30.0 - 6.0 * ndvi + 4.0 * ndbi + rng.normal(0, 0.4, 300),
+            "NDVI": ndvi,
+            "NDBI": ndbi,
+            "MNDWI": rng.uniform(-0.6, 0.2, size=300),
+            "built_fraction": rng.uniform(0.0, 1.0, size=300),
+        }
+    )
+
+
+# --- utfvi_vis_params --------------------------------------------------------
+def test_utfvi_vis_params_spans_every_class(params: dict[str, Any]) -> None:
+    vis = viz.utfvi_vis_params(params)
+    assert vis["min"] == 0
+    assert vis["max"] == len(params["uhi"]["utfvi"]["labels"]) - 1 == 5
+    assert len(vis["palette"]) == 6
+
+
+def test_utfvi_vis_params_rejects_a_short_palette(params: dict[str, Any]) -> None:
+    # A short palette silently RECYCLES colours, making two classes
+    # indistinguishable on the map with no error anywhere.
+    import copy
+
+    mutated = copy.deepcopy(params)
+    mutated["uhi"]["utfvi"]["palette"] = ["ffffff", "000000"]
+    with pytest.raises(ValueError, match="palette has 2 colours"):
+        viz.utfvi_vis_params(mutated)
+
+
+# --- plot_suhii_sensitivity --------------------------------------------------
+def test_suhii_sensitivity_writes_a_png(
+    tmp_path: Path, params: dict[str, Any], suhii_frame: pd.DataFrame
+) -> None:
+    out = viz.plot_suhii_sensitivity(suhii_frame, tmp_path / "suhii.png", params)
+    assert out.is_file()
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_suhii_sensitivity_accepts_a_source_subset(
+    tmp_path: Path, params: dict[str, Any], suhii_frame: pd.DataFrame
+) -> None:
+    out = viz.plot_suhii_sensitivity(
+        suhii_frame, tmp_path / "one.png", params, sources=["terra_night"]
+    )
+    assert out.is_file()
+
+
+def test_suhii_sensitivity_skips_zero_pixel_years(
+    tmp_path: Path, params: dict[str, Any], suhii_frame: pd.DataFrame
+) -> None:
+    # A SUHII resting on zero urban pixels is not a measurement.
+    frame = suhii_frame.copy()
+    frame.loc[0, "urban_pixels"] = 0
+    out = viz.plot_suhii_sensitivity(frame, tmp_path / "zero.png", params)
+    assert out.is_file()
+
+
+def test_suhii_sensitivity_rejects_an_empty_frame(
+    tmp_path: Path, params: dict[str, Any]
+) -> None:
+    empty = pd.DataFrame(
+        columns=["year", "source", "rural_definition", "suhii"]
+    )
+    with pytest.raises(ValueError, match="empty"):
+        viz.plot_suhii_sensitivity(empty, tmp_path / "empty.png", params)
+
+
+def test_suhii_sensitivity_rejects_a_missing_column(
+    tmp_path: Path, params: dict[str, Any], suhii_frame: pd.DataFrame
+) -> None:
+    with pytest.raises(ValueError, match="rural_definition"):
+        viz.plot_suhii_sensitivity(
+            suhii_frame.drop(columns=["rural_definition"]),
+            tmp_path / "bad.png",
+            params,
+        )
+
+
+# --- plot_utfvi_class_shares -------------------------------------------------
+def test_utfvi_shares_writes_a_png(
+    tmp_path: Path, params: dict[str, Any], utfvi_share_frame: pd.DataFrame
+) -> None:
+    out = viz.plot_utfvi_class_shares(
+        utfvi_share_frame, tmp_path / "shares.png", params
+    )
+    assert out.is_file()
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_utfvi_shares_rejects_a_missing_class_column(
+    tmp_path: Path, params: dict[str, Any], utfvi_share_frame: pd.DataFrame
+) -> None:
+    with pytest.raises(ValueError, match="Worst"):
+        viz.plot_utfvi_class_shares(
+            utfvi_share_frame.drop(columns=["Worst"]),
+            tmp_path / "bad.png",
+            params,
+        )
+
+
+def test_utfvi_shares_reject_an_all_empty_series(
+    tmp_path: Path, params: dict[str, Any], utfvi_share_frame: pd.DataFrame
+) -> None:
+    labels = params["uhi"]["utfvi"]["labels"]
+    frame = utfvi_share_frame.copy()
+    frame[labels] = float("nan")
+    with pytest.raises(ValueError, match="no year with classified pixels"):
+        viz.plot_utfvi_class_shares(frame, tmp_path / "nan.png", params)
+
+
+# --- plot_lst_vs_index -------------------------------------------------------
+def test_lst_vs_index_writes_a_png(
+    tmp_path: Path, params: dict[str, Any], driver_sample_frame: pd.DataFrame
+) -> None:
+    out = viz.plot_lst_vs_index(
+        driver_sample_frame,
+        tmp_path / "scatter.png",
+        params,
+        index_columns=["NDVI", "NDBI"],
+    )
+    assert out.is_file()
+    assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_lst_vs_index_defaults_to_every_predictor(
+    tmp_path: Path, params: dict[str, Any], driver_sample_frame: pd.DataFrame
+) -> None:
+    out = viz.plot_lst_vs_index(
+        driver_sample_frame, tmp_path / "all.png", params
+    )
+    assert out.is_file()
+
+
+def test_lst_vs_index_thins_only_the_drawing(
+    tmp_path: Path, params: dict[str, Any], driver_sample_frame: pd.DataFrame
+) -> None:
+    # max_points controls how many dots are drawn; the fitted line still uses
+    # every row, so a thinned figure is not a differently-fitted figure.
+    out = viz.plot_lst_vs_index(
+        driver_sample_frame,
+        tmp_path / "thin.png",
+        params,
+        index_columns=["NDVI"],
+        max_points=25,
+    )
+    assert out.is_file()
+
+
+def test_lst_vs_index_survives_a_constant_predictor(
+    tmp_path: Path, params: dict[str, Any], driver_sample_frame: pd.DataFrame
+) -> None:
+    # Regression: the constancy guard used to test std() == 0, but pandas
+    # returns 2.8e-17 rather than exactly 0 for a constant column depending on
+    # how the frame was built. The guard passed, np.polyfit got a singular
+    # design and emitted RankWarning, and the panel drew a meaningless line.
+    # Escalating the warning to an error is what pins the fix.
+    import warnings
+
+    frame = driver_sample_frame.copy()
+    frame["MNDWI"] = -0.2
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = viz.plot_lst_vs_index(
+            frame, tmp_path / "const.png", params, index_columns=["NDVI", "MNDWI"]
+        )
+    assert out.is_file()
+
+
+def test_lst_vs_index_rejects_an_empty_frame(
+    tmp_path: Path, params: dict[str, Any]
+) -> None:
+    empty = pd.DataFrame(columns=["LST_C", "NDVI"])
+    with pytest.raises(ValueError, match="empty"):
+        viz.plot_lst_vs_index(
+            empty, tmp_path / "empty.png", params, index_columns=["NDVI"]
+        )

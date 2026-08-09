@@ -370,3 +370,139 @@ def test_albedo_uses_one_coefficient_set(params: dict[str, Any]) -> None:
     for entry in albedo["sets"].values():
         assert entry["weights"], "an albedo set needs weights"
         assert "source" in entry, "every albedo set must cite its source"
+
+
+# =============================================================================
+# Phase 3 additions (UHI metrics)
+# =============================================================================
+def test_phase3_sections_present(params: dict[str, Any]) -> None:
+    uhi = params["uhi"]
+    for section in ("zscore", "drivers"):
+        assert section in uhi, f"missing uhi section: {section}"
+    for key in ("sources", "batch_years"):
+        assert key in uhi["suhii"], f"missing uhi.suhii key: {key}"
+
+
+def test_utfvi_units_are_celsius(params: dict[str, Any]) -> None:
+    # LOAD-BEARING. UTFVI is a ratio, so the class breaks depend on the
+    # temperature scale: on Kelvin the 0.005 break would mean ~1.5 K instead of
+    # ~0.15 degC. uhi_metrics.utfvi() refuses anything else.
+    assert params["uhi"]["utfvi"]["units"] == "celsius"
+
+
+def test_utfvi_reference_is_the_per_year_mean(params: dict[str, Any]) -> None:
+    # User decision 2026-08-09. The consequence must travel with every UTFVI
+    # output: a uniformly warming city shows NO class change, so epoch-to-epoch
+    # drift is redistribution of heat, never evidence of warming.
+    assert params["uhi"]["utfvi"]["reference"] == "per_year_aoi_mean"
+
+
+def test_utfvi_palette_has_one_colour_per_class(params: dict[str, Any]) -> None:
+    utfvi = params["uhi"]["utfvi"]
+    assert len(utfvi["palette"]) == len(utfvi["labels"]) == 6
+    for colour in utfvi["palette"]:
+        assert len(colour) == 6, f"{colour} is not a bare 6-digit hex colour"
+        int(colour, 16)  # raises if it is not hex
+
+
+def test_utfvi_epochs_tile_the_study_period(params: dict[str, Any]) -> None:
+    # No gap and no overlap, or a year silently belongs to two epoch maps (or to
+    # none) and the three-epoch comparison stops being a partition of the record.
+    epochs = params["uhi"]["utfvi"]["epochs"]
+    spans = sorted((int(s), int(e)) for s, e in epochs.values())
+    assert spans[0][0] == params["time"]["start_year"]
+    assert spans[-1][1] == params["time"]["end_year"]
+    for (_, earlier_end), (later_start, _) in zip(spans, spans[1:]):
+        assert later_start == earlier_end + 1, "epochs must be contiguous"
+
+
+def test_zscore_defaults(params: dict[str, Any]) -> None:
+    zscore = params["uhi"]["zscore"]
+    assert zscore["default_sigma"] == 1.0
+    assert 1.0 in zscore["sigma_options"] and 2.0 in zscore["sigma_options"]
+    assert zscore["ddof"] in (0, 1)
+
+
+def test_suhii_sources_are_well_formed(params: dict[str, Any]) -> None:
+    sources = params["uhi"]["suhii"]["sources"]
+    keys = [entry["key"] for entry in sources]
+    assert len(keys) == len(set(keys)), "SUHII source keys must be unique"
+
+    products = params["modis_lst"]["products"]
+    for entry in sources:
+        assert entry["kind"] in ("landsat", "modis")
+        assert entry["reducer"] in ("median", "mean")
+        assert entry["scale_m"] > 0
+        if entry["kind"] == "modis":
+            assert entry["product"] in products
+            assert entry["daynight"] in ("day", "night")
+            # Reduce MODIS at its own 1 km grid, never at the 30 m Landsat one.
+            assert entry["scale_m"] == params["modis_lst"]["reduction_scale_m"]
+
+
+def test_suhii_sources_cover_day_and_night(params: dict[str, Any]) -> None:
+    # CLAUDE.md caveat 4: Landsat is a single ~10:30 overpass, so night-time UHI
+    # is obtainable ONLY from MODIS. Losing the night entries would silently
+    # reduce the study to a daytime one.
+    sources = params["uhi"]["suhii"]["sources"]
+    modis = [entry for entry in sources if entry["kind"] == "modis"]
+    assert any(entry["daynight"] == "night" for entry in modis)
+    assert any(entry["daynight"] == "day" for entry in modis)
+    assert any(entry["kind"] == "landsat" for entry in sources)
+
+
+def test_suhii_sources_include_the_relaxed_qc_sensitivity(
+    params: dict[str, Any],
+) -> None:
+    # REQUIRED BY PHASE 2 SIGN-OFF, not optional. Strict day QC keeps only 3.7%
+    # of daytime observations and fails hardest over the dense coastal core
+    # (CMC retains 13-23 of 40 pixels, District 92-95%), so the strict daytime
+    # series must never stand alone.
+    sources = {entry["key"]: entry for entry in params["uhi"]["suhii"]["sources"]}
+    relaxed = sources["terra_day_relaxed"]
+    strict = params["modis_lst"]["qc_filter"]["day"]
+    assert relaxed["daynight"] == "day"
+    assert relaxed["mandatory_qa_max"] > strict["mandatory_qa_max"]
+    assert relaxed["lst_error_max"] >= strict["lst_error_max"]
+
+
+def test_landsat_suhii_source_uses_the_dry_window(params: dict[str, Any]) -> None:
+    sources = {entry["key"]: entry for entry in params["uhi"]["suhii"]["sources"]}
+    assert sources["landsat_dry"]["months_key"] == "dry_window"
+    # Reducer discipline from Phase 2: Landsat median, MODIS mean. Mixing them
+    # makes part of any cross-sensor difference a reducer artefact.
+    assert sources["landsat_dry"]["reducer"] == params["composites"]["annual_reducer"]
+    for entry in sources.values():
+        if entry["kind"] == "modis":
+            assert entry["reducer"] == params["composites"]["modis_reducer"]
+
+
+def test_driver_settings(params: dict[str, Any]) -> None:
+    drivers = params["uhi"]["drivers"]
+    assert drivers["response"] == params["landsat_c2l2"]["lst_band_name"]
+    assert drivers["predictors"] == ["NDVI", "NDBI", "MNDWI", "built_fraction"]
+    assert drivers["sample_pixels"] > 0
+    assert drivers["min_sample_rows"] > 0
+    # Deliberately coarser than the analysis grid: adjacent 30 m LST pixels are
+    # near-duplicates, so sampling at 30 m buys autocorrelation, not information.
+    assert drivers["sample_scale_m"] > params["crs"]["analysis_scale_m"]
+
+
+def test_driver_predictors_are_computable(params: dict[str, Any]) -> None:
+    # Every predictor must be either a band indices.py can produce or the GHSL
+    # built fraction; a typo here would fail only after a Colab round trip.
+    from colombo_uhi.indices import INDEX_BAND_NAMES
+
+    available = set(INDEX_BAND_NAMES.values()) | {"built_fraction"}
+    for predictor in params["uhi"]["drivers"]["predictors"]:
+        assert predictor in available, f"no way to compute predictor {predictor}"
+
+
+def test_ghsl_cell_area_matches_its_resolution(params: dict[str, Any]) -> None:
+    # built_surface is m^2 of built area per cell, so the built FRACTION divides
+    # by the cell area. 100 m x 100 m = 10 000 m^2.
+    ghsl = params["datasets"]["ghsl_built"]
+    assert ghsl["cell_area_m2"] == ghsl["scale_m"] ** 2 == 10000
+    assert ghsl["epoch_interval_years"] == 5
+    # The Phase 1 urban-extent threshold is expressed in the same units.
+    assert params["aoi"]["urban_extent"]["built_surface_threshold_m2"] < ghsl["cell_area_m2"]

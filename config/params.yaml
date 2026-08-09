@@ -236,6 +236,7 @@ aoi:
     # surface above a threshold, vectorised. [DEFAULT — Phase 1] values.
     ghsl_epoch: 2020                  # GHSL 5-year epoch to use
     built_surface_threshold_m2: 2000  # >= 20% of the 100 m cell counts as built
+                                      # (2000 of datasets.ghsl_built.cell_area_m2)
     vectorize_scale_m: 100            # native GHSL resolution
   water_mask:
     # Combined water mask = MNDWI OR QA_PIXEL-water-frequency OR JRC occurrence.
@@ -375,6 +376,14 @@ datasets:
     band: "built_surface"             # [GEE catalog] m^2 of built surface per 100 m cell
     band_nres: "built_surface_nres"   # [GEE catalog] non-residential subset
     availability: ["1975-01-01", "2030-12-31"]   # [CLAUDE.md][GEE catalog] incl. 2025/2030 projections
+    cell_area_m2: 10000               # [GEE catalog, re-verified 2026-08-09] 100 m x 100 m.
+                                      # built_surface is m^2 per cell, so the BUILT FRACTION
+                                      # used as a Phase 3 driver is built_surface / this.
+    epoch_interval_years: 5           # [GEE catalog] "5 year intervals" 1975-2030. Any year
+                                      # requested by uhi_metrics.built_up_fraction() is
+                                      # SNAPPED DOWN to a multiple of this, then clamped to
+                                      # `availability` — a 2023 built fraction is really the
+                                      # 2020 epoch, and must be reported as such.
   lcz:
     id: "RUB/RUBCLIM/LCZ/global_lcz_map/latest"  # [CLAUDE.md][GEE catalog] valid "latest" alias
     type: image_collection
@@ -739,10 +748,144 @@ uhi:
                                       # G=17 water is removed by the water mask; E=15 (bare
                                       # rock/paved) stays in KNOWINGLY — possible slight warm
                                       # bias; Phase 3 sensitivity runs swap this list.
+    batch_years: 4                    # [DEFAULT — Phase 3] years built per Earth Engine
+                                      # request by uhi_metrics.suhii_series(). Same reasoning
+                                      # as composites.zonal_batch_years: batching changes no
+                                      # numbers, only the number of round trips. Lower to 1
+                                      # if the memory limit is still exceeded.
+    sources:                          # [DECISION 2026-08-09] the LST series the SUHII table
+                                      # covers. Every entry is run under EVERY method in
+                                      # `rural_definitions`, so the table is len(sources) x
+                                      # len(rural_definitions) x years.
+                                      #
+                                      # `reducer` is NOT cosmetic: Landsat stays on median and
+                                      # MODIS on mean (Phase 2 discipline). Mixing them would
+                                      # make part of any Landsat-vs-MODIS SUHII difference a
+                                      # reducer artefact rather than a sensor difference.
+                                      #
+                                      # `scale_m` is the REDUCTION scale, not the analysis
+                                      # grid: reduce each sensor at its own resolution. MODIS
+                                      # at 30 m would invent 1000x more pixels than it has.
+      - key: "landsat_dry"
+        kind: "landsat"
+        months_key: "dry_window"      # Jan-Mar, the primary comparison window
+        reducer: "median"
+        scale_m: 100                  # matches the Phase 2 Landsat-vs-MODIS comparison
+      - key: "terra_day"
+        kind: "modis"
+        product: "terra"              # MOD11A2, overpass ~10:30 (closest to Landsat)
+        daynight: "day"
+        reducer: "mean"
+        scale_m: 1000
+      - key: "terra_night"
+        kind: "modis"
+        product: "terra"              # ~22:30 — the cleanest signal in the dataset: night
+        daynight: "night"             # has full CMC pixel coverage where daytime does not
+        reducer: "mean"
+        scale_m: 1000
+      - key: "aqua_day"
+        kind: "modis"
+        product: "aqua"               # MYD11A2, ~13:30 = near peak heating. NO DATA before
+        daynight: "day"               # 2002-07 (Aqua launch); modis.clamp_start_date handles it
+        reducer: "mean"
+        scale_m: 1000
+      - key: "aqua_night"
+        kind: "modis"
+        product: "aqua"               # ~01:30
+        daynight: "night"
+        reducer: "mean"
+        scale_m: 1000
+      - key: "terra_day_relaxed"
+        kind: "modis"
+        product: "terra"
+        daynight: "day"
+        reducer: "mean"
+        scale_m: 1000
+        mandatory_qa_max: 1           # *** REQUIRED BY PHASE 2 SIGN-OFF, not optional. ***
+        lst_error_max: 1              # The strict day policy (0/0) keeps only 3.7% of daytime
+                                      # observations on the mandatory-QA field, and fails
+                                      # DISPROPORTIONATELY over the dense coastal core: the
+                                      # CMC retains 13-23 of 40 possible 1 km pixels per year
+                                      # while the District retains 92-95%. The surviving CMC
+                                      # daytime sample is therefore spatially biased toward
+                                      # exactly the area the UHI signal lives in. This entry
+                                      # re-runs Terra day with the QC relaxed so the strict
+                                      # series is never quoted as authoritative on its own.
   utfvi:
     definition: "(Ts - Tmean) / Tmean"                  # [CLAUDE.md]
     breaks: [0.0, 0.005, 0.010, 0.015, 0.020]           # [CLAUDE.md] five thresholds -> six classes
     labels: ["Excellent", "Good", "Normal", "Bad", "Worse", "Worst"]  # [CLAUDE.md]
+    reference: "per_year_aoi_mean"    # [DECISION 2026-08-09] Tmean is that YEAR'S OWN spatial
+                                      # mean over the AOI (the standard formulation, so the
+                                      # class breaks keep their published meaning).
+                                      #
+                                      # THE CONSEQUENCE MUST BE STATED WHEREVER UTFVI IS SHOWN:
+                                      # because the reference moves with the data, UTFVI
+                                      # measures WITHIN-year spatial structure only. A city
+                                      # that warms uniformly by 2 degC shows NO class change at
+                                      # all. Epoch-to-epoch class drift is a redistribution of
+                                      # heat, NEVER evidence of warming — the Phase 4
+                                      # Mann-Kendall/Sen products are what measure warming.
+    units: "celsius"                  # LOAD-BEARING, not documentation. UTFVI is a RATIO, so
+                                      # its value depends on the temperature scale. The
+                                      # published breaks assume degC: with Tmean ~30 degC the
+                                      # 0.005 break is ~0.15 degC. On Kelvin (Tmean ~303 K) the
+                                      # same break would be ~1.5 K — a tenfold reinterpretation
+                                      # of every class. Only ever feed UTFVI the LST_C band.
+    class_band_name: "UTFVI_class"    # output band name of the 0-5 class image
+    band_name: "UTFVI"                # output band name of the continuous index
+    palette:                          # [DEFAULT — Phase 3] one hex colour per class, in class
+                                      # order (Excellent -> Worst). ColorBrewer RdYlBu-derived,
+                                      # blue = coolest. Lives here so notebooks never hardcode
+                                      # a palette.
+      - "2b83ba"                      # Excellent (< 0)
+      - "abdda4"                      # Good (0 - 0.005)
+      - "ffffbf"                      # Normal (0.005 - 0.010)
+      - "fdae61"                      # Bad (0.010 - 0.015)
+      - "f46d43"                      # Worse (0.015 - 0.020)
+      - "d7191c"                      # Worst (> 0.020)
+    epochs:                           # [DEFAULT — Phase 3] the three-epoch comparison. Must
+                                      # tile time.start_year..time.end_year with no gap and no
+                                      # overlap (test_params pins this).
+      "2000s": [2000, 2009]
+      "2010s": [2010, 2019]
+      "2020s": [2020, 2025]           # short by design: the study period ends in 2025
+  zscore:
+    band_name: "LST_z"                # output band name
+    default_sigma: 1.0                # [DEFAULT — Phase 3] hot-pixel threshold, z >= sigma
+    sigma_options: [1.0, 2.0]         # the values Phase 3 reports; anything else is allowed
+                                      # but warns, so an ad-hoc threshold cannot slip into a
+                                      # figure unnoticed
+    ddof: 0                           # *** UNVERIFIED — settle this in Colab. ***
+                                      # The Earth Engine docs for ee.Reducer.stdDev() do not
+                                      # state whether it is the population (ddof=0) or sample
+                                      # (ddof=1) standard deviation, and a separate
+                                      # ee.Reducer.sampleStdDev() also exists — which implies,
+                                      # but does not prove, that stdDev is the population one.
+                                      # Notebook 03 Step 9 measures it on a known array in
+                                      # three lines. Until then the pure-Python zscore_array()
+                                      # and the server-side lst_zscore() are only guaranteed to
+                                      # agree to O(1/n). Record the answer HERE and in
+                                      # PROGRESS.md once measured.
+  drivers:
+    # Driver attribution of LST, Phase 3 stage 1. CLAUDE.md's escalation path is
+    # ols -> residual_morans_i -> spatial_lag_or_error -> gwr_mgwr (see
+    # spatial_stats.driver_attribution); this section configures the FIRST step only.
+    response: "LST_C"
+    predictors: ["NDVI", "NDBI", "MNDWI", "built_fraction"]
+    unit_of_analysis: "sampled_pixels"  # [DECISION 2026-08-09]
+    sample_pixels: 5000               # per year
+    sample_seed: 42                   # reproducibility; same seed as prediction.rf
+    sample_scale_m: 100               # [DEFAULT — Phase 3] deliberately COARSER than the 30 m
+                                      # analysis grid. Adjacent 30 m LST pixels are near
+                                      # duplicates, so sampling at 30 m buys spatial
+                                      # autocorrelation rather than information.
+    min_sample_rows: 50               # below this uhi_metrics.fit_drivers() raises instead of
+                                      # returning an R2 computed from almost nothing
+    # HONEST LIMITATION, must travel with every coefficient table produced here:
+    # sampled pixels are spatially autocorrelated, so the OLS standard errors are
+    # too small and the p-values are ANTI-CONSERVATIVE. Treat them as a screening
+    # device, not as inference. Phase 5 is where this is fixed properly.
 
 trends:
   series_basis: "annual_composite"    # [CLAUDE.md] MK + Sen's slope on ANNUAL composite series

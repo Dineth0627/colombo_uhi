@@ -1066,6 +1066,13 @@ def _lcz_scope_geometry(params: dict[str, Any]) -> "ee.Geometry":
     )
 
 
+#: Public alias for :func:`_lcz_scope_geometry`. Phase 3 sizes its SUHII
+#: reduction region from the LCZ scope, and reaching into a private for that
+#: would either couple the modules through an underscore name or duplicate the
+#: scope dispatch — both worse than exporting the one function.
+lcz_scope_geometry = _lcz_scope_geometry
+
+
 def buffer_ring(params: dict[str, Any]) -> "ee.Geometry":
     """Rural-reference ring geometry around the urban core.
 
@@ -1087,7 +1094,25 @@ def buffer_ring(params: dict[str, Any]) -> "ee.Geometry":
     return outer.difference(inner, _MAX_ERROR_M)
 
 
-def urban_mask(method: str, params: dict[str, Any]) -> "ee.Image":
+def _resolve_water(
+    params: dict[str, Any], water: "ee.Image | None"
+) -> "ee.Image":
+    """Resolve the water layer the SUHII masks exclude.
+
+    Args:
+        params: Parsed params mapping.
+        water: Caller-supplied 0/1 water image, or ``None`` for the default
+            :func:`water_exclusion_mask`.
+
+    Returns:
+        A 0/1 ``ee.Image`` where 1 means "exclude as water".
+    """
+    return water_exclusion_mask(params) if water is None else water
+
+
+def urban_mask(
+    method: str, params: dict[str, Any], water: "ee.Image | None" = None
+) -> "ee.Image":
     """0/1 urban mask for SUHII under the given rural-reference method.
 
     * ``"buffer_ring"``: rasterised base geometry (urban extent or CMC), over
@@ -1104,6 +1129,16 @@ def urban_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     Args:
         method: One of ``uhi.suhii.rural_definitions``.
         params: Parsed params mapping.
+        water: Optional 0/1 water image (1 = exclude) replacing the default
+            :func:`water_exclusion_mask`. **Pass
+            :func:`static_water_mask` for anything that masks a multi-year
+            series.** The default composites Landsat internally and that
+            composite is instantiated once per image masked, so a 26-year
+            SUHII run over six sources would multiply the heavy graph past the
+            Earth Engine memory limit — the Colab run 3 failure. Notebook 02
+            measured the cost of the substitution at **-0.074 degC** on the CMC
+            2025 mean; quote that figure rather than re-deriving it. Leave
+            ``None`` for single-date maps, where the combined mask is better.
 
     Returns:
         Single-band 0/1 ``ee.Image`` named ``urban``.
@@ -1118,7 +1153,7 @@ def urban_mask(method: str, params: dict[str, Any]) -> "ee.Image":
             suhii["lcz_based"]["urban_classes"], suhii["lcz_based"]["rural_classes"]
         )
         mask = _lcz_class_mask(params, urban_classes).clip(_lcz_scope_geometry(params))
-    return mask.And(water_exclusion_mask(params).Not()).rename("urban")
+    return mask.And(_resolve_water(params, water).Not()).rename("urban")
 
 
 def _elevation_cap_mask(params: dict[str, Any]) -> "ee.Image | None":
@@ -1141,7 +1176,9 @@ def _elevation_cap_mask(params: dict[str, Any]) -> "ee.Image | None":
     return ee.Image(srtm_cfg["id"]).select(srtm_cfg["band"]).lte(max_elev)
 
 
-def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
+def rural_mask(
+    method: str, params: dict[str, Any], water: "ee.Image | None" = None
+) -> "ee.Image":
     """0/1 rural-reference mask for SUHII under the given method.
 
     * ``"buffer_ring"``: ring around the urban core over
@@ -1159,6 +1196,10 @@ def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     Args:
         method: One of ``uhi.suhii.rural_definitions``.
         params: Parsed params mapping.
+        water: Optional 0/1 water image (1 = exclude) replacing the default
+            :func:`water_exclusion_mask`. See :func:`urban_mask` for why a
+            multi-year series must pass :func:`static_water_mask` here, and
+            pass the SAME image to both masks so the pair stays consistent.
 
     Returns:
         Single-band 0/1 ``ee.Image`` named ``rural``.
@@ -1168,7 +1209,7 @@ def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
     urban_classes, rural_classes = validate_lcz_classes(
         suhii["lcz_based"]["urban_classes"], suhii["lcz_based"]["rural_classes"]
     )
-    not_water = water_exclusion_mask(params).Not()
+    not_water = _resolve_water(params, water).Not()
 
     if method == "buffer_ring":
         mask = _paint(buffer_ring(params), analysis_region(params))
@@ -1191,7 +1232,7 @@ def rural_mask(method: str, params: dict[str, Any]) -> "ee.Image":
 
 
 def rural_reference(
-    method: str, params: dict[str, Any]
+    method: str, params: dict[str, Any], water: "ee.Image | None" = None
 ) -> tuple["ee.Image", "ee.Image"]:
     """Urban and rural 0/1 masks for SUHII under one method — the common interface.
 
@@ -1203,11 +1244,15 @@ def rural_reference(
     Args:
         method: ``"buffer_ring"`` or ``"lcz_based"``.
         params: Parsed params mapping.
+        water: Optional 0/1 water image applied to BOTH masks; see
+            :func:`urban_mask`. Phase 3 passes
+            ``static_water_mask(params, region=...)`` here, because the default
+            embeds a Landsat composite into every masked image.
 
     Returns:
         ``(urban_mask, rural_mask)`` pair of 0/1 ``ee.Image``s.
     """
-    return urban_mask(method, params), rural_mask(method, params)
+    return urban_mask(method, params, water), rural_mask(method, params, water)
 
 
 # =============================================================================

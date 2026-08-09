@@ -742,7 +742,9 @@ def build_zonal_frame(
     return result
 
 
-def _warn_if_series_is_empty(frame: "pd.DataFrame", band: str) -> None:
+def warn_if_counts_are_empty(
+    counts: "pd.Series", label: str, stacklevel: int = 4
+) -> None:
     """Complain loudly about a series with no, or almost no, valid pixels.
 
     CLAUDE.md caveat 2 is not satisfied by merely *emitting* a count that nobody
@@ -751,8 +753,51 @@ def _warn_if_series_is_empty(frame: "pd.DataFrame", band: str) -> None:
     like a plausible product until someone checked the column. An all-empty
     result is a defect, not a datum, and must announce itself.
 
-    The frame is still returned by the caller: downstream code needs the shape,
-    and suppressing it would trade one silent failure for another.
+    Public so every phase enforces caveat 2 through ONE implementation. Phase 3
+    calls it on the SUHII table's ``urban_pixels``/``rural_pixels`` columns,
+    which have different names but exactly the same failure mode.
+
+    Nothing is raised and nothing is dropped: downstream code needs the shape,
+    and suppressing the rows would trade one silent failure for another.
+
+    Args:
+        counts: Per-row valid-pixel counts. ``NaN`` is treated as 0.
+        label: What the counts belong to (a band or column name), so the
+            message identifies the culprit.
+        stacklevel: Passed to :func:`warnings.warn`; tune it so the warning
+            points at the caller's caller rather than at this module.
+    """
+    if not len(counts):
+        return
+
+    filled = counts.fillna(0)
+    empty_rows = int((filled <= 0).sum())
+    total_rows = len(filled)
+    if empty_rows == 0:
+        return
+
+    if empty_rows == total_rows:
+        warnings.warn(
+            f"zonal series for band '{label}' is COMPLETELY EMPTY: all "
+            f"{total_rows} years returned 0 valid pixels. Do not plot or "
+            "interpret it. Usual causes, in order: a QC filter that rejects "
+            "everything (run modis.qc_class_histogram to see which class), a "
+            "mask that excludes the whole geometry, or a reduction scale finer "
+            "than the data.",
+            stacklevel=stacklevel,
+        )
+    elif empty_rows > total_rows / 2:
+        warnings.warn(
+            f"zonal series for band '{label}' is mostly empty: {empty_rows} of "
+            f"{total_rows} years returned 0 valid pixels. The remaining years "
+            "may rest on very few pixels — check the valid_pixels column before "
+            "reading any trend into this series.",
+            stacklevel=stacklevel,
+        )
+
+
+def _warn_if_series_is_empty(frame: "pd.DataFrame", band: str) -> None:
+    """Apply :func:`warn_if_counts_are_empty` to an assembled zonal frame.
 
     Args:
         frame: The assembled year/mean/valid_pixels table.
@@ -760,28 +805,4 @@ def _warn_if_series_is_empty(frame: "pd.DataFrame", band: str) -> None:
     """
     if frame.empty:
         return
-
-    counts = frame[VALID_PIXELS_COLUMN].fillna(0)
-    empty_years = int((counts <= 0).sum())
-    total_years = len(frame)
-    if empty_years == 0:
-        return
-
-    if empty_years == total_years:
-        warnings.warn(
-            f"zonal series for band '{band}' is COMPLETELY EMPTY: all "
-            f"{total_years} years returned 0 valid pixels. Do not plot or "
-            "interpret it. Usual causes, in order: a QC filter that rejects "
-            "everything (run modis.qc_class_histogram to see which class), a "
-            "mask that excludes the whole geometry, or a reduction scale finer "
-            "than the data.",
-            stacklevel=4,
-        )
-    elif empty_years > total_years / 2:
-        warnings.warn(
-            f"zonal series for band '{band}' is mostly empty: {empty_years} of "
-            f"{total_years} years returned 0 valid pixels. The remaining years "
-            "may rest on very few pixels — check the valid_pixels column before "
-            "reading any trend into this series.",
-            stacklevel=4,
-        )
+    warn_if_counts_are_empty(frame[VALID_PIXELS_COLUMN], band, stacklevel=5)

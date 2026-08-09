@@ -272,3 +272,351 @@ def plot_annual_lst_comparison(
     destination.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(destination, dpi=150)
     return destination
+
+
+# =============================================================================
+# Phase 3 figures
+# =============================================================================
+def utfvi_vis_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Visualisation dictionary for a UTFVI class image.
+
+    Keeps the palette in ``config/params.yaml`` rather than in a notebook cell,
+    so the map and the stacked-share figure cannot drift apart.
+
+    Args:
+        params: Parsed params mapping (``uhi.utfvi``).
+
+    Returns:
+        ``{"min": 0, "max": n_classes - 1, "palette": [...]}`` for
+        ``ee.Image.visualize``.
+
+    Raises:
+        ValueError: If the palette length does not match the class count.
+    """
+    from colombo_uhi import uhi_metrics
+
+    _, labels = uhi_metrics.validate_utfvi_scheme(params)
+    palette = list(params["uhi"]["utfvi"]["palette"])
+    if len(palette) != len(labels):
+        raise ValueError(
+            f"uhi.utfvi.palette has {len(palette)} colours but there are "
+            f"{len(labels)} classes ({labels}); a short palette silently "
+            "recycles colours and makes two classes indistinguishable"
+        )
+    return {"min": 0, "max": len(labels) - 1, "palette": palette}
+
+
+def plot_suhii_sensitivity(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    sources: Sequence[str] | None = None,
+    title: str = "Surface UHI intensity by source and rural reference",
+) -> Path:
+    """Plot the SUHII time series with both rural definitions overlaid.
+
+    The whole point of the figure is the SPREAD between the two rural
+    definitions, not either line on its own (CLAUDE.md: report rural-reference
+    sensitivity, never a single unqualified number). So each source gets one
+    colour and each rural definition one line style — the vertical gap between a
+    solid and a dashed line of the same colour is the sensitivity, readable
+    directly off the page.
+
+    The two definitions differ by construction (CMC versus a 15-25 km annulus,
+    against built versus vegetated LCZ classes inside the district). They are
+    not two estimates of one number.
+
+    Args:
+        frame: Tidy SUHII table from
+            :func:`colombo_uhi.uhi_metrics.suhii_all_sources`.
+        out_path: Destination ``.png`` path; parent directories are created.
+        params: Parsed params mapping.
+        sources: Sources to draw, in order; ``None`` draws every source present.
+        title: Axes title.
+
+    Returns:
+        The path written.
+
+    Raises:
+        ValueError: If the frame is empty or lacks the expected columns.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    required = ["year", "source", "rural_definition", "suhii"]
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"SUHII frame is missing column(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+    if frame.empty:
+        raise ValueError("SUHII frame is empty; there is nothing to plot")
+
+    keys = list(sources) if sources else list(dict.fromkeys(frame["source"]))
+    methods = list(dict.fromkeys(frame["rural_definition"]))
+    # Solid first, so the default rural definition reads as the primary line.
+    styles = ["-", "--", ":", "-."]
+
+    show_counts = "urban_pixels" in frame.columns
+    figure = Figure(figsize=(11, 7.5 if show_counts else 6.0))
+    FigureCanvasAgg(figure)
+    if show_counts:
+        axes, count_axes = figure.subplots(2, 1, sharex=True, height_ratios=[3, 1])
+    else:
+        axes, count_axes = figure.subplots(), None
+
+    palette = [f"C{index % 10}" for index in range(len(keys))]
+
+    for colour, key in zip(palette, keys):
+        for style, method in zip(styles, methods):
+            block = frame[
+                (frame["source"] == key) & (frame["rural_definition"] == method)
+            ].dropna(subset=["suhii"])
+            if block.empty:
+                continue
+            if "urban_pixels" in block.columns:
+                block = block[block["urban_pixels"].fillna(0) > 0]
+            axes.plot(
+                block["year"],
+                block["suhii"],
+                linestyle=style,
+                color=colour,
+                marker="o",
+                markersize=3,
+                linewidth=1.5,
+                label=f"{key} / {method}",
+            )
+            if count_axes is not None and "urban_pixels" in block.columns:
+                count_axes.plot(
+                    block["year"],
+                    block["urban_pixels"],
+                    linestyle=style,
+                    color=colour,
+                    linewidth=1.0,
+                )
+
+    # Zero is the line that decides whether there is an island at all.
+    axes.axhline(0.0, color="#888888", linewidth=1.0, zorder=0)
+    axes.set_ylabel("SUHII (degC): mean urban LST - mean rural LST")
+    axes.set_title(title)
+    axes.grid(True, alpha=0.3)
+    axes.legend(frameon=False, fontsize=7, ncol=2)
+
+    if count_axes is not None:
+        count_axes.set_yscale("log")
+        count_axes.set_ylabel("urban\npixels", fontsize=8)
+        count_axes.set_xlabel("Year")
+        count_axes.grid(True, alpha=0.3)
+        count_axes.tick_params(labelsize=8)
+    else:
+        axes.set_xlabel("Year")
+
+    definitions = ", ".join(methods)
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(
+            params, ["lst_not_air_temp", "sensitivity_reporting", "single_overpass"]
+        )
+        + f"\n- Rural definitions shown ({definitions}) differ by construction; "
+        "the gap between line styles IS the sensitivity.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, 0.13, 1, 1))
+
+    destination = Path(out_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(destination, dpi=150)
+    return destination
+
+
+def plot_utfvi_class_shares(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str = "Share of AOI in each UTFVI class, per year",
+) -> Path:
+    """Stacked-area plot of the six UTFVI class shares over time.
+
+    Args:
+        frame: Table from
+            :func:`colombo_uhi.uhi_metrics.utfvi_class_series`.
+        out_path: Destination ``.png`` path; parent directories are created.
+        params: Parsed params mapping.
+        title: Axes title.
+
+    Returns:
+        The path written.
+
+    Raises:
+        ValueError: If the frame is empty or a class column is missing.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    from colombo_uhi import uhi_metrics
+
+    _, labels = uhi_metrics.validate_utfvi_scheme(params)
+    palette = [f"#{colour}" for colour in params["uhi"]["utfvi"]["palette"]]
+    year_column = params["composites"]["year_property"]
+
+    missing = [c for c in (year_column, *labels) if c not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"UTFVI share frame is missing column(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+    plotted = frame.dropna(subset=list(labels), how="all")
+    if plotted.empty:
+        raise ValueError("UTFVI share frame has no year with classified pixels")
+
+    figure = Figure(figsize=(10, 6))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+    axes.stackplot(
+        plotted[year_column],
+        *[plotted[label].fillna(0) for label in labels],
+        labels=labels,
+        colors=palette,
+    )
+    axes.set_ylim(0, 100)
+    axes.set_ylabel("Share of AOI (%)")
+    axes.set_xlabel("Year")
+    axes.set_title(title)
+    axes.legend(frameon=False, fontsize=8, loc="upper left", ncol=3)
+
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(params, ["lst_not_air_temp", "valid_obs_required"])
+        + "\n- UTFVI is referenced to EACH YEAR'S OWN mean LST, so these shares "
+        "show how heat was DISTRIBUTED that year,\n  not how hot it was. "
+        "Uniform warming leaves them unchanged; use the Phase 4 trend products "
+        "for warming.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, 0.15, 1, 1))
+
+    destination = Path(out_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(destination, dpi=150)
+    return destination
+
+
+def plot_lst_vs_index(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    index_columns: Sequence[str] | None = None,
+    response: str | None = None,
+    max_points: int = 4000,
+    title: str | None = None,
+) -> Path:
+    """Scatter sampled pixels of LST against each driver, with a fitted line.
+
+    Args:
+        frame: Sampled-pixel table from
+            :func:`colombo_uhi.uhi_metrics.sample_drivers` or the pooled samples
+            returned by :func:`colombo_uhi.uhi_metrics.driver_series`.
+        out_path: Destination ``.png`` path; parent directories are created.
+        params: Parsed params mapping.
+        index_columns: Drivers to plot, one panel each; ``None`` uses
+            ``uhi.drivers.predictors``.
+        response: Response column; defaults to ``uhi.drivers.response``.
+        max_points: Points drawn per panel. A 26-year pooled sample is 130 000
+            rows, which renders as a solid block; thinning is a DRAWING choice
+            only and the fitted line is computed from every row.
+        title: Figure title; ``None`` builds one naming the response.
+
+    Returns:
+        The path written.
+
+    Raises:
+        ValueError: If the frame is empty or a named column is missing.
+    """
+    import numpy as np
+    import pandas as pd
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    from colombo_uhi import uhi_metrics
+
+    y_name = response or params["uhi"]["drivers"]["response"]
+    columns = uhi_metrics.resolve_predictors(index_columns, params)
+
+    missing = [c for c in (y_name, *columns) if c not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"sample frame is missing column(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+    if frame.empty:
+        raise ValueError("sample frame is empty; there is nothing to plot")
+
+    figure = Figure(figsize=(5.2 * len(columns), 5.0))
+    FigureCanvasAgg(figure)
+    panels = figure.subplots(1, len(columns), squeeze=False)[0]
+
+    for axes, column in zip(panels, columns):
+        pair = frame[[y_name, column]].apply(pd.to_numeric, errors="coerce").dropna()
+        if pair.empty:
+            axes.set_title(f"{column}: no data")
+            continue
+
+        shown = pair
+        if len(pair) > max_points:
+            shown = pair.sample(
+                max_points, random_state=params["uhi"]["drivers"]["sample_seed"]
+            )
+        axes.scatter(shown[column], shown[y_name], s=4, alpha=0.25, edgecolors="none")
+
+        # The line is fitted on EVERY row, not on the thinned draw.
+        # Distinct-value counting, not std() == 0: pandas' standard deviation of
+        # a constant column can come back as 2.8e-17 rather than exactly zero,
+        # which would slip a singular fit past the guard and into np.polyfit.
+        if int(pair[column].nunique(dropna=True)) > 1:
+            slope, intercept = np.polyfit(pair[column], pair[y_name], 1)
+            grid = np.linspace(pair[column].min(), pair[column].max(), 50)
+            axes.plot(grid, slope * grid + intercept, color="#d7191c", linewidth=1.8)
+            r_value = float(np.corrcoef(pair[column], pair[y_name])[0, 1])
+            axes.set_title(
+                f"{column}\nslope {slope:.2f} degC per unit, "
+                f"r = {r_value:.2f}, R2 = {r_value ** 2:.2f}, n = {len(pair)}",
+                fontsize=9,
+            )
+        else:
+            axes.set_title(f"{column}: constant, no fit", fontsize=9)
+
+        axes.set_xlabel(column)
+        axes.grid(True, alpha=0.3)
+    panels[0].set_ylabel("Land surface temperature (degC)")
+
+    figure.suptitle(
+        title or f"{y_name} against candidate drivers (sampled pixels)",
+        fontsize=11,
+    )
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(params, ["lst_not_air_temp", "single_overpass"])
+        + "\n- Sampled pixels are spatially autocorrelated, so the fitted "
+        "relationships are a screening device:\n  OLS standard errors are too "
+        "small and p-values overstate significance until Phase 5 corrects them.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, 0.15, 1, 0.94))
+
+    destination = Path(out_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(destination, dpi=150)
+    return destination
