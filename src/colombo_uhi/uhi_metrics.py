@@ -243,14 +243,17 @@ def resolve_sigma(sigma: float | None, params: dict[str, Any]) -> float:
 def resolve_ddof(ddof: int | None, params: dict[str, Any]) -> int:
     """Resolve the delta-degrees-of-freedom used by the z-score standard deviation.
 
-    .. warning::
-        ``uhi.zscore.ddof`` is **not yet verified against Earth Engine**. The
-        Earth Engine documentation does not state whether ``ee.Reducer.stdDev()``
-        is the population (ddof 0) or sample (ddof 1) standard deviation, and a
-        separate ``ee.Reducer.sampleStdDev()`` exists — which suggests, but does
-        not prove, that ``stdDev`` is the population form. Notebook 03 settles it
-        empirically. Until it does, :func:`zscore_array` and :func:`lst_zscore`
-        are only guaranteed to agree to order 1/n.
+    .. note::
+        **Measured, not assumed** (Colab run 7, 2026-08-09). The Earth Engine
+        documentation never states whether ``ee.Reducer.stdDev()`` is the
+        population or the sample standard deviation, and a separate
+        ``ee.Reducer.sampleStdDev()`` also exists. Notebook 03 Step 6 settled it
+        on the probe ``[10, 12, 14, 16]``: ``ee.Reducer.stdDev()`` returned
+        2.2360679775, matching ``numpy.std(ddof=0)`` exactly, while
+        ``sampleStdDev`` returned the ``ddof=1`` value 2.5819888975. So
+        ``stdDev`` is the **population** form and ``uhi.zscore.ddof`` is 0.
+        :func:`zscore_array` and :func:`lst_zscore` therefore compute the same
+        statistic exactly.
 
     Args:
         ddof: Requested value, or ``None`` for ``uhi.zscore.ddof``.
@@ -1698,12 +1701,11 @@ def lst_zscore(
     scene was hotter than another.
 
     .. note::
-        The standard deviation comes from ``ee.Reducer.stdDev()``, whose degrees
-        of freedom the Earth Engine documentation does not state. See
-        :func:`resolve_ddof`; ``uhi.zscore.ddof`` is provisional until notebook
-        03 measures it. The difference is of order 1/n and is immaterial over a
-        scene of thousands of pixels, but it matters for exact agreement with
-        :func:`zscore_array`.
+        The standard deviation comes from ``ee.Reducer.stdDev()``, measured in
+        Colab run 7 to be the **population** standard deviation (numpy
+        ``ddof=0``) — see :func:`resolve_ddof` for the probe and the numbers.
+        That is why ``uhi.zscore.ddof`` is 0, and why this function and
+        :func:`zscore_array` agree exactly rather than to order 1/n.
 
     Args:
         image: Image carrying the LST band.

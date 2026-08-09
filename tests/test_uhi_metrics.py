@@ -217,9 +217,15 @@ def test_zscore_of_an_empty_array_is_empty(params: dict[str, Any]) -> None:
 
 
 def test_zscore_ddof_changes_the_answer_on_small_n(params: dict[str, Any]) -> None:
-    # Documents WHY uhi.zscore.ddof has to be settled against ee.Reducer.stdDev
-    # rather than guessed: on small n the two conventions differ visibly.
+    # Documents why the ddof convention had to be MEASURED against
+    # ee.Reducer.stdDev rather than guessed: on small n the two differ visibly.
+    # Settled in Colab run 7 on this exact probe array — ee.Reducer.stdDev()
+    # returned 2.2360679775, i.e. numpy ddof=0 (population), so uhi.zscore.ddof
+    # is 0 and the two implementations agree exactly.
     values = [10.0, 12.0, 14.0, 16.0]
+    assert float(np.std(values, ddof=0)) == pytest.approx(2.2360679775)
+    assert float(np.std(values, ddof=1)) == pytest.approx(2.5819888975)
+    assert params["uhi"]["zscore"]["ddof"] == 0, "measured against ee.Reducer.stdDev"
     population = uhi_metrics.zscore_array(values, params, ddof=0)
     sample = uhi_metrics.zscore_array(values, params, ddof=1)
     assert not np.allclose(population, sample)

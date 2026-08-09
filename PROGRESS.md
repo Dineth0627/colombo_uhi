@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-09 (Phase 3 code written — NOT yet Colab-verified)_
+_Last updated: 2026-08-09 (Colab run 8 — mask diagnosis confirmed; figure fixes pending a push)_
 
 ## Status snapshot
 
@@ -9,14 +9,187 @@ _Last updated: 2026-08-09 (Phase 3 code written — NOT yet Colab-verified)_
 | 0 | Scaffold, params.yaml, auth, notebook 00 | ✅ done + Colab-verified |
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
-| 3 | UHI metrics (SUHII, UTFVI) | 🟡 **code written, 366 tests pass — AWAITING COLAB RUN 7** |
-| 4 | Trend analysis (MK/Sen + FDR) | ⬜ next after Phase 3 sign-off |
+| 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (run 7, first pass) |
+| 4 | Trend analysis (MK/Sen + FDR) | ⬜ **next** |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
 
-## PHASE 3 — UHI metrics (code written 2026-08-09, unverified)
+## PHASE 3 — Colab run 7 results (2026-08-09)
+
+Ran end to end on the first attempt. **388 tests pass locally** (was 249 at the
+end of Phase 2). Every acceptance check passed; the numbers below are the
+verified reference values Phase 4 may quote without re-running.
+
+### SUHII, 2000–2025, mean °C (buffer_ring / lcz_based)
+
+| Source | buffer_ring | lcz_based | urban px (median) |
+|---|---|---|---|
+| `landsat_dry` | **6.68** | **3.47** | 4101 / 46785 |
+| `aqua_day` (~13:30) | **4.72** | **1.82** | 7.5 / 386 |
+| `terra_day_relaxed` | **3.60** | **1.79** | 34 / 435 |
+| `terra_day` (strict) | **2.98** | **1.56** | 17 / 397 |
+| `aqua_night` (~01:30) | **2.46** | **0.55** | 34 / 435 |
+| `terra_night` (~22:30) | **2.29** | **0.60** | 34 / 435 |
+
+Aqua covers 24 of 26 years (launched 2002-07-04); the 2000–2001 rows are
+correctly empty rather than absent.
+
+**The nocturnal prediction held.** Terra-night buffer_ring SUHII is **+2.29 °C**
+(range +1.40 to +3.08), matching the ~+2 °C CMC-vs-District night difference
+Phase 2 measured before Phase 3 existed. This is the strongest internal
+consistency check the project has produced so far.
+
+### The relaxed-QC sensitivity was worth running — Phase 2's obligation, discharged
+
+Strict `terra_day` rests on a median of **17** CMC pixels and reads **0.62 °C
+cooler** (2.98) than `terra_day_relaxed` on **34** pixels (3.60). The strict
+daytime series is the spatially biased one, exactly as Phase 2 predicted from the
+QC histogram. **Never quote strict daytime SUHII alone.**
+
+### Other verified values
+
+* **`ee.Reducer.stdDev()` is the POPULATION standard deviation** (numpy `ddof=0`).
+  Probe `[10,12,14,16]`: `stdDev()` → 2.2360679775 = `np.std(ddof=0)`;
+  `sampleStdDev()` → 2.5819888975 = `np.std(ddof=1)`. `uhi.zscore.ddof = 0` was
+  already correct. **The last open question in Phase 3 is closed.**
+* Hot pixels over Colombo District, dry season 2025, at 100 m: **225.2 km² at 1σ**,
+  **31.0 km² at 2σ**.
+* Zonal: **GN 557 / DS 13** features, both as expected. GN mean LST **30.1–42.7 °C**
+  (median 121 px per division, min 18); DS **32.7–40.6 °C** (median 2817 px).
+  Hottest GN divisions: New Bazaar 42.74, Lakshapathiya North 42.66,
+  Kajugahawatta 42.04 °C.
+* **MAUP is real and measurable**: the same surface has sd 2.74 / range 12.65 at
+  GN against sd 2.62 / range **7.98** at DS. Coarser units average the extremes
+  away — a DS hot-spot map is not a downsampled GN one.
+* Drivers, 26 years × 5000 sampled pixels, R² **0.30–0.78**:
+  NDBI **+10.34** °C/unit (positive in **26/26** years), built_fraction **+6.09**
+  (**26/26**), MNDWI −3.42 (negative in 22/26), NDVI −3.12 (negative in 21/26).
+
+### A finding to carry into Phase 5 — not a bug
+
+NDVI's **partial** coefficient flips sign in 5 of 26 years and its sd (4.27)
+exceeds its mean (3.12), while its **bivariate** correlation is a clean −0.51.
+That gap is NDVI/NDBI collinearity in a dense city, and it is the concrete
+motivation for CLAUDE.md's escalation path: emitting both the multivariate
+coefficient and the simple correlation is what made it visible.
+
+## PHASE 3b — figure legibility fixes (2026-08-09)
+
+Run 7's figures were hard to read, and diagnosing them turned up a defect in an
+acceptance check.
+
+### The SUHII figure was rebuilt as small multiples
+
+The original drew **12 lines on one axes** (6 sources × 2 rural definitions) with
+**one colour per source shared by both definitions**. A legend swatch is far too
+short to show a dash pattern, so the legend read as six duplicated pairs — the
+reported problem. It is now a 2×3 grid, one panel per source, carrying the same
+two lines everywhere: `buffer_ring` solid blue circles, `lcz_based` dashed orange
+squares. Colour, dash and marker all vary together, so the figure survives
+greyscale and colour-vision deficiencies. **The legend is now two entries
+regardless of source count**, and a parametrised test pins that. The gap between
+the lines is shaded, since that gap is the sensitivity the figure exists to show.
+Panels share a y-axis deliberately: free axes would draw `aqua_night`'s ~0.5 °C
+gap the same size as `landsat_dry`'s ~3 °C one. Pixel counts moved from a
+separate panel into the panel titles, keeping caveat 2 satisfied.
+
+### The UTFVI legend was drawn on top of the band it named
+
+`loc="upper left"` put the legend inside the axes, so the red "Worst" swatch
+landed on the red "Worst" fill and was invisible. It now sits below the axes with
+an opaque frame, plus thin white separators between bands so Good/Normal/Bad
+(2–3 % each) stop blurring together.
+
+### The scatter's fitted line was unlabelled and over-extended
+
+Added a two-entry legend, and the line is now **drawn** across the 1st–99th
+percentile of x while still being **fitted** on every row — previously it ran out
+to NDVI ≈ −0.9 where a handful of pixels live, overstating its support.
+
+### ⚠️ The Step 1 mask check raised a FALSE ALARM — fixed
+
+Run 7 printed `buffer_ring/urban 40.4 vs 37.7 km² (+7.3%) <-- CHECK THIS`. **The
+masks were fine.** The check measured at **100 m** and compared against Phase 1's
+**300 m** figure. The same quantity is recorded in this file as **40.18 km² at
+30 m** and **37.70 km² at 300 m**, so 40.4 at 100 m is exactly what the
+scale-dependence predicts.
+
+The check now measures every mask at **30 m, 100 m and 300 m**, asserts pass/fail
+**only on scale-matched pairs** (buffer_ring/urban against 40.18 @30 m and 37.70
+@300 m, 2 % tolerance), and prints the other three masks as *informational* —
+because this file never recorded which scale their Phase 1 values used, and
+inventing a tolerance against an unknown-scale reference is how a false alarm
+becomes a habit. A new cell also isolates the **water-mask substitution** effect
+separately from the scale effect, so the two confounds are reported as two
+numbers.
+
+**Rule for later phases: never compare an area against a reference without
+matching the reduction scale first.**
+
+## PHASE 3b — Colab run 8 (2026-08-09)
+
+Ran clean, no errors. **The mask diagnosis was confirmed completely, and the
+figure fixes did not reach Colab.**
+
+### The false alarm is fully explained ✅
+
+| mask | 30 m | 100 m | 300 m | Phase 1 |
+|---|---|---|---|---|
+| buffer_ring/urban | 40.69 | 40.45 | **38.17** | 37.7 |
+| buffer_ring/rural | 216.26 | 214.95 | **206.18** | 206.1 |
+| lcz_based/urban | 462.28 | 464.17 | **458.96** | 458.5 |
+| lcz_based/rural | 155.19 | 155.53 | **152.42** | 152.2 |
+
+Both scale-matched checks passed: buffer_ring/urban **+1.3 % at 30 m** and
+**+1.2 % at 300 m**. The masks were never wrong.
+
+**Two new facts fall straight out of that table.**
+
+1. **Phase 1 measured every mask at 300 m.** The 300 m column reproduces all four
+   Phase 1 values to within **0.15 %** (206.18 vs 206.1; 458.96 vs 458.5; 152.42
+   vs 152.2). The "unknown scale" caveat is therefore closed, and the notebook now
+   asserts pass/fail on **all four** masks at 300 m instead of only two.
+2. **The residual on buffer_ring/urban is entirely the water-mask substitution.**
+   Isolating it: the combined mask gives **37.72 km²** at 300 m against Phase 1's
+   **37.70** — a match to 0.02 km². The static mask gives 38.17, so the
+   substitution is **+0.44 km² (+1.2 %)**, and the scale effect over 30→300 m is a
+   separate 2.5 km². Two confounds, two numbers, as intended.
+
+### ⚠️ The figure redesign never reached Colab — and the guard let it through
+
+Run 8's SUHII figure is still the 12-line overlay and the UTFVI legend is still
+inside the axes. Cause: Colab cloned **HEAD 62f6e94** (the Phase 3a commit), whose
+`viz.py` has `plot_suhii_sensitivity` but none of the Phase 3b work. The notebook
+being run was current; `src/` was one revision behind. **Nothing errored.**
+
+**The stale-module guard should have caught this and did not.** Its `viz` entry
+listed only `plot_suhii_sensitivity`, `plot_utfvi_class_shares` and
+`plot_lst_vs_index` — names present in *both* revisions — so the guard was
+vacuous for exactly the change it needed to detect.
+
+Fixed, and the fix is verified by replaying the guard against `62f6e94`'s actual
+`viz.py`: it now raises `missing {'viz': ['build_suhii_figure',
+'build_utfvi_shares_figure', 'build_lst_vs_index_figure']}`, and passes on the
+current tree.
+
+> **RULE for every later phase: the stale-module guard must name at least one
+> function introduced by the MOST RECENT revision of each module.** A guard listing
+> only pre-existing names passes while running old code, which is worse than no
+> guard — it manufactures confidence. Notebook 03's guard now says this in a
+> comment, and its error message names "committed but not pushed" as the most
+> likely cause, plus the hand-uploaded-notebook case where the `.ipynb` and `src/`
+> can sit at different revisions.
+
+### To pick up in Colab
+
+**Commit and push the Phase 3b changes first** — the notebook runs against the
+pushed repo, so local edits are invisible to it. Then re-run from the clone cell.
+Everything upstream of the figures is unchanged and already verified twice, so
+only the figure cells and Step 1 produce new output.
+
+## PHASE 3 — implementation record (code written 2026-08-09)
 
 `uhi_metrics.py` (new, replacing the stub), three `viz.py` figures, an additive
 `aoi.py` change, one `composites.py` reuse refactor, `config/params.yaml` additions,
@@ -52,15 +225,15 @@ the 1-cell stub). **366 tests pass locally** (was 249).
    method's urban and rural mask into one image, so a **single `reduceRegion` returns all
    four means and all four counts** for both rural definitions at once.
 
-### Open question NOT resolved — settle it in Colab
+### Open question — RESOLVED in run 7 ✅
 
 **`ee.Reducer.stdDev()`: population (ddof 0) or sample (ddof 1)?** The Earth Engine API
-docs do not state it, and a separate `ee.Reducer.sampleStdDev()` exists — which suggests,
-but does not prove, that `stdDev` is the population form. Rather than guess,
-`uhi.zscore.ddof` is an explicit params value (currently **0**) and **notebook 03 Step 6
-measures it** on a known probe array in three lines. Until that runs, the unit-tested
-`zscore_array` and the server-side `lst_zscore` are only guaranteed to agree to O(1/n).
-**Record the measured value in params AND here once known.**
+docs never state it, and a separate `ee.Reducer.sampleStdDev()` exists. Rather than
+guess, `uhi.zscore.ddof` was made an explicit params value and notebook 03 Step 6
+measured it. **Answer: population, `ddof=0`** (see the run 7 section above for the
+probe and the four numbers). The configured 0 was already right, so `zscore_array` and
+`lst_zscore` compute the same statistic **exactly**, not to O(1/n). The cell stays in
+the notebook as a regression guard in case Earth Engine ever changes the reducer.
 
 ### Bug found and fixed while testing
 
@@ -108,24 +281,32 @@ is `built_surface / 10000` → `datasets.ghsl_built.cell_area_m2: 10000` and
    residual Moran's I → spatial lag/error → GWR/MGWR.
 5. **Built-up fraction is a 5-year epoch value**, not an annual measurement.
 6. **The two rural definitions differ by construction** (Phase 1 caveat 3, unchanged):
-   their spread is the required sensitivity, not a discrepancy to reconcile.
+   their spread is the required sensitivity, not a discrepancy to reconcile. Run 7
+   measured that spread at **1.4–3.2 °C** depending on source — large enough that a
+   single unqualified SUHII number for Colombo would be indefensible.
+7. **Never compare an area against a reference without matching the reduction scale**
+   (new, from the run 7 false alarm). Areas on a ragged coastal mask are
+   scale-dependent by several percent; record the scale with every area you write
+   down. **All Phase 1 and Phase 3 mask areas are at 300 m** (established in run 8).
+8. **Strict MODIS daytime QC is spatially biased, measurably** (Phase 2 predicted it,
+   run 7 quantified it): strict `terra_day` reads 0.62 °C cooler on half the pixels.
+   Quote it only alongside `terra_day_relaxed`.
 
-### What you must run before Phase 4
+### What run 7 confirmed (this section is now history, not a to-do)
 
-Run `notebooks/03_uhi_metrics.ipynb` top to bottom in Colab, then work the
-**"What to check before signing Phase 3 off"** checklist in its final cell. The two
-cells designed to fail loudly if something is wrong:
+`notebooks/03_uhi_metrics.ipynb` ran top to bottom on the first attempt. The two
+cells designed to fail loudly both behaved:
 
-* **Step 1** cross-checks the mask areas against Phase 1's verified values
-  (buffer_ring urban 37.7 / rural 206.1 km²; LCZ urban 458.5 / rural 152.2 km², at 100 m)
-  and flags any that moved >5%. A move means the static water mask changed the geometry.
-* **Step 3** checks Terra-night buffer_ring SUHII lands near **+1 to +2 °C**, consistent
-  with the ~+2 °C CMC-vs-District nocturnal difference Phase 2 already measured. Negative
-  or >6 °C means a mask is wrong.
+* **Step 3** checked Terra-night buffer_ring SUHII against the ~+2 °C
+  CMC-vs-District nocturnal difference Phase 2 measured. Result **+2.29 °C** —
+  **PASS**, and the single strongest internal consistency check in the project.
+* **Step 1** flagged `buffer_ring/urban` — and was itself wrong. It compared a 100 m
+  measurement against a 300 m reference. See "PHASE 3b" above; the check is now
+  scale-matched and the masks were never in question.
 
-Expected and **not** a bug: Aqua rows for 2000–mid-2002 come back empty with
-`urban_pixels = 0` (Aqua launched 2002-07-04), and may trigger the caveat-2
-"mostly empty" warning.
+Also as expected and **not** a bug: Aqua rows for 2000–mid-2002 came back empty with
+`urban_pixels = 0` (Aqua launched 2002-07-04), tripping the caveat-2 "mostly empty"
+warning — which is that warning working correctly.
 
 ## Phase 0 — done this session (2026-08-08)
 

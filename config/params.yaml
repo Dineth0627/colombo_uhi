@@ -856,17 +856,21 @@ uhi:
     sigma_options: [1.0, 2.0]         # the values Phase 3 reports; anything else is allowed
                                       # but warns, so an ad-hoc threshold cannot slip into a
                                       # figure unnoticed
-    ddof: 0                           # *** UNVERIFIED — settle this in Colab. ***
-                                      # The Earth Engine docs for ee.Reducer.stdDev() do not
-                                      # state whether it is the population (ddof=0) or sample
-                                      # (ddof=1) standard deviation, and a separate
-                                      # ee.Reducer.sampleStdDev() also exists — which implies,
-                                      # but does not prove, that stdDev is the population one.
-                                      # Notebook 03 Step 9 measures it on a known array in
-                                      # three lines. Until then the pure-Python zscore_array()
-                                      # and the server-side lst_zscore() are only guaranteed to
-                                      # agree to O(1/n). Record the answer HERE and in
-                                      # PROGRESS.md once measured.
+    ddof: 0                           # *** MEASURED, Colab run 7, 2026-08-09 — do not change. ***
+                                      # The Earth Engine docs never state whether
+                                      # ee.Reducer.stdDev() is the population (ddof=0) or the
+                                      # sample (ddof=1) standard deviation, and a separate
+                                      # ee.Reducer.sampleStdDev() also exists. Notebook 03
+                                      # Step 6 settled it empirically on the probe array
+                                      # [10, 12, 14, 16]:
+                                      #     numpy ddof=0            2.2360679775
+                                      #     numpy ddof=1            2.5819888975
+                                      #     ee.Reducer.stdDev()     2.2360679775   <- population
+                                      #     ee.Reducer.sampleStdDev() 2.5819888975
+                                      # So stdDev IS the population form and 0 is correct.
+                                      # uhi_metrics.zscore_array() and lst_zscore() therefore
+                                      # compute the same statistic exactly, not merely to
+                                      # O(1/n). Re-run that cell if the value is ever edited.
   drivers:
     # Driver attribution of LST, Phase 3 stage 1. CLAUDE.md's escalation path is
     # ols -> residual_morans_i -> spatial_lag_or_error -> gwr_mgwr (see

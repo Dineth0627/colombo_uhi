@@ -315,6 +315,115 @@ def test_suhii_sensitivity_rejects_a_missing_column(
         )
 
 
+def _many_source_frame(n_sources: int) -> pd.DataFrame:
+    """A SUHII frame with n distinct sources, both rural definitions."""
+    rows = []
+    for index in range(n_sources):
+        for method, offset in (("buffer_ring", 0.0), ("lcz_based", -1.2)):
+            for year in (2000, 2001, 2002):
+                urban = 33.0 + index * 0.2
+                rural = 30.0 + offset
+                rows.append(
+                    {
+                        "year": year,
+                        "source": f"source_{index}",
+                        "rural_definition": method,
+                        "urban_mean": urban,
+                        "rural_mean": rural,
+                        "suhii": urban - rural,
+                        "urban_pixels": 100 + index,
+                        "rural_pixels": 400,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+# --- the reported bug: legend entries were indistinguishable -----------------
+@pytest.mark.parametrize("n_sources", [1, 2, 4, 5, 6, 7])
+def test_suhii_legend_has_one_entry_per_rural_definition_not_per_line(
+    params: dict[str, Any], n_sources: int
+) -> None:
+    # THE regression test for the reported defect. The old overlay drew every
+    # source x definition on one axes and gave each pair the SAME colour,
+    # distinguished only by a dash pattern that a short legend swatch cannot
+    # show — so with six sources the legend read as six duplicated pairs.
+    # Faceting means the legend must carry exactly ONE entry per rural
+    # definition, no matter how many sources there are.
+    figure = viz.build_suhii_figure(_many_source_frame(n_sources), params)
+    labels = [text.get_text() for text in figure.legends[0].get_texts()]
+    assert len(labels) == 2, f"expected 2 legend entries, got {labels}"
+    assert len(set(labels)) == 2, "legend entries must be distinguishable"
+    assert all("rural reference" in label for label in labels)
+
+
+@pytest.mark.parametrize(
+    ("n_sources", "expected_visible"), [(1, 1), (2, 2), (4, 4), (5, 5), (6, 6)]
+)
+def test_suhii_grid_hides_unused_cells_of_a_partial_row(
+    params: dict[str, Any], n_sources: int, expected_visible: int
+) -> None:
+    # 4 and 5 sources leave a partial last row in a 3-wide grid. An unused cell
+    # left visible reads as missing data rather than as no panel.
+    figure = viz.build_suhii_figure(_many_source_frame(n_sources), params)
+    visible = [axes for axes in figure.axes if axes.get_visible()]
+    assert len(visible) == expected_visible
+
+
+def test_suhii_panels_share_one_y_axis(params: dict[str, Any]) -> None:
+    # Deliberate: free axes would draw a 0.5 degC gap the same size as a 3 degC
+    # one, which is the exact misreading this figure exists to prevent.
+    figure = viz.build_suhii_figure(_many_source_frame(4), params)
+    visible = [axes for axes in figure.axes if axes.get_visible()]
+    limits = {axes.get_ylim() for axes in visible}
+    assert len(limits) == 1, f"panels must share a y-axis, got {limits}"
+
+
+def test_suhii_panel_titles_carry_pixel_counts_and_the_gap(
+    params: dict[str, Any], suhii_frame: pd.DataFrame
+) -> None:
+    # CLAUDE.md caveat 2 survived the redesign: dropping the count panel is only
+    # acceptable because the counts moved into the titles.
+    figure = viz.build_suhii_figure(suhii_frame, params)
+    titles = [axes.get_title() for axes in figure.axes if axes.get_visible()]
+    assert any("urban px" in title for title in titles)
+    assert any("gap" in title for title in titles)
+
+
+def test_suhii_skips_a_requested_source_absent_from_the_frame(
+    params: dict[str, Any], suhii_frame: pd.DataFrame
+) -> None:
+    figure = viz.build_suhii_figure(
+        suhii_frame, params, sources=["terra_night", "not_a_source"]
+    )
+    visible = [axes for axes in figure.axes if axes.get_visible()]
+    assert len(visible) == 1
+
+
+def test_suhii_raises_when_no_requested_source_is_present(
+    params: dict[str, Any], suhii_frame: pd.DataFrame
+) -> None:
+    with pytest.raises(ValueError, match="none of the requested sources"):
+        viz.build_suhii_figure(suhii_frame, params, sources=["nope"])
+
+
+def test_suhii_styles_are_distinct_in_colour_and_dash_and_marker(
+    params: dict[str, Any],
+) -> None:
+    # Redundant encoding: the figure has to survive greyscale printing and the
+    # common colour-vision deficiencies, neither of which colour alone does.
+    styles = viz._suhii_styles(["buffer_ring", "lcz_based"])
+    assert len({s["color"] for s in styles.values()}) == 2
+    assert len({s["linestyle"] for s in styles.values()}) == 2
+    assert len({s["marker"] for s in styles.values()}) == 2
+
+
+def test_suhii_styles_cope_with_an_unconfigured_definition() -> None:
+    # A sensitivity run may add a third rural definition.
+    styles = viz._suhii_styles(["buffer_ring", "lcz_based", "lcz_strict"])
+    assert len(styles) == 3
+    assert len({s["color"] for s in styles.values()}) == 3
+
+
 # --- plot_utfvi_class_shares -------------------------------------------------
 def test_utfvi_shares_writes_a_png(
     tmp_path: Path, params: dict[str, Any], utfvi_share_frame: pd.DataFrame
@@ -345,6 +454,44 @@ def test_utfvi_shares_reject_an_all_empty_series(
     frame[labels] = float("nan")
     with pytest.raises(ValueError, match="no year with classified pixels"):
         viz.plot_utfvi_class_shares(frame, tmp_path / "nan.png", params)
+
+
+def test_utfvi_legend_sits_outside_the_axes(
+    params: dict[str, Any], utfvi_share_frame: pd.DataFrame
+) -> None:
+    # Regression: the legend used to be drawn INSIDE the axes at "upper left",
+    # which put the red "Worst" swatch on top of the red "Worst" band and made
+    # it invisible. A legend must never be drawn over the thing it names.
+    figure = viz.build_utfvi_shares_figure(utfvi_share_frame, params)
+    axes = figure.axes[0]
+    legend = axes.get_legend()
+    assert legend is not None
+
+    # Express the legend's anchor in axes coordinates: (0, 0) is the bottom-left
+    # of the plot area, so an anchor below it has a negative y. This is the
+    # property that actually prevents a swatch landing on the band it names.
+    anchor_in_axes = legend.get_bbox_to_anchor().transformed(
+        axes.transAxes.inverted()
+    )
+    assert anchor_in_axes.y0 < 0, (
+        f"legend must be anchored below the axes, got y0={anchor_in_axes.y0}"
+    )
+
+
+def test_utfvi_legend_lists_every_class(
+    params: dict[str, Any], utfvi_share_frame: pd.DataFrame
+) -> None:
+    figure = viz.build_utfvi_shares_figure(utfvi_share_frame, params)
+    labels = [t.get_text() for t in figure.axes[0].get_legend().get_texts()]
+    assert labels == params["uhi"]["utfvi"]["labels"]
+
+
+def test_utfvi_legend_has_an_opaque_frame(
+    params: dict[str, Any], utfvi_share_frame: pd.DataFrame
+) -> None:
+    # So swatches read against whatever is behind them.
+    figure = viz.build_utfvi_shares_figure(utfvi_share_frame, params)
+    assert figure.axes[0].get_legend().get_frame_on()
 
 
 # --- plot_lst_vs_index -------------------------------------------------------
@@ -413,3 +560,39 @@ def test_lst_vs_index_rejects_an_empty_frame(
         viz.plot_lst_vs_index(
             empty, tmp_path / "empty.png", params, index_columns=["NDVI"]
         )
+
+
+def test_lst_vs_index_labels_the_fitted_line(
+    params: dict[str, Any], driver_sample_frame: pd.DataFrame
+) -> None:
+    # The red line used to be unlabelled and a reader had to guess what it was.
+    figure = viz.build_lst_vs_index_figure(
+        driver_sample_frame, params, index_columns=["NDVI"]
+    )
+    labels = [t.get_text() for t in figure.axes[0].get_legend().get_texts()]
+    assert any("sampled pixels" in label for label in labels)
+    assert any("OLS fit" in label for label in labels)
+
+
+def test_lst_vs_index_clips_the_drawn_fit_to_the_bulk_of_the_data(
+    params: dict[str, Any], driver_sample_frame: pd.DataFrame
+) -> None:
+    # The line is COMPUTED from every row but DRAWN only across the 1st-99th
+    # percentile. Extending it into a tail holding a handful of pixels makes the
+    # relationship look better supported out there than it is. A far outlier is
+    # added here so the clipping has something to bite on.
+    import numpy as np
+
+    frame = driver_sample_frame.copy()
+    frame.loc[len(frame)] = {
+        "LST_C": 30.0, "NDVI": -5.0, "NDBI": 0.0, "MNDWI": 0.0, "built_fraction": 0.0
+    }
+    figure = viz.build_lst_vs_index_figure(frame, params, index_columns=["NDVI"])
+
+    fit_line = [
+        line for line in figure.axes[0].get_lines() if len(line.get_xdata()) == 50
+    ]
+    assert fit_line, "expected the 50-point fitted line"
+    drawn_min = float(np.min(fit_line[0].get_xdata()))
+    assert drawn_min > -5.0, "the fit must not be drawn out to the lone outlier"
+    assert drawn_min >= float(np.percentile(frame["NDVI"], 1)) - 1e-9
