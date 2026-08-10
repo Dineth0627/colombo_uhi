@@ -53,11 +53,18 @@ def _annual_metadata(
     n_scenes: list[int] | None = None,
     basis: list[str] | None = None,
     size: int | None = None,
+    probed: int | None = None,
 ) -> dict[str, Any]:
-    """A well-formed metadata payload, as require_annual_series would fetch it."""
+    """A well-formed metadata payload, as require_annual_series would fetch it.
+
+    ``size`` is the whole collection; ``probed`` is how many images had their
+    properties read. They differ whenever the guard samples rather than
+    inspecting every image.
+    """
     count = len(years) if size is None else size
     return {
         "size": count,
+        "probed": len(years) if probed is None else probed,
         "series_basis": (
             basis
             if basis is not None
@@ -596,12 +603,68 @@ def test_guard_rejects_a_missing_series_basis(params: dict[str, Any]) -> None:
 
 def test_guard_rejects_a_partially_marked_collection(params: dict[str, Any]) -> None:
     # aggregate_array on a property only SOME images carry returns a shorter
-    # array, which is exactly why size is fetched alongside and length-checked.
+    # array, which is exactly why the probed count is tracked and length-checked.
     metadata = _annual_metadata(
         [2000, 2001, 2002], params, basis=[params["trends"]["series_basis"]]
     )
     with pytest.raises(ValueError, match="only 1 of 3"):
         trends.validate_series_metadata(metadata, params)
+
+
+def test_guard_accepts_a_sampled_series(params: dict[str, Any]) -> None:
+    # The default guard inspects a SAMPLE plus the collection size, because
+    # reading properties materialises one full composite graph per image and 26
+    # of those exceed the Earth Engine memory limit regardless of region.
+    metadata = _annual_metadata(
+        [2000, 2001, 2002, 2003], params, size=26, probed=4
+    )
+    summary = trends.validate_series_metadata(
+        metadata, params, start_year=2000, end_year=2025
+    )
+    assert summary["n_years"] == 26
+    assert summary["n_probed"] == 4
+
+
+def test_guard_rejects_a_size_that_is_not_one_image_per_year(
+    params: dict[str, Any],
+) -> None:
+    # THE check that catches a scene stack even when only a few images are
+    # inspected: 1674 scenes against 26 expected years. Distinct years here so
+    # the duplicate check does not preempt the one under test.
+    metadata = _annual_metadata(
+        [2000, 2001, 2002, 2003], params, size=1674, probed=4, months=[]
+    )
+    with pytest.raises(ValueError, match="holds 1674 image"):
+        trends.validate_series_metadata(
+            metadata, params, start_year=2000, end_year=2025
+        )
+
+
+def test_guard_rejects_a_probed_year_outside_the_requested_range(
+    params: dict[str, Any],
+) -> None:
+    metadata = _annual_metadata([1998, 1999], params, size=26, probed=2)
+    with pytest.raises(ValueError, match="outside the requested range"):
+        trends.validate_series_metadata(
+            metadata, params, start_year=2000, end_year=2025
+        )
+
+
+def test_a_sampled_guard_still_covers_the_whole_series_via_size(
+    params: dict[str, Any],
+) -> None:
+    # A sample of 4 images out of 26 cannot see a gap in the middle directly -
+    # but it does not need to. annual_composites emits one image per calendar
+    # year including empty ones, so ANY gap changes the size, and the size is
+    # cheap to read. This is what makes sampling sound rather than a shortcut.
+    sampled = _annual_metadata([2000, 2001, 2002, 2003], params, size=26, probed=4)
+    trends.validate_series_metadata(sampled, params, start_year=2000, end_year=2025)
+
+    gapped = _annual_metadata([2000, 2001, 2002, 2003], params, size=25, probed=4)
+    with pytest.raises(ValueError, match="holds 25 image"):
+        trends.validate_series_metadata(
+            gapped, params, start_year=2000, end_year=2025
+        )
 
 
 def test_guard_rejects_the_wrong_basis_value(params: dict[str, Any]) -> None:
@@ -629,9 +692,11 @@ def test_guard_rejects_a_single_year(params: dict[str, Any]) -> None:
 
 def test_guard_rejects_a_gap_against_an_explicit_range(params: dict[str, Any]) -> None:
     # annual_composites emits empty years with obs_count == 0, so the axis is
-    # always complete; a gap means the series was filtered after it was built.
+    # always complete. A gap therefore shows up as a SIZE mismatch - 3 images
+    # against a 4-year range - which is detectable without inspecting every
+    # image, and is why the guard can afford to sample.
     metadata = _annual_metadata([2000, 2001, 2003], params)
-    with pytest.raises(ValueError, match="missing year"):
+    with pytest.raises(ValueError, match="holds 3 image"):
         trends.validate_series_metadata(
             metadata, params, start_year=2000, end_year=2003
         )

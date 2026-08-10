@@ -110,6 +110,63 @@ records the rule empirically: a **multi-input** reducer makes
 `ImageCollection.reduce` emit **bare** output names. So `kendallsCorrelation(2)`
 should give `tau`/`p-value`, matching `sensSlope`'s `slope`/`offset`.
 
+### Colab run 11 (2026-08-09) — Step 2 SETTLED, Step 3 guard reworked
+
+**V1 band names — measured, and exactly as assumed. No params change needed.**
+
+| Reduce | Output bands |
+|---|---|
+| `ee.Reducer.sensSlope()` | `['slope', 'offset']` — **bare** |
+| `ee.Reducer.kendallsCorrelation(2)` | `['tau', 'p-value']` — **bare** |
+| `ee.Reducer.kendallsCorrelation(1)` | `['fit_y_tau', 'fit_y_p-value']` — **band-prefixed** |
+
+This confirms the rule `composites._composite_reducer` records: a **multi-input**
+reducer makes `ImageCollection.reduce` emit bare output names, a single-input one
+prefixes with the band. It also vindicates `mk_num_inputs: 2` — with `1` the band
+names would depend on the fit-stack band name.
+`resolve_reduced_band_names` matches on the exact-suffix path, no positional
+fallback, no warning.
+
+**V3 SETTLED: `sensSlope` takes x THEN y.** The known-slope probe returned
+`{'offset': 10, 'slope': 2}` for a series built as `y = 10 + 2x`. Both outputs
+correct, so `trends.sen_input_order: ["x", "y"]` stands.
+
+**V2 SETTLED: `ee` tau agrees, `ee` p-value is unusable.** `ee` tau = 0.9090909,
+identical to scipy and pymannkendall. But the reducer returned **`p-value: None`**
+on a clean 12-point series with τ = 0.909 — it simply does not populate that
+output. **Consequence: the exported `mk_p_ee` band will be entirely masked.**
+That is harmless and was anticipated — `mk_p_ee` is comparison-only and never
+reaches the FDR correction; `mk_p_two_sided` is derived from Z. `verify_trend_bands`
+already skips bands whose min/max come back `None`.
+
+Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
+approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
+**exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
+
+**Step 3 — the guard blew the memory limit, and my first fix was wrong.**
+
+Run 10's fix assumed the cost was region-driven and validated a 2 km probe
+series. Run 11 showed that **also** fails: the driver is the **graph**, not the
+pixels. Twenty-six composite reduces in one request exceed the limit whatever the
+region — the run-2 wall, reached from a different direction.
+
+The working fix is to **sample**, which is sound rather than a shortcut because
+`annual_composites` emits exactly one image per calendar year *including empty
+ones*:
+
+* `require_annual_series` now reads `collection.size()` (the length of the
+  underlying list — no image built) plus the properties of a
+  `toList(probe, offset)` slice, `probe = trends.batch_years = 4`. One round trip.
+* Any gap or extra image changes `size`, so the **size check covers the years
+  that were not inspected**. A scene stack fails on size (1674 vs 26) *and* on
+  the first image inspected.
+* `full=True` inspects every year in batches for the paranoid case.
+* The "missing years" check was **removed as dead code**: with size matching the
+  range, inspected years distinct, and none straying outside it, a gap is
+  arithmetically impossible.
+* `validate_series_metadata` now takes `probed` alongside `size`, so length
+  checks are against what was actually inspected.
+
 ### Colab run 10 (2026-08-09) — Step 2 probe, partial
 
 * **V3 SETTLED: `ee.Reducer.sensSlope` takes x THEN y.** The known-slope-2.0
@@ -142,11 +199,15 @@ should give `tau`/`p-value`, matching `sensSlope`'s `slope`/`offset`.
   `fromImages(List.map(...))` carries a full composite graph per year; 26 of
   those in one request over Colombo District is exactly the run-2 failure.
 
-  **The fix rests on a fact worth remembering: the STRUCTURE of an annual series
-  is region-independent.** One image per year, identical properties, whatever
-  geometry it was built over. So:
-  * the notebook validates a probe series built over a ~2 km box and then builds
-    the real full-region series unvalidated — same structure, negligible cost;
+  > **⚠️ The fix described below was WRONG and is superseded by run 11.** It
+  > assumed the cost was region-driven; it is graph-driven, so the probe-region
+  > version failed too. Kept here because the reasoning is instructive.
+
+  The (incorrect) reasoning was: the STRUCTURE of an annual series is
+  region-independent — one image per year, identical properties, whatever
+  geometry it was built over. That is *true*, but irrelevant to the cost. So:
+  * the notebook validated a probe series built over a ~2 km box — **this still
+    exceeded the memory limit**;
   * `require_annual_series` gained `check_scenes=False` (the `n_scenes` fetch
     forces the per-year scene filter to evaluate on top of the composite graph,
     and it only powers a warning), plus a `RuntimeError` on out-of-memory that

@@ -893,18 +893,27 @@ def validate_series_metadata(
     project, because this function is the only thing standing between a user and
     a Mann-Kendall test fitted to 1674 irregularly spaced scenes.
 
+    .. note::
+        ``probed`` may be smaller than ``size``. Reading properties forces Earth
+        Engine to materialise the images they hang off, and a 26-year annual
+        series carries a full composite graph per year, so inspecting every image
+        in one request exceeds the user memory limit (Colab run 10). The default
+        guard therefore inspects a SAMPLE plus the collection size, which is
+        sufficient: a scene stack fails on both the size and the very first
+        image's properties.
+
     Args:
-        metadata: Mapping with keys ``size``, ``series_basis``, ``years``,
-            ``months`` and (optionally) ``n_scenes``, as fetched in one round
-            trip by :func:`require_annual_series`.
+        metadata: Mapping with keys ``size`` (total images), ``probed`` (how many
+            were actually inspected), ``series_basis``, ``years``, ``months`` and
+            optionally ``n_scenes``, as fetched by :func:`require_annual_series`.
         params: Parsed params mapping.
         start_year: If given with ``end_year``, require exactly this year range.
         end_year: See ``start_year``.
 
     Returns:
-        Summary mapping with ``n_years``, ``first_year``, ``last_year`` and
-        ``empty_years`` - printed by the notebook, so the guard doubles as the
-        series inventory and nobody is tempted to skip it.
+        Summary mapping with ``n_years``, ``n_probed``, ``first_year``,
+        ``last_year`` and ``empty_years`` - printed by the notebook, so the guard
+        doubles as the series inventory and nobody is tempted to skip it.
 
     Raises:
         ValueError: If the collection is not a complete, strictly ascending
@@ -920,10 +929,22 @@ def validate_series_metadata(
             "image(s); widen start_year/end_year"
         )
 
-    basis = list(metadata.get("series_basis") or [])
-    if len(basis) != size:
+    probed = int(metadata.get("probed") or size)
+
+    months = list(metadata.get("months") or [])
+    if months:
         raise ValueError(
-            f"only {len(basis)} of {size} images carry a "
+            f"{len(months)} of the {probed} inspected images carry a `month` "
+            "property, so this is a SCENE collection, not an annual series. "
+            "Mann-Kendall on sub-annual data measures the seasonal cycle and the "
+            "observation calendar, not a climate trend. Build the series with "
+            "trends.annual_series(source, params) and pass that instead."
+        )
+
+    basis = list(metadata.get("series_basis") or [])
+    if len(basis) != probed:
+        raise ValueError(
+            f"only {len(basis)} of {probed} inspected images carry a "
             f"'{comp['series_basis_property']}' property. Either this is not an "
             "annual composite series, or your composites.py predates Phase 4 - "
             "re-run the clone cell and the module-purge cell, then rebuild the "
@@ -936,20 +957,10 @@ def validate_series_metadata(
             "Mann-Kendall is only defined here for the annual composite series."
         )
 
-    months = list(metadata.get("months") or [])
-    if months:
-        raise ValueError(
-            f"{len(months)} images carry a '{comp['season_property']}'-level "
-            "`month` property, so this is a SCENE collection, not an annual "
-            "series. Mann-Kendall on sub-annual data measures the seasonal cycle "
-            "and the observation calendar, not a climate trend. Build the series "
-            "with trends.annual_series(source, params) and pass that instead."
-        )
-
     years = [int(year) for year in (metadata.get("years") or [])]
-    if len(years) != size:
+    if len(years) != probed:
         raise ValueError(
-            f"only {len(years)} of {size} images carry a "
+            f"only {len(years)} of {probed} inspected images carry a "
             f"'{comp['year_property']}' property; the series is not usable for "
             "trend fitting"
         )
@@ -971,14 +982,29 @@ def validate_series_metadata(
 
     if start_year is not None and end_year is not None:
         expected = list(range(int(start_year), int(end_year) + 1))
-        missing = sorted(set(expected) - set(years))
-        if missing:
+        # The SIZE check is what proves one-image-per-year across the whole
+        # series, and it holds whether or not every image was inspected. A scene
+        # stack fails it by three orders of magnitude.
+        if size != len(expected):
             raise ValueError(
-                f"the series is missing year(s) {missing}. annual_composites() "
-                "emits empty years with obs_count == 0 so the axis stays "
-                "complete, so a gap here means the series was filtered after it "
-                "was built - rebuild it with start_year/end_year instead of "
-                "calling .filter()."
+                f"the collection holds {size} image(s) but {start_year}-"
+                f"{end_year} is {len(expected)} years. annual_composites() emits "
+                "exactly one composite per calendar year, including empty ones "
+                "with obs_count == 0, so the axis is always complete - a "
+                "mismatch means this is not that series, or it was filtered "
+                "after it was built."
+            )
+        # No separate "missing years" check: with the size matching the range,
+        # the inspected years distinct, and none straying outside it, a gap is
+        # arithmetically impossible. The size check above is what catches a
+        # series that was filtered after it was built.
+        stray = sorted(set(years) - set(expected))
+        if stray:
+            raise ValueError(
+                f"inspected image(s) carry year(s) {stray}, outside the "
+                f"requested range {start_year}-{end_year}. annual_composites() "
+                "emits exactly the requested range, so this is a different "
+                "series than the one asked for."
             )
 
     scenes = list(metadata.get("n_scenes") or [])
@@ -987,15 +1013,17 @@ def validate_series_metadata(
     ]
     if empty_years:
         warnings.warn(
-            f"{len(empty_years)} year(s) in the series rest on ZERO scenes: "
-            f"{empty_years}. They are still on the year axis with obs_count == 0, "
-            "so the trend will be fitted over the remaining years - but read the "
-            "n_years band before interpreting any pixel in those regions.",
+            f"{len(empty_years)} of the {probed} inspected year(s) rest on ZERO "
+            f"scenes: {empty_years}. They are still on the year axis with "
+            "obs_count == 0, so the trend will be fitted over the remaining "
+            "years - but read the n_years band before interpreting any pixel in "
+            "those regions.",
             stacklevel=3,
         )
 
     return {
         "n_years": size,
+        "n_probed": probed,
         "first_year": years[0],
         "last_year": years[-1],
         "empty_years": empty_years,
@@ -1142,6 +1170,8 @@ def require_annual_series(
     start_year: int | None = None,
     end_year: int | None = None,
     check_scenes: bool = False,
+    probe_images: int | None = None,
+    full: bool = False,
 ) -> dict[str, Any]:
     """Refuse to fit a trend to anything that is not an annual composite series.
 
@@ -1156,77 +1186,116 @@ def require_annual_series(
     silent pass.
 
     .. warning::
-        **Validate on a NARROW region.** Reading properties still forces Earth
-        Engine to materialise every image in the collection, and an annual series
-        built with ``ee.ImageCollection.fromImages(ee.List.map(...))`` carries a
-        full composite graph per year. Twenty-six of those in one request exceeds
-        the user memory limit over a district-sized region - the same failure
-        Colab run 2 hit, and the same reason this project never ``.filter()``\\ s
-        a computed collection.
+        **This SAMPLES the collection by default.** Reading properties forces
+        Earth Engine to materialise the images they hang off, and an annual
+        series built with ``ee.ImageCollection.fromImages(ee.List.map(...))``
+        carries a full composite graph per year. Inspecting all 26 in one request
+        exceeds the user memory limit — and, measured in Colab run 10, it does so
+        **regardless of region**: the cost is the graph, not the pixels. That is
+        the same wall Colab run 2 hit, and the same reason this project never
+        ``.filter()``\\ s a computed collection.
 
-        This costs nothing to avoid, because **the structure of an annual series
-        is region-independent**: one image per year, with identical properties,
-        whatever geometry it was built over. Build a probe series over a small
-        box, validate that, and then build the real series for the full region.
+        Sampling is sufficient for what this guard exists to catch. A sub-annual
+        scene stack fails on ``size`` (1674 scenes against 26 expected years) and
+        on the very first image it inspects (scenes carry ``month``; composites
+        carry ``series_basis``). Pass ``full=True`` to inspect every year in
+        batches, at ``size / probe_images`` round trips.
 
     Args:
-        collection: The collection to check. Build it over a SMALL region.
+        collection: The collection to check.
         params: Parsed params mapping.
-        start_year: If given with ``end_year``, require exactly this year range.
+        start_year: If given with ``end_year``, require the collection to hold
+            exactly that many images.
         end_year: See ``start_year``.
         check_scenes: Also fetch ``n_scenes``, which powers the "this year rests
-            on zero scenes" warning. Off by default because it is by far the
-            most expensive property here - it forces the per-year scene filter to
-            be evaluated as well as the composite graph to be built.
+            on zero scenes" warning. Off by default: it forces the per-year scene
+            filter to be evaluated on top of building the composite graph.
+        probe_images: How many images to inspect per request; defaults to
+            ``trends.batch_years``.
+        full: Inspect every image, in batches of ``probe_images``. Costs one
+            round trip per batch and is the only way to detect a gap or a
+            duplicate in the middle of a long series.
 
     Returns:
         The summary from :func:`validate_series_metadata`.
 
     Raises:
         ValueError: If the collection is not a complete annual composite series.
-        RuntimeError: If Earth Engine runs out of memory building the request,
-            with the fix rather than the raw error.
+        RuntimeError: If Earth Engine runs out of memory, with the fix rather
+            than the raw error.
     """
     import ee  # Deferred: see module docstring.
 
     comp = params["composites"]
-    requested = [
-        collection.size(),
-        collection.aggregate_array(comp["series_basis_property"]),
-        collection.aggregate_array(comp["year_property"]),
-        collection.aggregate_array("month"),
-    ]
+    probe = int(params["trends"]["batch_years"] if probe_images is None else probe_images)
+    if probe < 1:
+        raise ValueError(f"probe_images must be >= 1, got {probe}")
+
+    def _fetch(offset: int, count: int, with_size: bool) -> list[Any]:
+        # toList(count, offset) materialises only the slice, which is what keeps
+        # this affordable. collection.size() is the length of the underlying
+        # list and does not build any image.
+        window = ee.ImageCollection(collection.toList(count, offset))
+        requested: list[Any] = [
+            window.aggregate_array("month"),
+            window.aggregate_array(comp["series_basis_property"]),
+            window.aggregate_array(comp["year_property"]),
+        ]
+        if check_scenes:
+            requested.append(window.aggregate_array(comp["n_scenes_property"]))
+        if with_size:
+            requested.append(collection.size())
+        try:
+            return ee.List(requested).getInfo()
+        except Exception as error:  # ee.EEException; ee is imported lazily.
+            if "memory" not in str(error).lower():
+                raise
+            raise RuntimeError(
+                f"Earth Engine ran out of memory inspecting {count} image(s) of "
+                "the series. Reading properties materialises one full composite "
+                "graph per image, and that cost is driven by the GRAPH, not by "
+                "the region - a smaller region does not help.\n"
+                "Fix, in order:\n"
+                f"  1. Lower probe_images (currently {probe}), or "
+                "trends.batch_years, to 1.\n"
+                "  2. Drop check_scenes=True if you set it.\n"
+                "  3. Do not pass full=True on a long series.\n"
+                "If even one image cannot be inspected, the series itself is too "
+                "expensive to build and the problem is upstream, not here."
+            ) from error
+
+    months: list[Any] = []
+    basis: list[Any] = []
+    years: list[Any] = []
+    scenes: list[Any] = []
+
+    first = _fetch(0, probe, with_size=True)
+    size = int(first[-1])
+    months += first[0]
+    basis += first[1]
+    years += first[2]
     if check_scenes:
-        requested.append(collection.aggregate_array(comp["n_scenes_property"]))
+        scenes += first[3]
+    probed = min(probe, size)
 
-    try:
-        fetched = ee.List(requested).getInfo()
-    except Exception as error:  # ee.EEException, but ee is imported lazily.
-        if "memory" not in str(error).lower():
-            raise
-        raise RuntimeError(
-            "Earth Engine ran out of memory validating the annual series. "
-            "Reading its properties still materialises one full composite graph "
-            "per year, and 26 of those in one request exceeds the limit over a "
-            "large region.\n"
-            "Fix: the structure of an annual series is REGION-INDEPENDENT, so "
-            "validate a probe series built over a small box and then build the "
-            "real one for the full region:\n"
-            "    probe = trends.annual_series(source, params, region=small_box)\n"
-            "    trends.require_annual_series(probe, params)\n"
-            "    series = trends.annual_series(source, params, region=full_region)\n"
-            "If you already passed a small region, drop check_scenes, or narrow "
-            "the year range with start_year/end_year."
-        ) from error
+    if full:
+        for offset in range(probe, size, probe):
+            batch = _fetch(offset, probe, with_size=False)
+            months += batch[0]
+            basis += batch[1]
+            years += batch[2]
+            if check_scenes:
+                scenes += batch[3]
+        probed = size
 
-    size, basis, years, months = fetched[:4]
     return validate_series_metadata(
         {
             "size": size,
+            "probed": probed,
             "series_basis": basis,
             "years": years,
             "months": months,
-            "n_scenes": fetched[4] if check_scenes else [],
+            "n_scenes": scenes,
         },
         params,
         start_year=start_year,
