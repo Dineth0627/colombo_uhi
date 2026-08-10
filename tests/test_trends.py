@@ -742,15 +742,85 @@ def test_fit_stack_validates_by_default() -> None:
     assert inspect.signature(trends.fit_stack).parameters["validate"].default is True
 
 
-def test_require_annual_series_does_not_fetch_scene_counts_by_default() -> None:
-    # n_scenes forces the per-year scene filter to be evaluated on top of
-    # building the composite graph, and it only powers a warning. Fetching it by
-    # default is what pushed the guard over the Earth Engine memory limit on a
-    # district-sized series (Colab run 10).
+def test_require_annual_series_defaults_to_the_cheap_checks() -> None:
+    # An annual composite's property dictionary contains n_scenes, which is a
+    # COMPUTED collection count. Anything that forces the dictionary to be built
+    # - aggregate_array, or sizing the collection - evaluates that count too,
+    # which is what exceeded the Earth Engine memory limit in Colab run 11 on
+    # only four images. Both expensive paths must stay opt-in.
     import inspect
 
     signature = inspect.signature(trends.require_annual_series)
-    assert signature.parameters["check_scenes"].default is False
+    assert signature.parameters["check_size"].default is False
+    assert signature.parameters["full"].default is False
+    assert "check_scenes" not in signature.parameters
+
+
+def test_guard_detects_a_scene_from_its_property_names_alone(
+    params: dict[str, Any],
+) -> None:
+    # propertyNames() lists KEYS without evaluating their values, which is the
+    # only affordable way to ask "is this a scene?" of a composite whose
+    # property dict is expensive to build.
+    metadata = {
+        "size": None,
+        "probed": 1,
+        "property_names": ["year", "month", "season", "sensor"],
+        "series_basis": [],
+        "years": [2000],
+        "months": [],
+        "n_scenes": [],
+    }
+    with pytest.raises(ValueError, match="SCENE collection"):
+        trends.validate_series_metadata(metadata, params)
+
+
+def test_guard_rejects_property_names_without_the_marker(
+    params: dict[str, Any],
+) -> None:
+    metadata = {
+        "size": None,
+        "probed": 1,
+        "property_names": ["year", "reducer", "system:time_start"],
+        "series_basis": [],
+        "years": [2000],
+        "months": [],
+        "n_scenes": [],
+    }
+    with pytest.raises(ValueError, match="composites.py"):
+        trends.validate_series_metadata(metadata, params)
+
+
+def test_guard_checks_the_endpoints_when_the_size_is_unknown(
+    params: dict[str, Any],
+) -> None:
+    # With size unknown, the endpoints stand in for it: image 0 must be the
+    # start year and image (n-1) must be the end year, which cannot both hold
+    # unless there is exactly one image per calendar year.
+    def _endpoints(years: list[int]) -> dict[str, Any]:
+        # Built inline rather than through _annual_metadata, because `size` here
+        # must be genuinely UNKNOWN (None), which is the default guard's state.
+        return {
+            "size": None,
+            "probed": 2,
+            "property_names": [
+                "year",
+                params["composites"]["series_basis_property"],
+            ],
+            "series_basis": [params["trends"]["series_basis"]] * 2,
+            "years": years,
+            "months": [],
+            "n_scenes": [],
+        }
+
+    trends.validate_series_metadata(
+        _endpoints([2000, 2025]), params, start_year=2000, end_year=2025
+    )
+
+    with pytest.raises(ValueError, match="expected 2025"):
+        trends.validate_series_metadata(
+            _endpoints([2000, 2019]), params, start_year=2000, end_year=2025
+        )
 
 
 def test_validate_series_metadata_tolerates_absent_scene_counts(

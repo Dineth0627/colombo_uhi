@@ -143,6 +143,44 @@ Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
 approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
 **exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
 
+### Colab run 12 (2026-08-09) — the guard's real cost, found at last
+
+Sampling four images **also** failed. The root cause, and the reason two earlier
+fixes missed it:
+
+> **An annual composite's property dictionary contains `n_scenes`, which is
+> `yearly.size()` — a COMPUTED count over the filtered four-sensor collection.**
+> Anything that forces the dictionary to be built evaluates that count as well.
+> `aggregate_array` does exactly that, for every image at once. So *reading
+> properties off a composite is not a metadata operation at all* — it drags a
+> filtered multi-sensor collection count along with it, per image.
+
+That is why neither a smaller region (run 10) nor fewer images (run 11) helped:
+the cost is per-image and intrinsic to the property dict.
+
+**The fix — read names, not values:**
+
+* `propertyNames()` lists KEYS without evaluating any value. That is how the
+  guard asks "is this a scene?" (scenes carry `month`) and "is this Phase 4
+  code?" (composites carry `series_basis`) for free.
+* Two targeted `get()` calls fetch only `series_basis` and `year`, both cheap
+  client-side constants. `n_scenes` is never requested.
+* Two images are inspected: the **first**, and the one at index
+  `end_year - start_year`. Both endpoints landing on the right year is only
+  possible if the collection holds exactly one image per calendar year across
+  the range — so the endpoints stand in for the size.
+* `collection.size()` became opt-in (`check_size=False`): sizing a computed
+  collection can force it to be materialised, which re-triggers the whole chain.
+* `check_scenes` was **removed** — it requested the single most expensive
+  property in the dictionary.
+* `validate_series_metadata` now accepts `size=None` ("not measured") and gains
+  a `property_names` input.
+
+**Design lesson for Phases 5–7:** if a computed property's value is itself an
+`ee` computation, treat every property read on that object as expensive. Prefer
+`propertyNames()` + targeted `get()` over `aggregate_array` / `toDictionary()`
+whenever the object is a composite this project built.
+
 **Step 3 — the guard blew the memory limit, and my first fix was wrong.**
 
 Run 10's fix assumed the cost was region-driven and validated a 2 km probe
