@@ -110,6 +110,34 @@ records the rule empirically: a **multi-input** reducer makes
 `ImageCollection.reduce` emit **bare** output names. So `kendallsCorrelation(2)`
 should give `tau`/`p-value`, matching `sensSlope`'s `slope`/`offset`.
 
+### Colab run 10 (2026-08-09) — Step 2 probe, partial
+
+* **V3 SETTLED: `ee.Reducer.sensSlope` takes x THEN y.** The known-slope-2.0
+  probe passed, so `trends.sen_input_order: ["x", "y"]` is correct.
+* **V2 not settled on the first attempt** — two bugs in the *probe cell* (the
+  library was never involved), both now fixed:
+  1. **`ee.List.reduce` with a multi-input reducer wants a list of PAIRS**
+     `[[x0,y0],[x1,y1],...]`, not two parallel arrays. The cell passed the
+     transposed shape, so Earth Engine saw **2 samples** and returned a trivial
+     `tau = 1` with a NaN p-value. The probe now runs through an
+     `ee.ImageCollection` of two-band images — the same shape
+     `trends.kendall_image` uses — so it actually exercises the production path.
+     **The pipeline was never affected**; only the probe was wrong.
+  2. **Earth Engine returns NaN through JSON as the STRING `'NaN'`.** So
+     `if _ee_p:` was truthy and the next arithmetic raised
+     `TypeError: ufunc 'divide' not supported`. The probe now coerces with a
+     `try/float()` helper and branches on `np.isfinite`.
+* **A legitimate difference worth not re-investigating**: at n=12 `scipy.stats.
+  kendalltau` returns an **exact** p (1.47e-6) while `pymannkendall` and our
+  `two_sided_p` use the **normal approximation with continuity correction**
+  (5.22e-5). Ours must match `pymannkendall`, not scipy's exact value —
+  confirmed locally to 1e-6, with S = 60 and Var(S) = 212.667 matching exactly.
+  The probe now prints all three and says which is the reference.
+* **Still to record from the next run**: the V1 band names printed by Step 2a,
+  and the V2 verdict on whether `kendallsCorrelation`'s own p is one- or
+  two-sided (it may simply be NaN, which is fine — `mk_p_ee` is
+  comparison-only and never reaches the FDR correction).
+
 ### Findings from writing the code (not from Colab)
 
 * **`pymannkendall`'s Sen slope uses the array INDEX as x**, so on a gapped
