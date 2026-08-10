@@ -1005,6 +1005,20 @@ trends:
                                       # Only worth the extra export wait if the live path keeps
                                       # exceeding the memory limit.
 
+  reducer_outputs:                    # [MEASURED — Colab run 11, 2026-08-09] the band names the
+                                      # reducers actually emit. DO NOT GUESS THESE; they were probed
+                                      # in notebook 04 Step 2a and the answer is recorded here so the
+                                      # product path never has to ask Earth Engine again. Asking cost
+                                      # two whole-graph getInfo calls per trend image, on a graph that
+                                      # cannot survive an interactive request.
+    sen: ["slope", "offset"]          # ee.Reducer.sensSlope over the 2-band fit stack.
+    kendall: ["tau", "p-value"]       # ee.Reducer.kendallsCorrelation(2). Note the HYPHEN.
+                                      # With numInputs=1 these come back band-PREFIXED instead
+                                      # ("fit_y_tau", "fit_y_p-value") - a multi-input reducer makes
+                                      # ImageCollection.reduce emit bare output names, the same rule
+                                      # composites._composite_reducer documents for sharedInputs.
+                                      # That asymmetry is a further reason mk_num_inputs is 2.
+
   # --- output band names -------------------------------------------------------
   bands:                              # [DEFAULT — Phase 4] named here so trends.py, exports.py and
                                       # trends.read_trend_raster all read the SAME strings and can

@@ -835,7 +835,35 @@ def test_validate_series_metadata_tolerates_absent_scene_counts(
     assert summary["empty_years"] == []
 
 
+def test_selftest_annual_series_takes_a_source_key() -> None:
+    # The constructor self-test is what Phase 4's structural guarantee rests on
+    # in practice, so it must go through the same source-key door as
+    # trend_image - not accept a collection.
+    import inspect
+
+    parameters = list(inspect.signature(trends.selftest_annual_series).parameters)
+    assert parameters[0] == "source"
+    assert "collection" not in parameters
+
+
+def test_selftest_annual_series_rejects_a_single_year(params: dict[str, Any]) -> None:
+    # A one-image series cannot demonstrate a year axis at all.
+    with pytest.raises(ValueError, match="years must be >= 2"):
+        trends.selftest_annual_series("landsat_dry", params, region=None, years=1)
+
+
 # --- reducer band-name resolution --------------------------------------------
+def test_reducer_outputs_match_the_module_constants(params: dict[str, Any]) -> None:
+    # The product path selects these names directly, with no getInfo, because
+    # they were MEASURED in Colab run 11. If the params drift from the constants
+    # the probe helper checks against, one of the two is wrong.
+    outputs = params["trends"]["reducer_outputs"]
+    assert tuple(outputs["sen"]) == trends.SEN_OUTPUTS
+    assert tuple(outputs["kendall"]) == trends.KENDALL_OUTPUTS
+    # The hyphen is real and easy to "correct" into an underscore.
+    assert "p-value" in outputs["kendall"]
+
+
 def test_band_names_resolve_from_exact_suffixes() -> None:
     assert trends.resolve_reduced_band_names(
         ["slope", "offset"], trends.SEN_OUTPUTS, "sensSlope"

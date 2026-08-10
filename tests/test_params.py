@@ -244,6 +244,16 @@ def test_trend_export_order_has_no_duplicates(params: dict[str, Any]) -> None:
     assert len(order) == len(set(order))
 
 
+def test_trend_reducer_outputs_are_recorded(params: dict[str, Any]) -> None:
+    # Measured in Colab run 11 and pinned here so the product path can select
+    # them directly. Reading them back from Earth Engine cost a getInfo on a
+    # reduce over all 26 composites, which the interactive memory ceiling
+    # cannot support.
+    outputs = params["trends"]["reducer_outputs"]
+    assert outputs["sen"] == ["slope", "offset"]
+    assert outputs["kendall"] == ["tau", "p-value"]
+
+
 def test_trend_carries_both_p_value_bands(params: dict[str, Any]) -> None:
     # mk_p_two_sided is what FDR consumes; mk_p_ee is the reducer's own p-value,
     # exported beside it so their ratio settles empirically whether the reducer

@@ -1081,6 +1081,15 @@ def resolve_reduced_band_names(
     emits ``<band>_<output>``. Rather than depend on which case applies, this
     resolves both and falls back to position.
 
+    .. note::
+        **This is a DIAGNOSTIC helper, not part of the product path.** Notebook
+        04's Step 2a probe calls it against a three-image toy stack to discover
+        the real names, which are then recorded in ``trends.reducer_outputs`` and
+        selected directly. It used to run inside :func:`sen_slope_image` and
+        :func:`kendall_image`, but that meant a ``bandNames().getInfo()`` on a
+        reduce over all 26 composites — an interactive question about a graph far
+        too large for the interactive memory ceiling.
+
     Args:
         observed: Band names the reduce actually produced.
         suffixes: Expected output names, in order, e.g. ``("slope", "offset")``.
@@ -1346,6 +1355,64 @@ def require_annual_series(
     )
 
 
+def selftest_annual_series(
+    source: str | Mapping[str, Any],
+    params: dict[str, Any],
+    region: "ee.Geometry",
+    years: int = 3,
+) -> dict[str, Any]:
+    """Prove the annual-series CONSTRUCTOR is sound, on a deliberately tiny series.
+
+    Builds the last ``years`` years over the small ``region`` given, through the
+    *same* :func:`annual_series` call the production path uses, and runs
+    :func:`require_annual_series` on the result.
+
+    .. note::
+        **This validates the constructor, not the product** - and that is the
+        point. Interrogating the production series proved impossible: reading
+        even two of its images' property NAMES exceeded the Earth Engine
+        interactive memory limit over Colombo District (Colab runs 10-12, from
+        three different angles). The interactive ceiling is simply far below what
+        a 26-composite graph needs; batch ``Export`` tasks have no such problem,
+        which is why the real products go through them.
+
+        A constructor that emits ``series_basis``, omits ``month``, and produces
+        exactly one image per calendar year for three years over a 2 km box does
+        the same for twenty-six years over a district: the difference is data
+        volume, not structure. Combined with layer 1 - :func:`trend_image` takes
+        a source KEY and builds its own series, so a scene stack cannot reach the
+        reducers - this is the guarantee Phase 4 actually rests on.
+
+        What it does NOT establish: that some *other* collection, built elsewhere
+        and passed directly to :func:`fit_stack`, is an annual series. That is
+        what :func:`require_annual_series` is for, and it remains on by default
+        there.
+
+    Args:
+        source: Key into ``uhi.suhii.sources``, e.g. ``"landsat_dry"``.
+        params: Parsed params mapping.
+        region: A SMALL geometry - a few km across. The whole point is that this
+            is cheap.
+        years: How many years to build. Two is the minimum a trend needs.
+
+    Returns:
+        The summary from :func:`validate_series_metadata`.
+
+    Raises:
+        ValueError: If ``years`` is below 2, or the constructor is broken.
+    """
+    if int(years) < 2:
+        raise ValueError(
+            f"years must be >= 2 so the year axis can be checked, got {years}"
+        )
+
+    last = int(params["time"]["end_year"])
+    first = last - int(years) + 1
+
+    series = annual_series(source, params, region=region, start_year=first, end_year=last)
+    return require_annual_series(series, params, start_year=first, end_year=last)
+
+
 def fit_stack(
     series: "ee.ImageCollection",
     params: dict[str, Any],
@@ -1441,6 +1508,16 @@ def sen_slope_image(
         stack: A fit stack from :func:`fit_stack`.
         params: Parsed params mapping.
 
+    .. note::
+        The reducer's output names come from ``trends.reducer_outputs.sen``,
+        which was MEASURED in Colab run 11, not guessed. This function therefore
+        makes **no** ``getInfo`` call. It previously read
+        ``reduced.bandNames().getInfo()`` defensively, but that asks Earth Engine
+        an interactive question about a reduce over all 26 composites — and the
+        interactive memory ceiling is far below what that graph needs. If the
+        names ever change, ``select`` raises "Pattern did not match any bands",
+        and notebook 04's Step 2a probe is where the new names are discovered.
+
     Returns:
         Two-band ``ee.Image``: ``trends.bands.sen_slope`` in degC/yr, and
         ``trends.bands.sen_offset`` in degC at the x origin.
@@ -1450,12 +1527,10 @@ def sen_slope_image(
     bands = params["trends"]["bands"]
     order = list(params["trends"]["sen_input_order"])
     inputs = [FIT_X_BAND if role == "x" else FIT_Y_BAND for role in order]
+    outputs = list(params["trends"]["reducer_outputs"]["sen"])
 
     reduced = stack.select(inputs).reduce(ee.Reducer.sensSlope())
-    names = resolve_reduced_band_names(
-        reduced.bandNames().getInfo(), SEN_OUTPUTS, "ee.Reducer.sensSlope"
-    )
-    return reduced.select(names, [bands["sen_slope"], bands["sen_offset"]]).toFloat()
+    return reduced.select(outputs, [bands["sen_slope"], bands["sen_offset"]]).toFloat()
 
 
 def kendall_image(
@@ -1474,6 +1549,20 @@ def kendall_image(
         stack: A fit stack from :func:`fit_stack`.
         params: Parsed params mapping.
 
+    .. note::
+        Measured in Colab run 11: the reducer returns ``p-value`` as **null** even
+        on a clean 12-point series with tau = 0.909. Expect ``mk_p_ee`` to be an
+        entirely masked band. That is harmless — it is never fed to the FDR
+        correction — and it is exported anyway so the question stays answered on
+        real data rather than by assumption.
+
+    .. note::
+        Output names come from ``trends.reducer_outputs.kendall`` and are
+        MEASURED, so this function makes no ``getInfo`` call. See
+        :func:`sen_slope_image` for why that matters. Note that with
+        ``mk_num_inputs: 1`` the names come back band-PREFIXED instead, which is
+        why the configured pair belongs to the configured ``mk_num_inputs``.
+
     Returns:
         Two-band ``ee.Image``: ``trends.bands.mk_tau`` and
         ``trends.bands.mk_p_ee``.
@@ -1482,22 +1571,16 @@ def kendall_image(
 
     bands = params["trends"]["bands"]
     num_inputs = int(params["trends"]["mk_num_inputs"])
+    outputs = list(params["trends"]["reducer_outputs"]["kendall"])
 
     if num_inputs == 2:
         source = stack.select([FIT_X_BAND, FIT_Y_BAND])
-        probe_band = None
     else:
         source = stack.select([FIT_Y_BAND])
-        probe_band = FIT_Y_BAND
+        outputs = [f"{FIT_Y_BAND}_{name}" for name in outputs]
 
     reduced = source.reduce(ee.Reducer.kendallsCorrelation(num_inputs))
-    names = resolve_reduced_band_names(
-        reduced.bandNames().getInfo(),
-        KENDALL_OUTPUTS,
-        "ee.Reducer.kendallsCorrelation",
-        band=probe_band,
-    )
-    return reduced.select(names, [bands["mk_tau"], bands["mk_p_ee"]]).toFloat()
+    return reduced.select(outputs, [bands["mk_tau"], bands["mk_p_ee"]]).toFloat()
 
 
 def normal_cdf(z: "ee.Image") -> "ee.Image":

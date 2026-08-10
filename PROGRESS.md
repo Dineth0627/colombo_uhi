@@ -143,7 +143,59 @@ Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
 approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
 **exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
 
-### Colab run 12 (2026-08-09) — the guard's real cost, found at last
+### Runs 10–13 (2026-08-09) — the interactive memory ceiling, and the retreat
+
+**Outcome: `require_annual_series` cannot be run against the production series,
+and Phase 4 no longer tries.** Four attempts, four diagnoses, three of them
+wrong:
+
+| Run | Hypothesis | Change | Result |
+|---|---|---|---|
+| 10 | cost is region-driven | validate a 2 km probe series | **failed** |
+| 11 | cost is per-image count | sample 4 images via `toList` | **failed** |
+| 12 | cost is `n_scenes` forcing value evaluation | `propertyNames()` + 2 targeted `get()` on 2 images | **failed** |
+| 13 | *no interactive question about a 26-composite graph is affordable* | stop asking | — |
+
+**The principle, which belongs to Phases 5–7 too:**
+
+> **Interactive `getInfo` has a low memory ceiling; batch `Export` tasks do not.**
+> A 26-composite graph is not something you can ask questions about
+> interactively — not its properties, not even its property *names*. Push real
+> computation into `Export` tasks and keep interactive calls to small,
+> already-reduced results.
+
+**What changed in run 13:**
+
+* **`trend_image` now builds with ZERO `getInfo` calls.** `sen_slope_image` and
+  `kendall_image` each used to call `reduced.bandNames().getInfo()` on a reduce
+  over all 26 composites — defensive code against band-name ambiguity that run 11
+  had already resolved by measurement. The names now come from
+  `trends.reducer_outputs` (measured, pinned by a test) and are selected
+  directly. `resolve_reduced_band_names` survives as the **probe** helper the
+  notebook uses to discover names, which is where discovery belongs.
+* **`trends.selftest_annual_series(source, params, region, years=3)`** validates
+  the *constructor*: it builds three years over a 2 km box through the same
+  `annual_series()` call the production path uses, and runs the guard on that. A
+  constructor that emits `series_basis`, omits `month`, and yields one image per
+  calendar year for 3 years over a small box does the same for 26 over a
+  district — the difference is data volume, not structure. Combined with layer 1
+  (`trend_image` takes a source KEY), that is what Phase 4's structural guarantee
+  now rests on.
+* `require_annual_series` stays on by default in `fit_stack`, for a collection of
+  unknown provenance passed in directly. That is the case it was always for.
+* **Steps 4 and 6 degrade instead of aborting.** `verify_trend_bands` and the
+  in-session FDR preview are the last two interactive questions asked of the
+  trend graph; both now catch an EE memory error, print what was lost, and let
+  the notebook continue to the exports. Neither is load-bearing — Step 11
+  produces the authoritative significant-area figure from the exported raster.
+
+**Still unknown:** exactly where the interactive wall sits. Deliberately not
+chased further — the constructor self-test removes the need to know.
+
+**Decisions:** `n_scenes` left as-is (Phase-2 signed off, notebook 02 reads it,
+and it was never proven to be the cause).
+
+### Colab run 12 (2026-08-09) — the guard's real cost, as diagnosed at the time
 
 Sampling four images **also** failed. The root cause, and the reason two earlier
 fixes missed it:
