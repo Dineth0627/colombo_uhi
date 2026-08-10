@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-09 (Colab run 9 — **PHASE 3 COMPLETE**, all checks pass, figures verified)_
+_Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run of notebook 04**)_
 
 ## Status snapshot
 
@@ -10,11 +10,158 @@ _Last updated: 2026-08-09 (Colab run 9 — **PHASE 3 COMPLETE**, all checks pass
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
-| 4 | Trend analysis (MK/Sen + FDR) | ⬜ **next — unblocked** |
+| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **code written, 540 tests pass — NOT YET RUN in Colab** |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+## PHASE 4 — implementation record (2026-08-09, NOT YET RUN)
+
+**Nothing below has been executed against Earth Engine.** Claude Code has no EE
+credentials. Every server-side function is unverified until notebook 04 runs.
+
+**540 tests pass locally, 5 skip** (was 388 at the end of Phase 3). The 5 skips
+are the `apply_fdr_to_raster` / `read_trend_raster` round-trip tests, which need
+`rasterio` — declared in `requirements.txt` and present in Colab, but not
+installed in the local dev environment. They are real tests, not placeholders:
+they write a synthetic 9-band GeoTIFF with a nodata block and assert the
+nodata→NaN conversion, the band-count guard, the BH/BY ordering, and that
+"untested" and "tested but not significant" come out as **different** values.
+**Run `pytest tests/test_trends.py -k raster` in Colab and confirm 5 passes**
+before signing Phase 4 off — that is the only pure-Python path not yet executed.
+
+### New / changed files
+
+| File | What |
+|---|---|
+| `src/colombo_uhi/trends.py` | stub → full module: MK/Sen products, FDR, MMK, decadal, raster post-processing |
+| `src/colombo_uhi/exports.py` | stub → full module: `export_name`, Drive/asset wrappers, task status |
+| `src/colombo_uhi/landcover.py` | **new**: WorldCover / LCZ / Dynamic World class images + grouped-reducer stratified stats |
+| `src/colombo_uhi/composites.py` | **additive only**: `annual_composites` now sets `series_basis` and `window_months` |
+| `src/colombo_uhi/viz.py` | + `trend_vis_params`, `build_trend_map_figure`, `build_mk_comparison_figure`, `build_trend_by_class_figure` |
+| `config/params.yaml` | `trends` expanded to 27 keys; new `landcover` section; `exports` + 4 keys; 2 new caveats |
+| `tests/test_trends.py`, `tests/test_exports.py` | **new** |
+| `notebooks/04_trend_analysis.ipynb` | stub → 41 cells |
+
+### Two corrections to the GEE community tutorial — deliberate, do not "fix" back
+
+1. **`.int()` truncation.** The tutorial's `sign(i,j)` is
+   `j.neq(i).multiply(j.subtract(i).clamp(-1,1)).int()`. `.int()` truncates
+   toward zero, so a **+0.3 °C** year-to-year difference yields sign **0**.
+   `LST_C` is float °C and most annual differences are well under 1 °C, so this
+   would zero out most of S. The tutorial states its own scope: *"discrete data
+   (i.e. not floating point)"*. We use `diff.gt(0).subtract(diff.lt(0))`.
+   Pinned by `test_the_tutorials_truncating_reference_disagrees_on_a_sub_degree_difference`.
+2. **One-sided p.** The tutorial emits `1 − Φ(|Z|)` and compensates by
+   thresholding at 0.025. Benjamini-Hochberg needs **two-sided** input, so we
+   emit `mk_p_two_sided = 2(1 − Φ(|Z|)) = 1 − erf(|Z|/√2)`. Feeding BH the
+   one-sided form would roughly **double** the area reported as significant.
+
+### The 325-image self-join is avoided, not merely discouraged
+
+A 26-year series makes 26·25/2 = **325** pairwise sign images, each carrying two
+full annual-composite graphs — and Colab run 2 died on **26** in one request. So
+`mk_method: "tau_derived"` derives the statistics from the mandated
+`ee.Reducer.kendallsCorrelation` instead:
+
+* `τ_b = S / √((n₀−n₁)(n₀−n₂))`, `n₀ = n(n−1)/2`. x is the calendar **year**, so
+  ties in x are impossible; ties in float LST effectively so. Hence `n₁ = n₂ = 0`
+  and **`S = τ · n(n−1)/2` exactly**.
+* `Var(S) = n(n−1)(2n+5)/18` — the tutorial's `factors()` with the tie term zero.
+* Under ties this is **conservative, not wrong**: τ_b understates `S/n₀` and the
+  untied variance overstates Var(S), so |Z| comes out too small and p too large.
+
+`mk_method: "pairwise"` raises `NotImplementedError` with that reasoning.
+`test_mk_statistics_from_tau_match_pymannkendall` pins agreement with
+`pymannkendall` on 25 random series to 1e-9 for s, var_s, z and p.
+
+### The structural guard (the brief's hard requirement)
+
+* **Layer 1** — `trends.trend_image()` takes a source **key**, not a collection,
+  and builds the series itself. Pinned by
+  `test_trend_image_takes_a_source_key_not_a_collection`, which asserts the first
+  parameter is `source` and that no `series`/`stack` parameter exists, so a later
+  refactor cannot quietly reopen the hole.
+* **Layer 2** — `require_annual_series()` costs ONE `getInfo` (all property
+  arrays in a single `ee.List`) and delegates to the pure
+  `validate_series_metadata()`. It rejects: a missing/partial/wrong
+  `series_basis`; the presence of a `month` property (**the signal that catches a
+  raw scene stack** — scenes carry `month`, composites do not); duplicate or
+  non-ascending years; and a gap against an explicit range.
+
+`composites.annual_composites` had to gain the `series_basis` marker because
+**nothing else distinguished a composite from a scene** — scenes carry `year` too.
+
+### Things Colab must settle (notebook 04, Step 2) — record the answers here
+
+| # | Unknown | If it fails |
+|---|---|---|
+| V1 | Output band names of `sensSlope` and `kendallsCorrelation(1)`/`(2)` | edit `trends.bands` / `trends.mk_num_inputs` |
+| V2 | Is the reducer's own p-value one- or two-sided? | documentation only — `mk_p_two_sided` is derived from Z and is unaffected |
+| V3 | **`sensSlope` input order** — a known slope of 2.0 must return 2.0, not 0.5 | swap `trends.sen_input_order`; a reversed order returns the RECIPROCAL, not an error |
+| V4 | Does the full-district reduction fit interactively, or must it be exported? | export only; last resort `trends.annual_stack_asset` |
+| V5 | Grouped-reducer band-index convention for `trend_by_class` | reorder bands / `groupField` |
+| V6 | Does `Export.image.toDrive` preserve band descriptions? | reader already falls back to `trends.export_band_order` with a warning |
+| V7 | `aggregate_array` on a property no image carries — `[]` or raise? | one-line `try/except` in `require_annual_series` |
+
+`mk_num_inputs: 2` is chosen because `composites._composite_reducer` already
+records the rule empirically: a **multi-input** reducer makes
+`ImageCollection.reduce` emit **bare** output names. So `kendallsCorrelation(2)`
+should give `tau`/`p-value`, matching `sensSlope`'s `slope`/`offset`.
+
+### Findings from writing the code (not from Colab)
+
+* **`pymannkendall`'s Sen slope uses the array INDEX as x**, so on a gapped
+  series it silently reports °C per *observation*, not per year. Measured: a
+  20-year linear series with a 14-year gap gives **0.38** index-based against a
+  true **0.10** °C/yr. `mk_comparison` therefore takes the test statistics
+  (`s`, `var_s`, `z`, `p`, `tau` — all order-only) from `pymannkendall` but the
+  slope from our own year-based implementation. Worth knowing: a *narrow*
+  contiguous gap leaves the median unchanged, so this bug **hides in a spot
+  check** while corrupting the divisions that have scattered gaps.
+* **Hamed & Rao returns a non-finite Var(S) on a near-deterministic series.** A
+  perfect arithmetic progression detrends to exactly-zero residuals, the lag-0
+  autocovariance is zero, and the correction divides by it → NaN z and p. Those
+  rows are labelled `degenerate_variance` rather than left blank.
+* **BH must refuse p-values outside [0, 1].** A GeoTIFF read back from Drive
+  carries a nodata fill; an unmasked `-9999` sorts **first** and becomes the most
+  significant pixel in the AOI.
+* Our BH and BY match `statsmodels` `fdr_bh`/`fdr_by` exactly on random inputs.
+
+### Decisions taken with the user
+
+* Pixel-wise rasters for `landsat_dry` + `terra_night` + `aqua_night`. **MODIS
+  daytime is excluded** — Phase 2 recorded Terra's post-2020 orbital drift
+  contaminating end-of-series daytime trends, and night is what Landsat
+  structurally cannot provide.
+* FDR twice: coarse in-session preview **and** the authoritative exported raster.
+* Harmonic regression and the BFAST export are **deferred** out of Phase 4.
+* Land cover went into a new `landcover.py`, since Phases 5–7 need it too.
+* `fit_scale_m: 100`, not 30 — adjacent 30 m LST pixels are near-duplicates, so
+  fitting at 30 m multiplies the FDR test count ~11× without adding independent
+  information and drags the BH threshold down for every genuine pixel.
+* Decades are **11 / 10 / 5 years, unequal by construction** (the study period
+  ends in 2025), kept separate from `uhi.utfvi.epochs` because the two answer
+  different questions. `decadal_means` emits `sd_`/`n_years_` and
+  `decadal_difference` emits `diff_se`/`diff_z` so the asymmetry lands on the map.
+
+### Caveats that must travel into Phase 5+
+
+1. **Trend ≠ attribution.** Stratifying by WorldCover 2021 / LCZ 2018–19 answers
+   "where is the warming, by TODAY'S land cover", not "did land-cover change
+   cause it". Phase 6 is where attribution belongs.
+2. **BH assumes independence or PRDS**, which a 100 m LST raster violates. Report
+   Benjamini-Yekutieli beside it, and report the pixel-wise and per-GN
+   significant fractions as a pair — that spread is the MAUP sensitivity applied
+   to significance.
+3. **The significance map inherits WRS-2 side-lap striping** from `obs_count`,
+   one strip of which crosses the CMC. Report it; do not tune it away.
+4. **C2 inter-calibration is assumed, not verified** (`harmonisation: none`), and
+   2012-01 → 2013-03 rests on SLC-off ETM+ alone.
+5. **Decadal differences are not the warming number.** Sen's slope is. A decadal
+   difference conflates trend with interannual variability and with changing
+   observation counts; the maps are for spatial pattern only.
 
 ## PHASE 3 — Colab run 7 results (2026-08-09)
 

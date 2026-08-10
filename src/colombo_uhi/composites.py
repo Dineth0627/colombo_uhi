@@ -353,11 +353,23 @@ def annual_composites(
         # n_scenes counts REAL scenes, so the padding image must not be included.
         # `percentile` is omitted rather than set to None when the band is not
         # produced; ee.Image.set rejects a null value.
+        #
+        # series_basis is the marker trends.require_annual_series() checks before
+        # it will fit a Mann-Kendall trend. It is set HERE, at the only place an
+        # annual composite is built, because "is this a composite or a scene?" has
+        # no reliable answer from the other properties: scenes carry `year` too.
+        # window_months is informational - it makes a season-restricted series
+        # self-describing - and is a string because ee.Image.set takes scalars
+        # more predictably than lists.
         properties: dict[str, Any] = {
             comp["year_property"]: year_number,
             comp["n_scenes_property"]: yearly.size(),
             "reducer": reducer_name,
             "system:time_start": start.millis(),
+            comp["series_basis_property"]: params["trends"]["series_basis"],
+            comp["window_months_property"]: (
+                ",".join(str(int(month)) for month in months) if months else "all"
+            ),
         }
         if pct is not None:
             properties["percentile"] = pct

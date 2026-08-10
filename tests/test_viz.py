@@ -596,3 +596,177 @@ def test_lst_vs_index_clips_the_drawn_fit_to_the_bulk_of_the_data(
     drawn_min = float(np.min(fit_line[0].get_xdata()))
     assert drawn_min > -5.0, "the fit must not be drawn out to the lone outlier"
     assert drawn_min >= float(np.percentile(frame["NDVI"], 1)) - 1e-9
+
+
+# =============================================================================
+# Phase 4 - trend figures
+# =============================================================================
+@pytest.fixture()
+def trend_arrays() -> dict[str, Any]:
+    import numpy as np
+
+    rng = np.random.default_rng(17)
+    slope = rng.normal(0.03, 0.05, size=(24, 32))
+    significant = (slope > 0.05).astype("float64")
+    # A block that was never tested - the case the figure must NOT draw as
+    # "no trend".
+    slope[:4, :4] = np.nan
+    significant[:4, :4] = np.nan
+    return {"sen_slope": slope, "significant": significant}
+
+
+@pytest.fixture()
+def mk_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "label": ["landsat_dry|buffer_ring"] * 2 + ["terra_night|lcz_based"] * 2,
+            "series": ["suhii"] * 4,
+            "test": ["original", "hamed_rao", "original", "hamed_rao"],
+            "p": [0.001, 0.03, 0.2, 0.4],
+            "var_inflation": [1.0, 2.4, 1.0, 1.8],
+        }
+    )
+
+
+@pytest.fixture()
+def class_trend_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "scheme": ["worldcover"] * 4,
+            "class_code": [10, 30, 50, 95],
+            "class_label": ["Tree cover", "Grassland", "Built-up", "Mangroves"],
+            "pixel_count": [5200, 3100, 8800, 40],
+            "below_pixel_floor": [False, False, False, True],
+            "mean": [0.012, 0.028, 0.051, 0.004],
+            "stdDev": [0.010, 0.014, 0.019, 0.008],
+        }
+    )
+
+
+def test_trend_vis_params_returns_the_configured_ramp(params: dict[str, Any]) -> None:
+    vis = viz.trend_vis_params(params)
+    assert vis["min"] == -vis["max"]
+    assert len(vis["palette"]) % 2 == 1
+
+
+def test_trend_vis_params_rejects_an_asymmetric_range(params: dict[str, Any]) -> None:
+    # A ramp not centred on zero puts the "no trend" colour somewhere else, and
+    # a reader cannot tell warming from cooling by eye.
+    import copy
+
+    broken = copy.deepcopy(params)
+    broken["trends"]["slope_vis"]["min"] = -0.1
+    broken["trends"]["slope_vis"]["max"] = 0.2
+    with pytest.raises(ValueError, match="symmetric about zero"):
+        viz.trend_vis_params(broken)
+
+
+def test_trend_vis_params_rejects_an_even_palette(params: dict[str, Any]) -> None:
+    import copy
+
+    broken = copy.deepcopy(params)
+    broken["trends"]["slope_vis"]["palette"] = ["2166ac", "b2182b"]
+    with pytest.raises(ValueError, match="ODD number"):
+        viz.trend_vis_params(broken)
+
+
+def test_trend_map_figure_has_two_panels(
+    trend_arrays: dict[str, Any], params: dict[str, Any]
+) -> None:
+    # All-slopes beside significant-only. Either panel alone misleads: the first
+    # overstates confidence, the second hides what was never testable.
+    figure = viz.build_trend_map_figure(trend_arrays, params)
+    images = [axes for axes in figure.axes if axes.get_images()]
+    assert len(images) == 2
+
+
+def test_trend_map_figure_reports_both_counts_in_the_footer(
+    trend_arrays: dict[str, Any], params: dict[str, Any]
+) -> None:
+    figure = viz.build_trend_map_figure(trend_arrays, params)
+    footer = " ".join(text.get_text() for text in figure.texts)
+    assert "FDR-significant" in footer
+    # Untested pixels must be named as untested, never implied to be "no trend".
+    assert "never" in footer and "tested" in footer
+
+
+def test_trend_map_figure_raises_on_a_missing_array(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="significant"):
+        viz.build_trend_map_figure({"sen_slope": [[0.1, 0.2]]}, params)
+
+
+def test_trend_map_writes_a_png(
+    trend_arrays: dict[str, Any], params: dict[str, Any], tmp_path: Path
+) -> None:
+    out = viz.plot_trend_map(trend_arrays, tmp_path / "trend.png", params)
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_mk_comparison_figure_marks_the_alpha_threshold(
+    mk_frame: pd.DataFrame, params: dict[str, Any]
+) -> None:
+    figure = viz.build_mk_comparison_figure(mk_frame, params)
+    labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
+    assert any("alpha" in label for label in labels)
+    assert any("uncorrected" in label for label in labels)
+
+
+def test_mk_comparison_figure_raises_on_a_missing_column(
+    mk_frame: pd.DataFrame, params: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="var_inflation"):
+        viz.build_mk_comparison_figure(mk_frame.drop(columns=["var_inflation"]), params)
+
+
+def test_mk_comparison_figure_raises_on_an_empty_frame(
+    params: dict[str, Any]
+) -> None:
+    empty = pd.DataFrame(
+        columns=["label", "series", "test", "p", "var_inflation"]
+    )
+    with pytest.raises(ValueError, match="empty"):
+        viz.build_mk_comparison_figure(empty, params)
+
+
+def test_mk_comparison_writes_a_png(
+    mk_frame: pd.DataFrame, params: dict[str, Any], tmp_path: Path
+) -> None:
+    out = viz.plot_mk_comparison(mk_frame, tmp_path / "mk.png", params)
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_class_figure_hatches_classes_below_the_pixel_floor(
+    class_trend_frame: pd.DataFrame, params: dict[str, Any]
+) -> None:
+    # Sparse classes are shown, not dropped: removing them hides that the class
+    # exists at all. Hatch AND edge colour vary so the flag survives greyscale.
+    figure = viz.build_trend_by_class_figure(class_trend_frame, params)
+    hatched = [
+        patch for patch in figure.axes[0].patches if patch.get_hatch() is not None
+    ]
+    assert len(hatched) == 1
+
+
+def test_class_figure_shows_pixel_counts_in_the_tick_labels(
+    class_trend_frame: pd.DataFrame, params: dict[str, Any]
+) -> None:
+    # CLAUDE.md caveat 2: a class mean never travels without its pixel count.
+    figure = viz.build_trend_by_class_figure(class_trend_frame, params)
+    labels = [text.get_text() for text in figure.axes[0].get_yticklabels()]
+    assert all("n=" in label for label in labels)
+
+
+def test_class_figure_raises_on_a_missing_column(
+    class_trend_frame: pd.DataFrame, params: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="pixel_count"):
+        viz.build_trend_by_class_figure(
+            class_trend_frame.drop(columns=["pixel_count"]), params
+        )
+
+
+def test_class_figure_writes_a_png(
+    class_trend_frame: pd.DataFrame, params: dict[str, Any], tmp_path: Path
+) -> None:
+    out = viz.plot_trend_by_class(class_trend_frame, tmp_path / "byclass.png", params)
+    assert out.exists() and out.stat().st_size > 0

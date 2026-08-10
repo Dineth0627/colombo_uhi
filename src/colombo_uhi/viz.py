@@ -961,3 +961,422 @@ def build_lst_vs_index_figure(
     )
     figure.tight_layout(rect=(0, 0.15, 1, 0.94))
     return figure
+
+
+# =============================================================================
+# Phase 4 - trend figures
+# =============================================================================
+def trend_vis_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Visualisation parameters for a Sen's-slope map.
+
+    .. note::
+        The palette MUST be diverging and the range symmetric about zero. On a
+        sequential ramp a reader cannot tell warming from cooling, which is the
+        one thing a trend map exists to show.
+
+    Args:
+        params: Parsed params mapping (``trends.slope_vis``).
+
+    Returns:
+        Mapping with ``min``, ``max`` and ``palette``, ready for
+        :func:`save_thumbnail` or ``geemap``.
+
+    Raises:
+        ValueError: If the configured range is not symmetric about zero, or the
+            palette has an even number of colours (so no colour sits at zero).
+    """
+    vis = params["trends"]["slope_vis"]
+    if vis["min"] != -vis["max"]:
+        raise ValueError(
+            f"trends.slope_vis must be symmetric about zero so the middle colour "
+            f"marks 'no trend', got min={vis['min']} max={vis['max']}"
+        )
+    if len(vis["palette"]) % 2 == 0:
+        raise ValueError(
+            f"trends.slope_vis.palette must have an ODD number of colours so one "
+            f"sits at zero, got {len(vis['palette'])}"
+        )
+    return {"min": vis["min"], "max": vis["max"], "palette": list(vis["palette"])}
+
+
+def build_trend_map_figure(
+    arrays: Mapping[str, Any],
+    params: dict[str, Any],
+    slope_key: str = "sen_slope",
+    significant_key: str = "significant",
+    title: str = "Sen's slope of land surface temperature, 2000-2025",
+) -> Any:
+    """Build the two-panel trend map: all slopes, then FDR-significant only.
+
+    Both panels are drawn because they answer different questions, and the pair
+    is the honest presentation: the left shows the estimated rate everywhere,
+    the right only where that rate survives multiple-testing correction. The
+    left alone overstates confidence; the right alone hides how much of the map
+    was never testable at all.
+
+    Args:
+        arrays: Mapping of band name to 2-D array, as returned by
+            :func:`colombo_uhi.trends.sample_trend_arrays` or
+            :func:`colombo_uhi.trends.read_trend_raster`.
+        params: Parsed params mapping.
+        slope_key: Key holding the Sen's slope.
+        significant_key: Key holding the significance mask (1/0/NaN).
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If a required array is missing, naming what is present.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+    from matplotlib.figure import Figure
+
+    missing = [key for key in (slope_key, significant_key) if key not in arrays]
+    if missing:
+        raise ValueError(
+            f"trend arrays are missing {missing}; they hold {sorted(arrays)}"
+        )
+
+    vis = trend_vis_params(params)
+    colours = ["#" + str(colour).lstrip("#") for colour in vis["palette"]]
+    cmap = LinearSegmentedColormap.from_list("trend_diverging", colours)
+    cmap = cmap.with_extremes(bad="#dcdcdc")
+    norm = TwoSlopeNorm(vmin=vis["min"], vcenter=0.0, vmax=vis["max"])
+
+    slope = np.asarray(arrays[slope_key], dtype="float64")
+    significant = np.asarray(arrays[significant_key], dtype="float64")
+    masked = np.where(significant == 1.0, slope, np.nan)
+
+    figure = Figure(figsize=(11.0, 6.4))
+    FigureCanvasAgg(figure)
+    panels = figure.subplots(1, 2)
+    # A colorbar attached to BOTH panels is not compatible with tight_layout, so
+    # this figure is spaced explicitly rather than fitted. The generous bottom
+    # margin is for the four-caveat footer, which is long by design.
+    figure.subplots_adjust(left=0.02, right=0.90, top=0.91, bottom=0.28, wspace=0.05)
+
+    image = None
+    for axes, data, panel_title in (
+        (panels[0], slope, "Sen's slope (all fitted pixels)"),
+        (panels[1], masked, "FDR-significant trends only"),
+    ):
+        image = axes.imshow(
+            np.ma.masked_invalid(data), cmap=cmap, norm=norm, interpolation="nearest"
+        )
+        axes.set_title(panel_title, fontsize=10)
+        axes.set_xticks([])
+        axes.set_yticks([])
+
+    bar = figure.colorbar(
+        image, ax=list(panels), orientation="vertical", fraction=0.035, pad=0.02
+    )
+    bar.set_label("degC per year", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    # The denominator is the TESTED set, taken from the significance array rather
+    # than from the slope. A pixel can carry a finite slope and still not have
+    # been tested (below the minimum-year floor), and counting those would give a
+    # figure caption that disagrees with trends.fdr_significant_fraction.
+    tested = int(np.isfinite(significant).sum())
+    n_significant = int(np.nansum(significant == 1.0))
+    share = (n_significant / tested) if tested else float("nan")
+
+    figure.suptitle(title, fontsize=12)
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(
+            params,
+            [
+                "lst_not_air_temp",
+                "valid_obs_required",
+                "single_overpass",
+                "fdr_dependence",
+            ],
+        )
+        + f"\n- {n_significant} of {tested} fitted pixels ({share:.1%}) are "
+        "FDR-significant. Grey is NOT 'no trend': it is a pixel that was never\n"
+        "  tested, because it fell below the valid-observation or minimum-year "
+        "floor. Read this map against the n_years band.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_trend_map(
+    arrays: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    slope_key: str = "sen_slope",
+    significant_key: str = "significant",
+    title: str = "Sen's slope of land surface temperature, 2000-2025",
+) -> Path:
+    """Write the two-panel trend map. See :func:`build_trend_map_figure`."""
+    return _save_figure(
+        build_trend_map_figure(
+            arrays,
+            params,
+            slope_key=slope_key,
+            significant_key=significant_key,
+            title=title,
+        ),
+        out_path,
+    )
+
+
+def build_mk_comparison_figure(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    title: str = "Mann-Kendall: effect of the autocorrelation correction",
+) -> Any:
+    """Build the plain-versus-modified Mann-Kendall comparison figure.
+
+    The left panel pairs each series' uncorrected and corrected p-value against
+    the significance level; the right shows the variance inflation. Together
+    they answer the only question the modified test is run to answer: **how much
+    did serial autocorrelation inflate our confidence?**
+
+    Args:
+        frame: Output of :func:`colombo_uhi.trends.mk_comparison` or
+            :func:`colombo_uhi.trends.suhii_trends`.
+        params: Parsed params mapping.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty or lacks the required columns.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    required = ["label", "series", "test", "p", "var_inflation"]
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"MK frame is missing column(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+    if frame.empty:
+        raise ValueError("MK frame is empty; there is nothing to plot")
+
+    alpha = params["trends"]["fdr"]["alpha"]
+    modified_name = params["trends"]["mmk"]["method"]
+
+    original = frame[frame["test"] == "original"]
+    modified = frame[frame["test"] == modified_name]
+    keys = [f"{row.label}|{row.series}" for row in original.itertuples()]
+    lookup = {f"{row.label}|{row.series}": row for row in modified.itertuples()}
+
+    # The footer is a fixed number of INCHES tall, so the fraction it occupies
+    # shrinks as rows are added. Reserving a constant fraction instead lets the
+    # x-axis label collide with it on a short figure.
+    footer_inches = 1.45
+    height = max(4.6, 0.32 * len(keys) + 2.6) + footer_inches
+    figure = Figure(figsize=(11.5, height))
+    FigureCanvasAgg(figure)
+    panels = figure.subplots(1, 2, gridspec_kw={"width_ratios": [1.6, 1.0]})
+
+    positions = np.arange(len(keys))
+
+    def _value(row: Any, field: str) -> float:
+        value = getattr(row, field, None)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    original_p = [_value(row, "p") for row in original.itertuples()]
+    modified_p = [
+        _value(lookup[key], "p") if key in lookup else float("nan") for key in keys
+    ]
+
+    # Colour AND marker vary together, so the pair still reads in greyscale.
+    for low, high, index in zip(original_p, modified_p, positions):
+        if np.isfinite(low) and np.isfinite(high):
+            panels[0].plot(
+                [low, high], [index, index], color="#999999", linewidth=1.0, zorder=2
+            )
+    panels[0].scatter(
+        original_p, positions, color="#1f77b4", marker="o", s=42,
+        label="uncorrected", zorder=3,
+    )
+    panels[0].scatter(
+        modified_p, positions, color="#d62728", marker="s", s=42,
+        label=f"corrected ({modified_name})", zorder=3,
+    )
+    panels[0].axvline(
+        alpha, color="#444444", linestyle="--", linewidth=1.1,
+        label=f"alpha = {alpha}",
+    )
+    panels[0].set_xscale("log")
+    panels[0].set_yticks(positions)
+    panels[0].set_yticklabels(keys, fontsize=7)
+    panels[0].set_xlabel("p-value (log scale)", fontsize=9)
+    panels[0].grid(True, axis="x", alpha=0.3)
+    panels[0].legend(loc="lower right", fontsize=8, framealpha=0.9)
+
+    inflation = [
+        _value(lookup[key], "var_inflation") if key in lookup else float("nan")
+        for key in keys
+    ]
+    panels[1].barh(positions, inflation, color="#7f7f7f")
+    panels[1].axvline(1.0, color="#444444", linestyle="--", linewidth=1.1)
+    panels[1].set_yticks(positions)
+    panels[1].set_yticklabels([])
+    panels[1].set_xlabel("Var(S) inflation (corrected / uncorrected)", fontsize=9)
+    panels[1].grid(True, axis="x", alpha=0.3)
+
+    figure.suptitle(title, fontsize=12)
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(params, ["lst_not_air_temp", "sensitivity_reporting"])
+        + "\n- Annual LST is positively autocorrelated, so the UNCORRECTED "
+        "p-value is anti-conservative. An inflation bar above 1 means the\n"
+        "  uncorrected test overstated significance by that factor in the "
+        "variance; a bar near 1 means the correction changed nothing,\n  which is "
+        "itself a reportable result. Quote the corrected p-value.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 1 - 0.35 / height))
+    return figure
+
+
+def plot_mk_comparison(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str = "Mann-Kendall: effect of the autocorrelation correction",
+) -> Path:
+    """Write the MK comparison figure. See :func:`build_mk_comparison_figure`."""
+    return _save_figure(
+        build_mk_comparison_figure(frame, params, title=title), out_path
+    )
+
+
+def build_trend_by_class_figure(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    value_column: str = "mean",
+    title: str | None = None,
+) -> Any:
+    """Build the trend-magnitude-by-class bar figure.
+
+    Classes below ``trends.stratify.min_pixels_per_class`` are hatched rather
+    than dropped: a class mean resting on twelve pixels is not an estimate, but
+    silently removing it hides that the class exists at all.
+
+    Args:
+        frame: Output of :func:`colombo_uhi.trends.trend_by_class`.
+        params: Parsed params mapping.
+        value_column: Column holding the mean slope.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty or lacks the required columns.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    required = ["class_label", "pixel_count", "below_pixel_floor", value_column]
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"class trend frame is missing column(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+    if frame.empty:
+        raise ValueError("class trend frame is empty; there is nothing to plot")
+
+    ordered = frame.sort_values(value_column, ascending=True)
+    labels = list(ordered["class_label"])
+    values = ordered[value_column].astype("float64").to_numpy()
+    counts = ordered["pixel_count"].astype("float64").to_numpy()
+    sparse = ordered["below_pixel_floor"].astype(bool).to_numpy()
+    errors = (
+        ordered["stdDev"].astype("float64").to_numpy()
+        if "stdDev" in ordered.columns
+        else None
+    )
+
+    # As in build_mk_comparison_figure: the footer is a fixed height in inches,
+    # so reserve it in inches rather than as a fraction.
+    footer_inches = 1.25
+    height = max(3.4, 0.42 * len(labels) + 1.9) + footer_inches
+    figure = Figure(figsize=(9.5, height))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+
+    positions = np.arange(len(labels))
+    colours = ["#b2182b" if value > 0 else "#2166ac" for value in values]
+    bars = axes.barh(
+        positions, values, xerr=errors, color=colours, error_kw={"elinewidth": 0.8}
+    )
+    # Hatch AND edge colour together, so the "too few pixels" flag survives
+    # greyscale printing.
+    for bar, is_sparse in zip(bars, sparse):
+        if is_sparse:
+            bar.set_hatch("///")
+            bar.set_edgecolor("#333333")
+
+    axes.axvline(0.0, color="#444444", linewidth=1.0)
+    axes.set_yticks(positions)
+    axes.set_yticklabels(
+        [f"{label}  (n={int(count):,})" for label, count in zip(labels, counts)],
+        fontsize=8,
+    )
+    axes.set_xlabel("Mean Sen's slope (degC per year)", fontsize=9)
+    axes.grid(True, axis="x", alpha=0.3)
+
+    scheme = str(frame["scheme"].iloc[0]) if "scheme" in frame.columns else "class"
+    axes.set_title(title or f"Trend magnitude by {scheme} class", fontsize=12)
+
+    floor = params["trends"]["stratify"]["min_pixels_per_class"]
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(
+            params, ["lst_not_air_temp", "valid_obs_required", "trend_not_causal"]
+        )
+        + f"\n- Hatched bars rest on fewer than {floor} pixels and are shown for "
+        "completeness, not as estimates. Error bars are the WITHIN-CLASS\n  "
+        "standard deviation of the slope, not a standard error of the mean.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 1 - 0.2 / height))
+    return figure
+
+
+def plot_trend_by_class(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    value_column: str = "mean",
+    title: str | None = None,
+) -> Path:
+    """Write the trend-by-class figure. See :func:`build_trend_by_class_figure`."""
+    return _save_figure(
+        build_trend_by_class_figure(
+            frame, params, value_column=value_column, title=title
+        ),
+        out_path,
+    )

@@ -14,6 +14,15 @@ env/
 data/raw/*
 !data/raw/.gitkeep
 
+# Phase 4 downloads the exported trend rasters into data/interim/ so the FDR
+# correction can run on them. A 9-band district GeoTIFF at 100 m is tens of MB
+# and is fully reproducible from the Earth Engine export, so the rasters stay
+# out of the repo while the derived CSVs in data/outputs/ are committed.
+data/interim/*.tif
+data/interim/*.tfw
+data/interim/*.tif.aux.xml
+!data/interim/.gitkeep
+
 # OS junk
 .DS_Store
 Thumbs.db

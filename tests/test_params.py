@@ -231,6 +231,136 @@ def test_trend_settings(params: dict[str, Any]) -> None:
     assert 0 < t["fdr"]["alpha"] < 1
 
 
+# --- Phase 4 additions -------------------------------------------------------
+def test_trend_bands_cover_the_export_order(params: dict[str, Any]) -> None:
+    # Band identity in a GeoTIFF is POSITIONAL. If export_band_order names a band
+    # that trends.bands does not define, the exported file cannot be read back.
+    bands = set(params["trends"]["bands"].values())
+    assert set(params["trends"]["export_band_order"]) <= bands
+
+
+def test_trend_export_order_has_no_duplicates(params: dict[str, Any]) -> None:
+    order = params["trends"]["export_band_order"]
+    assert len(order) == len(set(order))
+
+
+def test_trend_carries_both_p_value_bands(params: dict[str, Any]) -> None:
+    # mk_p_two_sided is what FDR consumes; mk_p_ee is the reducer's own p-value,
+    # exported beside it so their ratio settles empirically whether the reducer
+    # returns a one- or two-sided p (a ratio near 2 means one-sided).
+    order = params["trends"]["export_band_order"]
+    assert params["trends"]["bands"]["mk_p_two_sided"] in order
+    assert params["trends"]["bands"]["mk_p_ee"] in order
+
+
+def test_trend_always_exports_the_valid_year_count(params: dict[str, Any]) -> None:
+    # CLAUDE.md caveat 2: no trend product without its observation count.
+    assert params["trends"]["bands"]["n_years"] in params["trends"]["export_band_order"]
+
+
+def test_trend_pixel_sources_exist_in_the_suhii_sources(
+    params: dict[str, Any],
+) -> None:
+    configured = {source["key"] for source in params["uhi"]["suhii"]["sources"]}
+    assert set(params["trends"]["pixel_sources"]) <= configured
+
+
+def test_trend_pixel_sources_exclude_modis_daytime(params: dict[str, Any]) -> None:
+    # Terra's orbital drift after ~2020 moves the overpass time and contaminates
+    # end-of-series DAYTIME trends (Phase 2 finding). Night is unaffected, and is
+    # the part Landsat structurally cannot provide.
+    assert "terra_day" not in params["trends"]["pixel_sources"]
+    assert "aqua_day" not in params["trends"]["pixel_sources"]
+
+
+def test_trend_decades_are_contiguous_and_unequal_by_design(
+    params: dict[str, Any],
+) -> None:
+    windows = sorted(
+        (int(v[0]), int(v[1])) for v in params["trends"]["decades"].values()
+    )
+    assert windows[0][0] == params["time"]["start_year"]
+    assert windows[-1][1] == params["time"]["end_year"]
+    for earlier, later in zip(windows, windows[1:]):
+        assert later[0] == earlier[1] + 1
+    # 11 / 10 / 5. Pinned so an "equalise the decades" tidy-up is a visible edit.
+    assert [end - start + 1 for start, end in windows] == [11, 10, 5]
+
+
+def test_trend_decades_are_not_the_utfvi_epochs(params: dict[str, Any]) -> None:
+    trend = {(int(v[0]), int(v[1])) for v in params["trends"]["decades"].values()}
+    utfvi = {(int(v[0]), int(v[1])) for v in params["uhi"]["utfvi"]["epochs"].values()}
+    assert trend != utfvi
+
+
+def test_trend_slope_palette_is_diverging_and_zero_centred(
+    params: dict[str, Any],
+) -> None:
+    vis = params["trends"]["slope_vis"]
+    # An odd-length palette puts its middle colour at the midpoint, and a
+    # symmetric range puts that midpoint at zero - without both, a reader cannot
+    # tell warming from cooling.
+    assert len(vis["palette"]) % 2 == 1
+    assert vis["min"] == -vis["max"]
+
+
+def test_trend_fdr_sensitivity_includes_the_headline_method(
+    params: dict[str, Any],
+) -> None:
+    fdr = params["trends"]["fdr"]
+    assert fdr["method"] in fdr["sensitivity_methods"]
+    assert "benjamini_yekutieli" in fdr["sensitivity_methods"]
+
+
+def test_trend_min_years_supports_the_normal_approximation(
+    params: dict[str, Any],
+) -> None:
+    assert params["trends"]["min_years"] >= 8
+
+
+def test_trend_sets_its_own_valid_obs_floor(params: dict[str, Any]) -> None:
+    # composites.min_valid_obs is deliberately null (flag, never mask); the
+    # params comment says Phase 4 sets its own floor, and this is it.
+    assert params["composites"]["min_valid_obs"] is None
+    assert params["trends"]["min_valid_obs"] >= 1
+
+
+def test_composites_expose_the_series_basis_marker(params: dict[str, Any]) -> None:
+    # The property annual_composites stamps and require_annual_series checks.
+    assert params["composites"]["series_basis_property"]
+    assert params["composites"]["window_months_property"]
+
+
+def test_landcover_schemes_have_non_empty_class_maps(params: dict[str, Any]) -> None:
+    for scheme in ("worldcover", "lcz", "dynamic_world"):
+        classes = params["landcover"][scheme]["classes"]
+        assert classes
+        assert all(isinstance(code, int) for code in classes)
+        assert params["landcover"][scheme]["band"]
+
+
+def test_lcz_class_map_covers_every_configured_suhii_class(
+    params: dict[str, Any],
+) -> None:
+    labelled = set(params["landcover"]["lcz"]["classes"])
+    lcz = params["uhi"]["suhii"]["lcz_based"]
+    assert set(lcz["urban_classes"]) <= labelled
+    assert set(lcz["rural_classes"]) <= labelled
+
+
+def test_export_limits_are_sane(params: dict[str, Any]) -> None:
+    exports_cfg = params["exports"]
+    # Earth Engine caps task descriptions at 100 characters.
+    assert 0 < exports_cfg["max_name_chars"] <= 100
+    assert exports_cfg["poll_seconds"] > 0
+    assert exports_cfg["timeout_seconds"] > exports_cfg["poll_seconds"]
+
+
+def test_trend_caveats_present(params: dict[str, Any]) -> None:
+    for key in ("trend_not_causal", "fdr_dependence"):
+        assert params["caveats"].get(key), f"missing caveat text: {key}"
+
+
 def test_prediction_ships_validation_metrics(params: dict[str, Any]) -> None:
     metrics = params["prediction"]["validation_metrics"]
     assert set(metrics) == {"rmse", "r2", "kappa"}

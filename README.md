@@ -60,14 +60,15 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 │   ├── modis.py             # Phase 2 — MOD11A2/MYD11A2 + real QC bit filtering
 │   ├── indices.py           # Phase 2 — NDVI, NDBI, MNDWI, EVI, SAVI, albedo
 │   ├── composites.py        # Phase 2 — annual/dry-season + valid-obs counts
-│   ├── viz.py               # Phase 2 — thumbnails + series plots (Phase 8 extends)
-│   ├── uhi_metrics.py       # stub — Phase 3
-│   ├── trends.py            # stub — Phase 4
+│   ├── viz.py               # Phase 2/3/4 — thumbnails + report figures
+│   ├── uhi_metrics.py       # Phase 3 — SUHII, UTFVI, z-scores, zonal, driver OLS
+│   ├── trends.py            # Phase 4 — Mann-Kendall, Sen's slope, BH-FDR, modified MK
+│   ├── landcover.py         # Phase 4 — WorldCover/LCZ/Dynamic World + stratified stats
+│   ├── exports.py           # Phase 4 — Export.image/table.toDrive + task status
 │   ├── spatial_stats.py     # stub — Phase 5
 │   ├── prediction.py        # stub — Phase 6
-│   ├── greening.py          # stub — Phase 7
-│   └── exports.py           # stub — Phase 2+
-├── notebooks/               # 00–02 written; 03–08 are stubs
+│   └── greening.py          # stub — Phase 7
+├── notebooks/               # 00–04 written; 05–08 are stubs
 ├── data/
 │   ├── raw/                 # git-ignored
 │   ├── interim/
@@ -83,8 +84,8 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 | 0 | `00_setup_and_auth` | scaffold, config, EE auth | ✅ done + Colab-verified |
 | 1 | `01_aoi_and_boundaries` | AOI geometries, GN asset, water mask | ✅ done + Colab-verified |
 | 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | ✅ done + Colab-verified |
-| 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ⬜ |
-| 4 | `04_trend_analysis` | MK + Sen's slope, FDR | ⬜ |
+| 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ✅ done + Colab-verified |
+| 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | 🟨 code written — not yet run in Colab |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR | ⬜ |
 | 6 | `06_prediction` | RF + CA-Markov scenario projection | ⬜ |
 | 7 | `07_greening_priority` | MCDA/AHP overlay | ⬜ |

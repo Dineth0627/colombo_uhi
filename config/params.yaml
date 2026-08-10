@@ -702,6 +702,15 @@ composites:
   year_property: "year"               # properties set on every scene and composite
   sensor_property: "sensor"
   season_property: "season"
+  series_basis_property: "series_basis"   # [Phase 4] marker annual_composites stamps on every
+                                      # composite, carrying trends.series_basis. It exists because
+                                      # NOTHING else distinguishes an annual composite from a scene:
+                                      # scenes carry `year` too. trends.require_annual_series() reads
+                                      # it to refuse a Mann-Kendall fit on a sub-annual stack.
+  window_months_property: "window_months"  # [Phase 4] "all", or the comma-joined month restriction
+                                      # ("1,2,3" for the dry window). Informational, not part of the
+                                      # guard - it lets a reviewer see at a glance that a series is
+                                      # season-restricted.
   zonal_batch_years: 4                # [DEFAULT — Phase 2] years fetched per request by
                                       # composites.zonal_annual_means. A single request
                                       # covering all 26 annual composites has to hold 26 full
@@ -892,13 +901,254 @@ uhi:
     # device, not as inference. Phase 5 is where this is fixed properly.
 
 trends:
-  series_basis: "annual_composite"    # [CLAUDE.md] MK + Sen's slope on ANNUAL composite series
+  series_basis: "annual_composite"    # [CLAUDE.md] MK + Sen's slope on ANNUAL composite series.
+                                      # ALSO the marker composites.annual_composites stamps on every
+                                      # composite and trends.require_annual_series checks. Changing
+                                      # this string invalidates the guard on every series built by an
+                                      # older revision, so change it only together with the setter.
   mk_reducer: "kendallsCorrelation"   # [CLAUDE.md] ee.Reducer.kendallsCorrelation
   sen_reducer: "sensSlope"            # [CLAUDE.md] ee.Reducer.sensSlope
   slope_units: "degC_per_year"        # [CLAUDE.md] report Sen's slope in degC/yr
+
+  # --- what gets fitted --------------------------------------------------------
+  pixel_sources: ["landsat_dry", "terra_night", "aqua_night"]
+                                      # [DECISION 2026-08-09] the sources that get a pixel-wise
+                                      # trend raster. Keys into uhi.suhii.sources.
+                                      #   landsat_dry  - 30 m, Jan-Mar, the only source with
+                                      #                  intra-urban structure. The headline product.
+                                      #   terra/aqua_night - 1 km. Night-time trend is the part
+                                      #                  Landsat structurally CANNOT provide
+                                      #                  (CLAUDE.md caveat 4).
+                                      # MODIS DAYTIME is deliberately absent: Phase 2 measured Terra
+                                      # night rising ~+2 degC while Terra day CMC fell, and Terra's
+                                      # orbital drift after ~2020 moves the overpass time and
+                                      # contaminates end-of-series DAYTIME trends. Aqua does not
+                                      # share that drift; night is unaffected by it.
+  region: "district"                  # [DEFAULT — Phase 4] "district" | "cmc". NEVER
+                                      # "analysis_region" for a raster product: Western Province
+                                      # + 25 km is ~20x the pixels of Colombo District for nothing
+                                      # (the Phase 3 suhii_work_region lesson).
+  fit_scale_m: 100                    # [DEFAULT — Phase 4] scale the trend is FITTED and EXPORTED
+                                      # at. Deliberately coarser than the 30 m analysis grid:
+                                      # adjacent 30 m LST pixels are near-duplicates, so fitting at
+                                      # 30 m multiplies the FDR test count ~11x without adding
+                                      # independent information and drags the BH threshold down for
+                                      # every genuine pixel. Matches the Phase 2/3 Landsat reduction
+                                      # scale. Drop to 30 for a final figure ONLY after reading the
+                                      # 100 m result, and report both.
+  min_valid_obs: 3                    # [DEFAULT — Phase 4] per-pixel-per-year obs_count floor for
+                                      # trend fitting. composites.min_valid_obs is deliberately null
+                                      # (flag only, never mask - user decision 2026-08-08) and says
+                                      # "Phase 4 sets its own floor"; this is that floor. Phase 2
+                                      # measured dry-2025 obs_count over the CMC at min 4 /
+                                      # median 10, so 3 drops single-scene years without emptying
+                                      # the series. null disables the floor.
+  min_years: 10                       # [DEFAULT — Phase 4] per-pixel valid-YEAR floor below which
+                                      # the MK statistics are MASKED. n_years is still emitted, so
+                                      # an excluded pixel reads as "excluded", not "missing"
+                                      # (CLAUDE.md caveat 2). The normal approximation behind Var(S)
+                                      # and Z is unreliable below about n = 8-10; with 26 possible
+                                      # years, 10 is a modest ask.
+  x_origin: "start_year"              # [DEFAULT — Phase 4] "start_year" | "absolute". The SLOPE is
+                                      # identical either way and is degC/yr either way. Only
+                                      # sen_offset differs: centred, it is the fitted LST in
+                                      # start_year (directly interpretable); absolute, it is the
+                                      # fitted LST at year 0 AD - a 2000-year extrapolation with
+                                      # ~1e-5 relative precision in float32 and no meaning in a
+                                      # caption. The origin travels as an image property.
+  sen_input_order: ["x", "y"]         # [DEFAULT — Phase 4] ee.Reducer.sensSlope is a TWO-input
+                                      # reducer taking x THEN y. Reversing them returns the
+                                      # RECIPROCAL slope, not an error. Notebook 04 Step 2 probes
+                                      # this with a collection of known slope 2.0; if the probe
+                                      # returns 0.5, swap these two entries.
+  mk_num_inputs: 2                    # [DEFAULT — Phase 4] numInputs for kendallsCorrelation.
+                                      # 2 = explicit x from the fit stack. Preferred over 1 because
+                                      # (a) it does not lean on the auto-generated sequence
+                                      # semantics, and (b) a MULTI-input reducer makes
+                                      # ImageCollection.reduce emit BARE output names - the same
+                                      # rule _composite_reducer documents for sharedInputs - so the
+                                      # outputs are `tau`/`p-value`, matching sensSlope's
+                                      # `slope`/`offset`. Set 1 only if the notebook probe disagrees.
+  tie_correction: false               # [DEFAULT — Phase 4] Kendall tie correction. OFF, with cause:
+                                      # ties are detected by EXACT float equality, and LST_C is a
+                                      # float in degC produced by a median composite - two different
+                                      # years returning bit-identical values is effectively
+                                      # impossible, so the correction term is ~0 while the
+                                      # arraySort/arraySlice/arrayMask machinery it needs is
+                                      # expensive on a 26-image stack. Three Colab runs have already
+                                      # died on the EE memory limit; spending that budget on a
+                                      # measurably zero term is the wrong trade. Only meaningful
+                                      # together with mk_method: "pairwise".
+  mk_method: "tau_derived"            # [DEFAULT — Phase 4] "tau_derived" | "pairwise".
+                                      # tau_derived: S = tau * n(n-1)/2 and Var(S) = n(n-1)(2n+5)/18,
+                                      #   which is EXACT when there are no ties (x is the year, so
+                                      #   ties in x are impossible; ties in float LST effectively so)
+                                      #   and CONSERVATIVE when there are - tau_b understates S and
+                                      #   the untied variance overstates Var(S), so |Z| comes out too
+                                      #   small and p too large. Erring toward fewer significant
+                                      #   pixels is the safe direction.
+                                      # pairwise: the GEE community tutorial's explicit sign-sum over
+                                      #   an ee.Join.saveAll self-join. 26 annual composites make 325
+                                      #   pairwise images, each carrying two full composite graphs -
+                                      #   and Colab run 2 died on 26 in one request. Use it only over
+                                      #   a small validation box to cross-check tau_derived.
+  batch_years: 4                      # [DEFAULT — Phase 4] years built per Earth Engine request.
+                                      # Same reasoning and same value as composites.zonal_batch_years
+                                      # and uhi.suhii.batch_years: batching changes no numbers, only
+                                      # the number of round trips. Lower to 1 if memory still blows.
+  zonal_batch_years: 4                # [DEFAULT — Phase 4] years per reduceRegions call for the
+                                      # per-division annual series (557 divisions x 26 years must
+                                      # never be one request).
+  annual_stack_asset: null            # [Phase 4] ESCAPE HATCH, not the default path. Set to an
+                                      # exported multi-band asset id to read the annual series off
+                                      # one asset instead of rebuilding 26 composites per product.
+                                      # Only worth the extra export wait if the live path keeps
+                                      # exceeding the memory limit.
+
+  # --- output band names -------------------------------------------------------
+  bands:                              # [DEFAULT — Phase 4] named here so trends.py, exports.py and
+                                      # trends.read_trend_raster all read the SAME strings and can
+                                      # never drift apart.
+    sen_slope: "sen_slope"            # degC per year
+    sen_offset: "sen_offset"          # degC at x_origin_year (see x_origin above)
+    mk_tau: "mk_tau"                  # Kendall's tau-b, -1..1
+    mk_p_ee: "mk_p_ee"                # the p-value ee.Reducer.kendallsCorrelation returns itself.
+                                      # EXPORTED FOR COMPARISON ONLY, NEVER FED TO FDR: its sidedness
+                                      # and tie convention are undocumented. Its ratio to
+                                      # mk_p_two_sided over the AOI is the empirical answer
+                                      # (ratio ~2 => the reducer's p is one-sided).
+    mk_s: "mk_s"                      # Mann-Kendall S
+    mk_var_s: "mk_var_s"              # Var(S)
+    mk_z: "mk_z"                      # continuity-corrected Z
+    mk_p_two_sided: "mk_p_two_sided"  # 2*(1-Phi(|Z|)), clamped to <=1. THIS is the band FDR consumes.
+                                      # The GEE community tutorial emits the ONE-SIDED 1-Phi(|Z|) and
+                                      # compensates by thresholding at 0.025. Benjamini-Hochberg
+                                      # needs two-sided input; feeding it the one-sided form would
+                                      # halve every p and roughly double the significant area.
+    n_years: "n_years"                # [CLAUDE.md caveat 2] valid years per pixel. ALWAYS emitted,
+                                      # NEVER masked.
+  export_band_order:                  # [DEFAULT — Phase 4] the order exports.image_to_drive selects
+    - "sen_slope"                     # bands into, and the order read_trend_raster falls back to
+    - "sen_offset"                    # when the GeoTIFF carries no band descriptions. APPENDING is
+    - "mk_tau"                        # safe; REORDERING silently remaps every band in every
+    - "mk_z"                          # previously downloaded file.
+    - "mk_s"
+    - "mk_var_s"
+    - "mk_p_two_sided"
+    - "mk_p_ee"
+    - "n_years"
+
+  # --- significance ------------------------------------------------------------
   fdr:
     method: "benjamini_hochberg"      # [CLAUDE.md] applied in Python on the exported p-value raster
     alpha: 0.05                       # [DEFAULT — Phase 4] significance level before FDR
+    sensitivity_methods:              # [DEFAULT — Phase 4] reported ALONGSIDE the headline number.
+      - "benjamini_hochberg"          # BH controls FDR under independence or positive regression
+      - "benjamini_yekutieli"         # dependence; a 100 m LST raster is strongly spatially
+                                      # autocorrelated over hundreds of metres, so the REALISED
+                                      # false-discovery proportion is far more variable than its
+                                      # controlled expectation. BY is valid under ARBITRARY
+                                      # dependence (one extra factor H(m)) and is the honest upper
+                                      # bound. Report the pair, exactly as Phase 3 reports the
+                                      # rural-reference pair.
+    report_levels: ["pixel", "gn"]    # [DEFAULT — Phase 4] apply FDR twice: pixel-wise on the raster
+                                      # (m ~ 1e5, highly dependent) and across GN divisions (m ~ 557,
+                                      # far less dependent). The two significant fractions WILL
+                                      # differ, and that spread is the MAUP sensitivity CLAUDE.md
+                                      # requires, applied to significance rather than to means.
+    preview_scale_m: 300              # [DEFAULT — Phase 4] scale for the IN-SESSION sampled FDR
+                                      # preview, so the significance map can be seen without waiting
+                                      # on Drive. Coarser than fit_scale_m on purpose - the preview
+                                      # is for shape, not for the reported number. The authoritative
+                                      # fraction comes from the exported raster at fit_scale_m.
+
+  # --- modified Mann-Kendall (pymannkendall) -----------------------------------
+  mmk:
+    method: "hamed_rao"               # [CLAUDE.md brief] Hamed & Rao (1998) variance correction for
+                                      # serial autocorrelation. Also: yue_wang, prewhitening,
+                                      # trend_free_prewhitening.
+    compare_with: "original"          # always run the PLAIN test too, so var_inflation
+                                      # (modified Var(S) / original Var(S)) is reportable. Annual LST
+                                      # is positively autocorrelated, which makes the plain test
+                                      # ANTI-CONSERVATIVE - and if the inflation turns out near 1,
+                                      # saying so is itself a result.
+    min_years: 10                     # below this the wrapper returns an "insufficient_data" row
+                                      # instead of raising; one degenerate GN division must not cost
+                                      # the other 556 (the driver_series policy).
+    max_missing_fraction: 0.2         # above this the Hamed-Rao lag-k autocorrelation estimate is
+                                      # biased by the gaps; the row is FLAGGED gapped, not hidden.
+    slope_tolerance: 0.02             # degC/yr disagreement between our year-based Sen's slope and
+                                      # pymannkendall's INDEX-based one before warning. They diverge
+                                      # whenever a year is missing, because pymannkendall's x is the
+                                      # array index - so its "slope" is degC per OBSERVATION, not
+                                      # per year.
+
+  # --- decadal comparison ------------------------------------------------------
+  decades:                            # [DEFAULT — Phase 4] SEPARATE from uhi.utfvi.epochs on
+                                      # purpose. The boundaries genuinely differ (utfvi:
+                                      # 2000-2009/2010-2019/2020-2025), test_params pins that the
+                                      # utfvi epochs tile the study period, and the two answer
+                                      # different questions - utfvi is within-epoch spatial
+                                      # REDISTRIBUTION against a moving reference, this is absolute
+                                      # temperature LEVEL. One key serving both is how a later
+                                      # tidy-up silently changes one of them.
+                                      #
+                                      # THE LENGTHS ARE UNEQUAL: 11 / 10 / 5 years. Not a slip - the
+                                      # study period ends in 2025, so the last window is half the
+                                      # sample of the others and its mean carries ~sqrt(2) the
+                                      # standard error, which then dominates any difference map it
+                                      # appears in. decadal_means() therefore emits sd_ and n_years_
+                                      # per window and a diff_se band, so the asymmetry lands on the
+                                      # map rather than in a footnote.
+    "2000_2010": [2000, 2010]
+    "2011_2020": [2011, 2020]
+    "2021_2025": [2021, 2025]
+  decades_min_years: 3                # [DEFAULT — Phase 4] a decadal mean resting on fewer valid
+                                      # years than this is masked. Applies to BOTH sides of a
+                                      # difference.
+  decade_weighting: "equal_years"     # [DEFAULT — Phase 4] "equal_years" = mean of the ANNUAL
+                                      # COMPOSITES, so every year counts once. This is deliberately
+                                      # the OPPOSITE of uhi_metrics.epoch_composite, which composites
+                                      # all the window's scenes and so weights years by scene count.
+                                      # That is right for UTFVI (it wants the observation-weighted
+                                      # thermal field) and wrong here: it would make part of any
+                                      # decade-to-decade difference a change in the Landsat
+                                      # constellation rather than in temperature.
+
+  # --- stratification by land cover / LCZ --------------------------------------
+  stratify:
+    products: ["worldcover", "lcz"]   # [DEFAULT — Phase 4] class layers the trend is summarised
+                                      # over. Both are FIXED reference classifications.
+    worldcover_asset: "worldcover_2021"  # key into `datasets`; ESA WorldCover v200 (2021).
+    lcz_uses_filtered_band: true      # datasets.lcz recommended band.
+    min_pixels_per_class: 100         # a class mean resting on fewer pixels than this is reported
+                                      # WITH its count and flagged, never quietly averaged in.
+    # HONEST LIMITATION that must travel with every stratified table: WorldCover is 2021
+    # and LCZ is a 2018-2019 snapshot. Both are a PRESENT-DAY stratification of a
+    # 2000-2025 trend - "where the warming is, by today's land cover" - and NOT a
+    # land-cover-change attribution. A pixel that was paddy in 2002 and is built now sits
+    # in the built class for its whole history. Attributing trend TO land-cover change is
+    # Phase 6, not this.
+
+  # --- visualisation -----------------------------------------------------------
+  slope_vis:                          # [DEFAULT — Phase 4] MUST be diverging and zero-centred: on a
+    min: -0.15                        # sequential ramp a reader cannot tell warming from cooling.
+    max: 0.15                         # +/-0.15 degC/yr is +/-3.9 degC over 26 years. VERIFY against
+                                      # the slope percentiles printed in notebook 04 and widen if
+                                      # more than ~5% of pixels saturate - a saturated map
+                                      # understates the extremes it exists to show.
+    palette:                          # ColorBrewer RdBu reversed; the MIDDLE colour sits at ZERO.
+      - "2166ac"                      # strong cooling
+      - "67a9cf"
+      - "d1e5f0"
+      - "f7f7f7"                      # no trend
+      - "fddbc7"
+      - "ef8a62"
+      - "b2182b"                      # strong warming
+  n_years_vis:                        # [CLAUDE.md caveat 2] the count map is a PRODUCT, not a
+    min: 0                            # diagnostic, and gets its own palette.
+    max: 26
+    palette: ["440154", "31688e", "35b779", "fde725"]
 
 spatial_stats:
   hotspot_methods: ["getis_ord_gi_star", "local_morans_i"]   # [CLAUDE.md] esda/libpysal on exported zonal stats
@@ -929,6 +1179,70 @@ exports:
   drive_folder: "colombo_uhi_exports" # [DEFAULT] change to your preferred Drive folder
   default_scale_m: 30                 # [CLAUDE.md] matches analysis grid
   default_crs: "EPSG:32644"           # [CLAUDE.md]
+  max_name_chars: 100                 # [DEFAULT — Phase 4] Earth Engine task descriptions cap at 100
+                                      # characters and accept only  a-z A-Z 0-9 . , : ; _ -  .
+                                      # exports.export_name sanitises and then REFUSES, rather than
+                                      # letting Earth Engine truncate two different products to the
+                                      # same name and overwrite one in Drive.
+  cloud_optimized: true               # [DEFAULT — Phase 4] write COGs. rasterio reads them either
+                                      # way, and a COG is windowed-readable in Phase 5.
+  poll_seconds: 30                    # [DEFAULT — Phase 4] wait_for_tasks poll interval
+  timeout_seconds: 1800               # [DEFAULT — Phase 4] wait_for_tasks gives up after 30 min and
+                                      # RETURNS the status table - it does not raise. A Colab cell
+                                      # blocked longer than that risks the runtime disconnecting,
+                                      # which is why the notebook pattern is "submit, then re-run the
+                                      # poll cell" rather than one blocking wait.
+
+# --- Land cover / LCZ class schemes (Phase 4) --------------------------------
+landcover:
+  worldcover:
+    band: "Map"
+    # ESA WorldCover v100/v200 legend. Codes are NOT contiguous - never index a
+    # palette by class code.
+    classes:
+      10: "Tree cover"
+      20: "Shrubland"
+      30: "Grassland"
+      40: "Cropland"
+      50: "Built-up"
+      60: "Bare / sparse vegetation"
+      70: "Snow and ice"
+      80: "Permanent water bodies"
+      90: "Herbaceous wetland"
+      95: "Mangroves"
+      100: "Moss and lichen"
+  lcz:
+    band: "LCZ_Filter"                # the recommended (filtered) band, as aoi.py already uses
+    classes:                          # Demuzere et al. (2022). 1-10 built, 11-17 natural (A-G).
+      1: "LCZ 1 Compact high-rise"
+      2: "LCZ 2 Compact mid-rise"
+      3: "LCZ 3 Compact low-rise"
+      4: "LCZ 4 Open high-rise"
+      5: "LCZ 5 Open mid-rise"
+      6: "LCZ 6 Open low-rise"
+      7: "LCZ 7 Lightweight low-rise"
+      8: "LCZ 8 Large low-rise"
+      9: "LCZ 9 Sparsely built"
+      10: "LCZ 10 Heavy industry"
+      11: "LCZ A Dense trees"
+      12: "LCZ B Scattered trees"
+      13: "LCZ C Bush, scrub"
+      14: "LCZ D Low plants"
+      15: "LCZ E Bare rock or paved"
+      16: "LCZ F Bare soil or sand"
+      17: "LCZ G Water"
+  dynamic_world:                      # [Phase 6] loaded but NOT used by Phase 4 - Dynamic World
+    band: "label"                     # starts 2015-06-27 and cannot classify the early series.
+    classes:
+      0: "Water"
+      1: "Trees"
+      2: "Grass"
+      3: "Flooded vegetation"
+      4: "Crops"
+      5: "Shrub and scrub"
+      6: "Built"
+      7: "Bare"
+      8: "Snow and ice"
 
 # --- Non-negotiable scientific caveats [CLAUDE.md] ---------------------------
 # Reusable strings: stamp on figures, notebook headers and exported metadata.
@@ -951,3 +1265,13 @@ caveats:
   sensitivity_reporting: >-
     Report rural-reference and aggregation-unit (MAUP) sensitivity, never a
     single unqualified number.
+  trend_not_causal: >-
+    A Sen's slope is a rate of change, not an explanation for it. Trend maps
+    stratified by land cover show where warming occurred by TODAY'S land cover;
+    they do not attribute warming to land-cover change.
+  fdr_dependence: >-
+    Benjamini-Hochberg controls the false discovery rate under independence or
+    positive regression dependency. Land surface temperature is strongly
+    spatially autocorrelated, so the realised false-discovery proportion varies
+    far more than its controlled expectation; significant-area figures are a
+    screening result, reported alongside Benjamini-Yekutieli.
