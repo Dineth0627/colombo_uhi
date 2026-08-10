@@ -1141,6 +1141,7 @@ def require_annual_series(
     params: dict[str, Any],
     start_year: int | None = None,
     end_year: int | None = None,
+    check_scenes: bool = False,
 ) -> dict[str, Any]:
     """Refuse to fit a trend to anything that is not an annual composite series.
 
@@ -1154,38 +1155,78 @@ def require_annual_series(
     checked: "half of these are scenes" becomes a loud error rather than a
     silent pass.
 
+    .. warning::
+        **Validate on a NARROW region.** Reading properties still forces Earth
+        Engine to materialise every image in the collection, and an annual series
+        built with ``ee.ImageCollection.fromImages(ee.List.map(...))`` carries a
+        full composite graph per year. Twenty-six of those in one request exceeds
+        the user memory limit over a district-sized region - the same failure
+        Colab run 2 hit, and the same reason this project never ``.filter()``\\ s
+        a computed collection.
+
+        This costs nothing to avoid, because **the structure of an annual series
+        is region-independent**: one image per year, with identical properties,
+        whatever geometry it was built over. Build a probe series over a small
+        box, validate that, and then build the real series for the full region.
+
     Args:
-        collection: The collection to check.
+        collection: The collection to check. Build it over a SMALL region.
         params: Parsed params mapping.
         start_year: If given with ``end_year``, require exactly this year range.
         end_year: See ``start_year``.
+        check_scenes: Also fetch ``n_scenes``, which powers the "this year rests
+            on zero scenes" warning. Off by default because it is by far the
+            most expensive property here - it forces the per-year scene filter to
+            be evaluated as well as the composite graph to be built.
 
     Returns:
         The summary from :func:`validate_series_metadata`.
 
     Raises:
         ValueError: If the collection is not a complete annual composite series.
+        RuntimeError: If Earth Engine runs out of memory building the request,
+            with the fix rather than the raw error.
     """
     import ee  # Deferred: see module docstring.
 
     comp = params["composites"]
-    size, basis, years, months, n_scenes = ee.List(
-        [
-            collection.size(),
-            collection.aggregate_array(comp["series_basis_property"]),
-            collection.aggregate_array(comp["year_property"]),
-            collection.aggregate_array("month"),
-            collection.aggregate_array(comp["n_scenes_property"]),
-        ]
-    ).getInfo()
+    requested = [
+        collection.size(),
+        collection.aggregate_array(comp["series_basis_property"]),
+        collection.aggregate_array(comp["year_property"]),
+        collection.aggregate_array("month"),
+    ]
+    if check_scenes:
+        requested.append(collection.aggregate_array(comp["n_scenes_property"]))
 
+    try:
+        fetched = ee.List(requested).getInfo()
+    except Exception as error:  # ee.EEException, but ee is imported lazily.
+        if "memory" not in str(error).lower():
+            raise
+        raise RuntimeError(
+            "Earth Engine ran out of memory validating the annual series. "
+            "Reading its properties still materialises one full composite graph "
+            "per year, and 26 of those in one request exceeds the limit over a "
+            "large region.\n"
+            "Fix: the structure of an annual series is REGION-INDEPENDENT, so "
+            "validate a probe series built over a small box and then build the "
+            "real one for the full region:\n"
+            "    probe = trends.annual_series(source, params, region=small_box)\n"
+            "    trends.require_annual_series(probe, params)\n"
+            "    series = trends.annual_series(source, params, region=full_region)\n"
+            "If you already passed a small region, drop check_scenes, or narrow "
+            "the year range with start_year/end_year."
+        ) from error
+
+    size, basis, years, months = fetched[:4]
     return validate_series_metadata(
         {
             "size": size,
             "series_basis": basis,
             "years": years,
             "months": months,
-            "n_scenes": n_scenes,
+            "n_scenes": fetched[4] if check_scenes else [],
         },
         params,
         start_year=start_year,
@@ -1472,13 +1513,25 @@ def trend_image(
         start_year=start_year,
         end_year=end_year,
     )
+    # validate=False is deliberate and is NOT a hole in the guard.
+    #
+    # Layer 1 already guarantees provenance: this function takes a source KEY and
+    # has just built the series itself through annual_series ->
+    # composites.annual_composites. There is no path by which a sub-annual stack
+    # reaches this line. Re-running the layer-2 check here would add nothing and
+    # would cost a whole-collection getInfo, which materialises 26 composite
+    # graphs at once and exceeds the Earth Engine memory limit over a
+    # district-sized region (Colab run 10).
+    #
+    # Layer 2 protects the OTHER door - fit_stack/mann_kendall called directly
+    # with a collection of unknown provenance - and defaults to on there.
     stack = fit_stack(
         series,
         params,
         band=band,
         min_valid_obs=min_valid_obs,
         start_year=first,
-        validate=True,
+        validate=False,
     )
 
     n_years = valid_year_count(stack, params)

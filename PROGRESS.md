@@ -133,6 +133,30 @@ should give `tau`/`p-value`, matching `sensSlope`'s `slope`/`offset`.
   (5.22e-5). Ours must match `pymannkendall`, not scipy's exact value —
   confirmed locally to 1e-6, with S = 60 and Var(S) = 212.667 matching exactly.
   The probe now prints all three and says which is the reference.
+* **Layer 2 of the structural guard WORKS**: the scene collection was rejected
+  with *"only 0 of 40 images carry a 'series_basis' property"*.
+* **But `require_annual_series` itself blew the memory limit on the full-region
+  series** — and that was a design error on my part, violating this project's
+  own documented doctrine. Reading a collection's *properties* still forces
+  Earth Engine to materialise every image, and an annual series built with
+  `fromImages(List.map(...))` carries a full composite graph per year; 26 of
+  those in one request over Colombo District is exactly the run-2 failure.
+
+  **The fix rests on a fact worth remembering: the STRUCTURE of an annual series
+  is region-independent.** One image per year, identical properties, whatever
+  geometry it was built over. So:
+  * the notebook validates a probe series built over a ~2 km box and then builds
+    the real full-region series unvalidated — same structure, negligible cost;
+  * `require_annual_series` gained `check_scenes=False` (the `n_scenes` fetch
+    forces the per-year scene filter to evaluate on top of the composite graph,
+    and it only powers a warning), plus a `RuntimeError` on out-of-memory that
+    states the probe-region fix instead of surfacing the raw EE error;
+  * **`trend_image` now passes `validate=False`** to `fit_stack`. This is not a
+    hole: layer 1 guarantees provenance because `trend_image` takes a source KEY
+    and builds the series itself, so layer 2 would only re-establish what is
+    already certain, at the cost of a memory blow-up. `fit_stack`'s default
+    stays `validate=True` for the other door — a collection of unknown
+    provenance passed in directly. Both defaults are pinned by signature tests.
 * **Still to record from the next run**: the V1 band names printed by Step 2a,
   and the V2 verdict on whether `kendallsCorrelation`'s own p is one- or
   two-sided (it may simply be NaN, which is fine — `mk_p_ee` is

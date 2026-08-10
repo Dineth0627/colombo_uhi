@@ -669,11 +669,35 @@ def test_trend_image_takes_a_source_key_not_a_collection() -> None:
 
 
 def test_fit_stack_validates_by_default() -> None:
-    # fit_stack is the lower-level door into the reducers, so its guard must be
+    # fit_stack is the lower-level door into the reducers - the one a caller can
+    # reach with a collection of unknown provenance - so its guard must be
     # opt-OUT, never opt-in.
     import inspect
 
     assert inspect.signature(trends.fit_stack).parameters["validate"].default is True
+
+
+def test_require_annual_series_does_not_fetch_scene_counts_by_default() -> None:
+    # n_scenes forces the per-year scene filter to be evaluated on top of
+    # building the composite graph, and it only powers a warning. Fetching it by
+    # default is what pushed the guard over the Earth Engine memory limit on a
+    # district-sized series (Colab run 10).
+    import inspect
+
+    signature = inspect.signature(trends.require_annual_series)
+    assert signature.parameters["check_scenes"].default is False
+
+
+def test_validate_series_metadata_tolerates_absent_scene_counts(
+    params: dict[str, Any],
+) -> None:
+    # The cheap path omits n_scenes entirely; the validator must still work and
+    # must not claim any year is empty.
+    metadata = _annual_metadata([2000, 2001, 2002], params, n_scenes=[])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        summary = trends.validate_series_metadata(metadata, params)
+    assert summary["empty_years"] == []
 
 
 # --- reducer band-name resolution --------------------------------------------
