@@ -10,7 +10,7 @@ _Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run 
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
-| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **Part 1 verified in Colab (exports submitted); Part 2 awaits the Drive download** |
+| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **ran end to end; results in hand. Cross-sensor check (Step 6) pending before the Landsat trend can be quoted** |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
@@ -142,6 +142,86 @@ already skips bands whose min/max come back `None`.
 Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
 approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
 **exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
+
+### Run 15 (2026-08-11) — PHASE 4 RAN END TO END. One finding blocks the headline.
+
+**No errors in any cell.** All 6 exports submitted, all downloaded, every figure
+and table produced — Part 1 and Part 2 both complete.
+
+#### Results that stand
+
+| Result | Value |
+|---|---|
+| **Fort (CBD), per-GN** | **+0.365 °C/yr**, τ = 0.729, S = 237, p_adj = 1.1e-4 |
+| Kotikawatta East | +0.189 °C/yr, τ = 0.575, p_adj = 0.0115 |
+| GN divisions FDR-significant | 8 of 557 (1.4%) |
+| Built-up vs Tree cover (WorldCover) | **+0.0528 vs +0.0189 °C/yr** — ~2.8× |
+| LCZ 6 open low-rise | **+0.0659 °C/yr** (highest LCZ) |
+| LCZ A dense trees | **−0.0271 °C/yr** (cooling) |
+| LCZ 9 sparsely built | +0.0315 °C/yr |
+| MODIS Terra night, FDR-significant | **17.6% of tested (BH) / 0.33% (BY)** — 121.0 / 2.3 km² |
+| Landsat dry, tested area | 66,787 px = 667.9 km² of 126,054 px |
+
+SUHII trends (26 yr, Hamed-Rao): `landsat_dry|lcz_based` **increasing**
+(p = 0.0048, +0.048 °C/yr); `terra_day|lcz_based` increasing (p = 2.1e-4);
+`aqua_day|lcz_based` increasing (p = 2.2e-4); `terra_day_relaxed|buffer_ring`
+**decreasing** (p = 0.0042 — consistent with the Phase 2 orbital-drift finding).
+Both buffer-ring night series: no trend.
+
+**`var_inflation` came out exactly 1.000 for all 12 SUHII series**, with
+identical original and Hamed-Rao p-values. That means pymannkendall found **no
+significant autocorrelation lag** on a 24–26 point series, so the correction
+factor is 1. Report it as "the correction changed nothing", **not** as "the
+correction was applied" — and note it is a low-power test at this length.
+
+#### The finding that blocks the Landsat headline
+
+**Landsat dry-season reported ZERO FDR-significant pixels** under both BH and
+BY. That is arithmetically correct and scientifically uninformative, because:
+
+| | |
+|---|---|
+| decadal path | **+1.70 °C** (2000s→2010s), then **−1.23 °C** (2010s→2020s) |
+| net | +0.47 °C — which *matches* Sen's slope × 26 (+0.73 °C) |
+| Sen's slope percentiles | p1 −0.205, p50 **+0.028**, p99 +0.237 °C/yr |
+
+**The net agrees; the path does not.** Up-then-down is a zigzag, and Mann-Kendall
+tests *monotonic* trend — concordant and discordant pairs cancel. A series with a
+sensor step up followed by a step down reports "no trend" while warming
+throughout, and that is the most likely reading of the zero.
+
+The decade boundaries coincide with the Landsat changeovers (L5+L7 → L7-SLC-off
+alone 2012-01→2013-03 → L8 → L8+L9), and **single-sensor MODIS Terra night is the
+series that came out significant.** `landsat_c2l2.harmonisation: none` has always
+been an *assumption*; this is the first evidence against it.
+
+> **DO NOT report "0% of Colombo shows significant warming."** Until the
+> cross-sensor check is run, the honest statement is that the Landsat series is
+> not demonstrably monotonic, and the trend evidence rests on MODIS Terra night
+> plus the per-GN and by-class results (which aggregate away much of the noise).
+
+#### Added in response
+
+* **`trends.sensor_annual_means` + `trends.build_sensor_offset_summary`** — the
+  empirical inter-calibration check CLAUDE.md always asked for ("Still verify
+  empirically on overlapping years"). Builds each sensor's dry-season annual mean
+  separately and reports the pairwise offset over the years both flew, with its
+  standard error and a `material`/`negligible` verdict against
+  `trends.sensor_check.material_degc` (0.5 °C). Reduces SCENES in 4-year batches,
+  not the trend graph, so it is affordable interactively.
+  **Notebook Step 6 — run this first; its verdict conditions everything else.**
+* `trends.slope_vis` widened to **±0.25** (was ±0.15): run 15 measured 5.66% of
+  pixels saturating.
+* The decadal cell now reports **`diff_z`** and `n_years_min`, not just the median
+  difference — with 11/10/5-year windows the difference alone is not
+  interpretable.
+
+#### Still open
+
+* One GN division (`LK1136035`) hit the degenerate Hamed-Rao branch
+  (var_s = −15.9) and is correctly labelled `degenerate_variance`.
+* `mk_p_ee` is an all-masked band, as predicted — the reducer does not populate
+  it.
 
 ### Run 14 (2026-08-11) — through the wall: exports submitted
 

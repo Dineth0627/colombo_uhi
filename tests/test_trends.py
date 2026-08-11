@@ -1376,3 +1376,127 @@ def test_apply_fdr_to_raster_reports_a_more_conservative_by_result(
         source, tmp_path / "by.tif", params, method="benjamini_yekutieli"
     )
     assert by["n_significant"] <= bh["n_significant"]
+
+
+# --- cross-sensor continuity -------------------------------------------------
+def _sensor_series(rows):
+    import pandas as pd
+
+    return pd.DataFrame(
+        rows, columns=["sensor_key", "year", "mean", "valid_pixels"]
+    )
+
+
+def test_sensor_offset_summary_recovers_a_planted_step(
+    params: dict[str, Any],
+) -> None:
+    # THE case this exists for: two sensors observing the same years, one
+    # reading 0.8 degC hotter. Over 26 years a 0.8 degC step dwarfs a
+    # ~0.03 degC/yr trend, and Mann-Kendall would measure the step.
+    rows = []
+    for year in range(2005, 2012):
+        rows.append(["landsat5", year, 30.0, 4000])
+        rows.append(["landsat7", year, 30.8, 4000])
+    summary = trends.build_sensor_offset_summary(_sensor_series(rows), params)
+
+    assert len(summary) == 1
+    record = summary.iloc[0]
+    assert record["n_overlap_years"] == 7
+    assert record["mean_offset"] == pytest.approx(-0.8)
+    assert record["verdict"] == trends.SENSOR_OFFSET_MATERIAL
+
+
+def test_sensor_offset_summary_calls_a_small_offset_negligible(
+    params: dict[str, Any],
+) -> None:
+    rows = []
+    for year in range(2005, 2012):
+        rows.append(["landsat5", year, 30.0, 4000])
+        rows.append(["landsat7", year, 30.05, 4000])
+    summary = trends.build_sensor_offset_summary(_sensor_series(rows), params)
+    assert summary.iloc[0]["verdict"] == trends.SENSOR_OFFSET_NEGLIGIBLE
+
+
+def test_sensor_offset_summary_flags_too_little_overlap(
+    params: dict[str, Any],
+) -> None:
+    # Two sensors that barely coexist cannot be compared; saying so beats
+    # reporting an offset from two years of weather.
+    rows = [
+        ["landsat5", 2011, 30.0, 4000],
+        ["landsat7", 2011, 30.9, 4000],
+        ["landsat5", 2012, 30.2, 4000],
+        ["landsat7", 2012, 31.0, 4000],
+    ]
+    summary = trends.build_sensor_offset_summary(_sensor_series(rows), params)
+    assert summary.iloc[0]["verdict"] == trends.SENSOR_OFFSET_INSUFFICIENT
+    assert np.isnan(summary.iloc[0]["mean_offset"])
+
+
+def test_sensor_offset_summary_ignores_years_with_no_valid_pixels(
+    params: dict[str, Any],
+) -> None:
+    # A year with zero valid pixels is not an observation, so it must not count
+    # toward the overlap.
+    rows = []
+    for year in range(2005, 2012):
+        rows.append(["landsat5", year, 30.0, 4000])
+        rows.append(["landsat7", year, 30.5, 4000])
+    rows.append(["landsat5", 2013, 99.0, 0])
+    rows.append(["landsat7", 2013, 99.0, 0])
+    summary = trends.build_sensor_offset_summary(_sensor_series(rows), params)
+    assert summary.iloc[0]["n_overlap_years"] == 7
+
+
+def test_sensor_offset_summary_reports_the_spread_not_just_the_offset(
+    params: dict[str, Any],
+) -> None:
+    # A consistent offset and a noisy one mean different things, so the standard
+    # error and t statistic travel with the mean.
+    rng = np.random.default_rng(31)
+    rows = []
+    for year in range(2000, 2012):
+        rows.append(["landsat5", year, 30.0, 4000])
+        rows.append(["landsat7", year, 30.0 + rng.normal(0.6, 0.05), 4000])
+    summary = trends.build_sensor_offset_summary(_sensor_series(rows), params)
+    record = summary.iloc[0]
+    assert record["sd_offset"] > 0
+    assert abs(record["t_statistic"]) > 5      # consistent, not sampling noise
+
+
+def test_sensor_offset_summary_orders_by_absolute_offset(
+    params: dict[str, Any],
+) -> None:
+    rows = []
+    for year in range(2005, 2012):
+        rows.append(["landsat5", year, 30.0, 4000])
+        rows.append(["landsat7", year, 30.1, 4000])
+        rows.append(["landsat8", year, 31.5, 4000])
+    summary = trends.build_sensor_offset_summary(_sensor_series(rows), params)
+    magnitudes = summary["mean_offset"].abs().dropna().tolist()
+    assert magnitudes == sorted(magnitudes, reverse=True)
+
+
+def test_sensor_offset_summary_of_an_empty_frame_is_shaped(
+    params: dict[str, Any],
+) -> None:
+    summary = trends.build_sensor_offset_summary(_sensor_series([]), params)
+    assert summary.empty
+    assert list(summary.columns) == list(trends.SENSOR_OFFSET_COLUMNS)
+
+
+def test_sensor_offset_summary_raises_on_a_missing_column(
+    params: dict[str, Any],
+) -> None:
+    frame = _sensor_series([["landsat5", 2005, 30.0, 4000]]).drop(columns=["mean"])
+    with pytest.raises(KeyError, match="mean"):
+        trends.build_sensor_offset_summary(frame, params)
+
+
+def test_sensor_annual_means_takes_params_first() -> None:
+    # It builds its own per-sensor collections, so it must not accept one.
+    import inspect
+
+    parameters = list(inspect.signature(trends.sensor_annual_means).parameters)
+    assert parameters[0] == "params"
+    assert "collection" not in parameters

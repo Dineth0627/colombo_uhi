@@ -2880,3 +2880,241 @@ def apply_fdr_to_raster(
 
     summary["output_path"] = str(destination)
     return summary
+
+
+# =============================================================================
+# Cross-sensor continuity (no Earth Engine in the summary half; unit-tested)
+# =============================================================================
+#: Column order of the per-sensor annual series.
+SENSOR_SERIES_COLUMNS: tuple[str, ...] = (
+    "sensor_key",
+    "year",
+    "mean",
+    "valid_pixels",
+)
+
+#: Column order of the pairwise sensor-offset summary.
+SENSOR_OFFSET_COLUMNS: tuple[str, ...] = (
+    "sensor_a",
+    "sensor_b",
+    "n_overlap_years",
+    "mean_offset",
+    "sd_offset",
+    "se_offset",
+    "t_statistic",
+    "first_year",
+    "last_year",
+    "verdict",
+)
+
+#: Offsets at or below this, in degC, are treated as continuity holding.
+SENSOR_OFFSET_NEGLIGIBLE = "negligible"
+SENSOR_OFFSET_MATERIAL = "material"
+SENSOR_OFFSET_INSUFFICIENT = "insufficient_overlap"
+
+
+def build_sensor_offset_summary(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    min_overlap_years: int | None = None,
+    material_degc: float | None = None,
+) -> "pd.DataFrame":
+    """Pairwise mean LST offset between sensors, over the years both observed.
+
+    CLAUDE.md accepts that Collection 2 is inter-calibrated across TM/ETM+/OLI
+    and adds: *"Still verify empirically on overlapping years."* This is that
+    verification. For every pair of sensors it takes the years where BOTH
+    produced a valid regional mean, and reports the mean difference.
+
+    .. note::
+        A non-zero offset here is not automatically a calibration error. The two
+        sensors observe on different dates within the same dry season, so part
+        of any difference is weather. What makes the result interpretable is the
+        SPREAD: a consistent offset across many overlap years, small relative to
+        its own standard error, is a step; a large scatter is sampling.
+
+    .. warning::
+        A material offset invalidates a **monotonic** trend fitted across the
+        changeover. Mann-Kendall on a series with a sensor step measures the
+        step, not the climate - and a step up followed by a step down can cancel
+        into "no trend" while the underlying series is warming throughout.
+
+    Args:
+        frame: Long per-sensor annual series with columns
+            :data:`SENSOR_SERIES_COLUMNS`.
+        params: Parsed params mapping.
+        min_overlap_years: Fewer common years than this and the pair is reported
+            as ``insufficient_overlap`` rather than given a number; defaults to
+            ``trends.sensor_check.min_overlap_years``.
+        material_degc: Offsets above this magnitude are flagged ``material``;
+            defaults to ``trends.sensor_check.material_degc``.
+
+    Returns:
+        ``pd.DataFrame`` with columns :data:`SENSOR_OFFSET_COLUMNS`, one row per
+        unordered sensor pair, ordered by descending absolute offset.
+
+    Raises:
+        KeyError: If a required column is absent, naming what the frame has.
+    """
+    import numpy as np  # Deferred: see module docstring.
+    import pandas as pd  # Deferred: see module docstring.
+
+    cfg = params["trends"].get("sensor_check", {})
+    floor = int(
+        cfg.get("min_overlap_years", 3)
+        if min_overlap_years is None
+        else min_overlap_years
+    )
+    material = float(
+        cfg.get("material_degc", 0.5) if material_degc is None else material_degc
+    )
+
+    missing = [c for c in ("sensor_key", "year", "mean") if c not in frame.columns]
+    if missing:
+        raise KeyError(
+            f"the sensor series is missing {missing}; it has "
+            f"{sorted(frame.columns)}. Pass the table from sensor_annual_means()."
+        )
+    if frame.empty:
+        return pd.DataFrame(columns=list(SENSOR_OFFSET_COLUMNS))
+
+    # A year with no valid pixels is not an observation; dropping it here keeps
+    # the "both sensors saw this year" test honest.
+    usable = frame.copy()
+    if "valid_pixels" in usable.columns:
+        usable = usable[usable["valid_pixels"].fillna(0) > 0]
+    usable = usable[pd.to_numeric(usable["mean"], errors="coerce").notna()]
+
+    wide = usable.pivot_table(index="year", columns="sensor_key", values="mean")
+    sensors = list(wide.columns)
+
+    rows: list[dict[str, Any]] = []
+    for index, first in enumerate(sensors):
+        for second in sensors[index + 1:]:
+            pair = wide[[first, second]].dropna()
+            n = int(len(pair))
+            if n < floor:
+                rows.append({
+                    "sensor_a": first, "sensor_b": second, "n_overlap_years": n,
+                    "mean_offset": float("nan"), "sd_offset": float("nan"),
+                    "se_offset": float("nan"), "t_statistic": float("nan"),
+                    "first_year": None, "last_year": None,
+                    "verdict": SENSOR_OFFSET_INSUFFICIENT,
+                })
+                continue
+
+            difference = (pair[first] - pair[second]).to_numpy(dtype="float64")
+            offset = float(np.mean(difference))
+            spread = float(np.std(difference, ddof=1)) if n > 1 else float("nan")
+            standard_error = spread / math.sqrt(n) if n > 1 else float("nan")
+            rows.append({
+                "sensor_a": first,
+                "sensor_b": second,
+                "n_overlap_years": n,
+                "mean_offset": offset,
+                "sd_offset": spread,
+                "se_offset": standard_error,
+                "t_statistic": (
+                    offset / standard_error
+                    if standard_error and math.isfinite(standard_error)
+                    else float("nan")
+                ),
+                "first_year": int(pair.index.min()),
+                "last_year": int(pair.index.max()),
+                "verdict": (
+                    SENSOR_OFFSET_MATERIAL
+                    if abs(offset) >= material
+                    else SENSOR_OFFSET_NEGLIGIBLE
+                ),
+            })
+
+    result = pd.DataFrame(rows)[list(SENSOR_OFFSET_COLUMNS)]
+    return result.reindex(
+        result["mean_offset"].abs().sort_values(ascending=False, na_position="last").index
+    ).reset_index(drop=True)
+
+
+def sensor_annual_means(
+    params: dict[str, Any],
+    region: "ee.Geometry",
+    sensors: Sequence[str] | None = None,
+    months: Sequence[int] | None = None,
+    scale_m: int | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    batch_years: int | None = None,
+    water: "ee.Image | None" = None,
+    progress: bool = False,
+) -> "pd.DataFrame":
+    """Per-sensor annual mean LST over one region - the cross-sensor diagnostic.
+
+    Builds each Landsat sensor's dry-season annual series SEPARATELY, so the
+    years where two sensors both flew can be compared directly. Feed the result
+    to :func:`build_sensor_offset_summary`.
+
+    .. note::
+        Reuses :func:`colombo_uhi.composites.zonal_annual_means_by_year`, which
+        already batches by year - the same pattern Phase 3 used successfully.
+        This reduces SCENES, not the trend graph, so it is affordable
+        interactively.
+
+    Args:
+        params: Parsed params mapping.
+        region: Region to average over. Use a compact one - the CMC, not the
+            province.
+        sensors: Subset of ``landsat_c2l2.sensor_keys``; defaults to all.
+        months: Month restriction; defaults to the dry window, matching the
+            series the trend is actually fitted to.
+        scale_m: Reduction scale; defaults to ``trends.fit_scale_m``.
+        start_year: Defaults to ``time.start_year``.
+        end_year: Defaults to ``time.end_year``.
+        batch_years: Years per request; defaults to ``trends.batch_years``.
+        water: Optional water mask to exclude.
+        progress: Print a line per sensor.
+
+    Returns:
+        ``pd.DataFrame`` with columns :data:`SENSOR_SERIES_COLUMNS`.
+    """
+    import pandas as pd  # Deferred: see module docstring.
+
+    from colombo_uhi import composites, landsat
+
+    keys = landsat.resolve_sensors(sensors, params)
+    window = (
+        list(months)
+        if months is not None
+        else list(params["time"]["seasons"]["dry_window"]["months"])
+    )
+    scale = int(params["trends"]["fit_scale_m"] if scale_m is None else scale_m)
+    batch = int(
+        params["trends"]["batch_years"] if batch_years is None else batch_years
+    )
+
+    frames: list["pd.DataFrame"] = []
+    for key in keys:
+        collection = landsat.harmonised_collection(
+            params, region=region, sensors=[key],
+            include_sr=False, include_st_qa=False,
+        )
+        series = composites.zonal_annual_means_by_year(
+            collection, region, params,
+            months=window, scale_m=scale, batch_years=batch,
+            start_year=start_year, end_year=end_year,
+            with_percentile=False, mask=water, progress=False,
+        )
+        series = series.rename(
+            columns={params["composites"]["year_property"]: "year"}
+        )
+        series["sensor_key"] = key
+        frames.append(series)
+        if progress:
+            valid = int((series[composites.VALID_PIXELS_COLUMN].fillna(0) > 0).sum())
+            print(f"  {key}: {valid} year(s) with data")
+
+    if not frames:
+        return pd.DataFrame(columns=list(SENSOR_SERIES_COLUMNS))
+
+    combined = pd.concat(frames, ignore_index=True).rename(
+        columns={composites.VALID_PIXELS_COLUMN: "valid_pixels"}
+    )
+    return combined[list(SENSOR_SERIES_COLUMNS)]

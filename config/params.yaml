@@ -1076,6 +1076,26 @@ trends:
                                       # is for shape, not for the reported number. The authoritative
                                       # fraction comes from the exported raster at fit_scale_m.
 
+  # --- cross-sensor continuity check -------------------------------------------
+  sensor_check:                       # [DECISION 2026-08-11] CLAUDE.md accepts that C2 is
+                                      # inter-calibrated across TM/ETM+/OLI and then says: "Still
+                                      # verify empirically on overlapping years." This is that check,
+                                      # and Colab run 14 made it urgent rather than optional: the
+                                      # Landsat decadal path came out +1.70 degC then -1.23 degC - a
+                                      # ZIGZAG, not a monotonic rise - while single-sensor MODIS Terra
+                                      # night showed 17.6% of tested area significantly warming.
+                                      # Mann-Kendall tests MONOTONIC trend, so an up-then-down
+                                      # sensor step cancels into "no trend" and that is exactly what
+                                      # the Landsat product reported: zero significant pixels.
+    min_overlap_years: 3              # fewer common years than this and a pair is reported as
+                                      # insufficient_overlap rather than given a spurious number.
+    material_degc: 0.5                # |mean offset| at or above this is flagged `material`. Not a
+                                      # calibration tolerance - it is the magnitude at which a step
+                                      # starts to dominate a ~0.03 degC/yr trend over 26 years.
+                                      # Two sensors observe on different dates in the same dry
+                                      # season, so part of any offset is weather; read the offset
+                                      # against its own standard error, not against zero.
+
   # --- modified Mann-Kendall (pymannkendall) -----------------------------------
   mmk:
     method: "hamed_rao"               # [CLAUDE.md brief] Hamed & Rao (1998) variance correction for
@@ -1145,12 +1165,13 @@ trends:
     # Phase 6, not this.
 
   # --- visualisation -----------------------------------------------------------
-  slope_vis:                          # [DEFAULT — Phase 4] MUST be diverging and zero-centred: on a
-    min: -0.15                        # sequential ramp a reader cannot tell warming from cooling.
-    max: 0.15                         # +/-0.15 degC/yr is +/-3.9 degC over 26 years. VERIFY against
-                                      # the slope percentiles printed in notebook 04 and widen if
-                                      # more than ~5% of pixels saturate - a saturated map
-                                      # understates the extremes it exists to show.
+  slope_vis:                          # [MEASURED — Colab run 14] MUST be diverging and zero-centred:
+    min: -0.25                        # on a sequential ramp a reader cannot tell warming from
+    max: 0.25                         # cooling. Widened from +/-0.15 after run 14 measured 5.66% of
+                                      # landsat_dry pixels outside it (p1 -0.205, p99 +0.237); a
+                                      # saturated map understates the extremes it exists to show.
+                                      # +/-0.25 degC/yr is +/-6.5 degC over 26 years. Re-check the
+                                      # printed percentiles whenever the source or scale changes.
     palette:                          # ColorBrewer RdBu reversed; the MIDDLE colour sits at ZERO.
       - "2166ac"                      # strong cooling
       - "67a9cf"
