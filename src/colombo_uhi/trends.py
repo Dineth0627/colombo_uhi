@@ -1240,6 +1240,15 @@ def annual_series(
         if collection is not None
         else uhi_metrics.source_collection(resolved, params, region=region)
     )
+
+    # A sensor-restricted source has its own first usable year - Landsat 8 does
+    # not exist before 2013-03 - and padding the series with empty years before
+    # it would put `obs_count == 0` rows on the axis that the trend then has to
+    # mask out. Honour the source's own floor unless the caller overrides it.
+    source_start = resolved.get("start_year")
+    if start_year is None and source_start is not None:
+        start_year = int(source_start)
+
     return composites.annual_composites(
         scenes,
         params,

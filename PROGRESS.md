@@ -10,7 +10,7 @@ _Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run 
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
-| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **ran end to end; results in hand. Cross-sensor check (Step 6) pending before the Landsat trend can be quoted** |
+| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **ran end to end. Cross-sensor check FAILED → switched to single-sensor `landsat_oli_dry` (L8+L9, 2013–2025); rerun pending** |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
@@ -142,6 +142,76 @@ already skips bands whose min/max come back `None`.
 Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
 approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
 **exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
+
+### Run 16 (2026-08-11) — C2 INTER-CALIBRATION FAILS OVER COLOMBO
+
+**The most consequential result of Phase 4, and it is a negative one.** The
+cross-sensor check ran clean and refuted `landsat_c2l2.harmonisation: none` for
+this AOI.
+
+#### Measured offsets, CMC dry season (Jan–Mar), 100 m
+
+| pair | mean offset | sd | overlap yrs | t | verdict |
+|---|---|---|---|---|---|
+| L5 − L7 | **+1.783 °C** | 1.851 | 8 (2004–2011) | +2.72 | **material** |
+| L7 − L8 | **−2.478 °C** (L8 hotter) | 2.177 | 10 (2014–2023) | −3.60 | **material** |
+| L8 − L9 | −0.397 °C | 1.187 | 4 (2022–2025) | −0.67 | negligible |
+
+**Scale:** the whole 26-year trend signal is +0.73 °C (Sen's slope × 26). The
+L7→L8 step is **3.4×** that; L5→L7 is **2.4×**.
+
+**It reconciles quantitatively.** L8 flies 2013–2020 = 8 of the 10 years in the
+2011–2020 window and none of 2000–2010, so the step alone predicts a decadal
+difference of 0.8 × 2.478 = **+1.98 °C** against the **+1.70 °C** observed. The
+pooled Landsat Mann-Kendall was measuring the changeover, not the climate — and a
+step up followed by a step down is exactly how a warming series reports
+"no trend".
+
+**Caveat on the diagnostic itself:** `sd_offset` (1.85–2.18 °C) is comparable to
+the offsets, and the overlaps are only 8–10 years. Sensors observe different
+dates within the same dry season, so weather is in there. What makes it decisive
+is the combination — significant, in the directions that explain the zigzag, and
+several times the signal they contaminate. Any one alone would be weak.
+
+#### What this invalidates, and what survives
+
+| Quantity | Status |
+|---|---|
+| **SUHII** (urban − rural, same year) | **ROBUST** — a common-mode step cancels. **Phase 3 is unaffected.** |
+| **Class contrasts** (built-up vs tree cover ≈ 2.8×) | **Largely robust** — same cancellation |
+| **MODIS Terra night** (one sensor) | **ROBUST** — 17.6% BH / 0.33% BY stands |
+| Absolute per-GN slopes (Fort +0.365 °C/yr) | **CONTAMINATED — withdrawn pending recompute** |
+| Absolute by-class slopes (+0.053 °C/yr) | **CONTAMINATED** — quote the contrast instead |
+| Landsat pooled pixel-wise MK ("0% significant") | **INVALID** — a step artefact |
+
+> Fort's +0.365 °C/yr = +9.5 °C over 26 years, with τ = 0.73. That is not
+> credible as warming. A division whose early years are L7-dominated and later
+> years L8-dominated gets a ~2.5 °C step smeared across the changeover, which MK
+> reads as a *strong monotonic trend*. **This is the more dangerous failure mode
+> than the zero: it looks significant.**
+
+#### The fix
+
+**New source `landsat_oli_dry`**: Landsat 8 + 9 only, **2013–2025**, dry season,
+100 m. L8−L9 is negligible so OLI/TIRS pools safely. `trends.pixel_sources` now
+reads `["landsat_oli_dry", "terra_night", "aqua_night"]`.
+
+* `uhi_metrics.source_collection` gained a `sensors` passthrough from the source
+  mapping; `trends.annual_series` honours a per-source `start_year` so the OLI
+  series does not fabricate empty pre-2013 years.
+* `landsat_dry` is **retained** for SUHII, where the step cancels.
+* The decadal product is retargeted to the pooled `landsat_dry` series and
+  **relabelled a sensor-step diagnostic** — its windows only mean anything over
+  the full record, and its job now is to show the discontinuity.
+* Notebook Step 11 now prints class **contrasts** relative to the coolest
+  well-sampled class, alongside the absolute slopes.
+
+**Cost:** 13 years instead of 26. Lower MK power, and `min_years: 10` is now 10
+of 13 — a strict floor. Read `n_tested` in Step 8; if it collapses, drop the
+floor to 8 rather than re-pooling sensors.
+
+**Pending:** rerun Parts 1 and 2 on `landsat_oli_dry` to recompute the per-GN and
+by-class numbers on the clean series.
 
 ### Run 15 (2026-08-11) — PHASE 4 RAN END TO END. One finding blocks the headline.
 

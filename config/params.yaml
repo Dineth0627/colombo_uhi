@@ -545,8 +545,29 @@ landsat_c2l2:
                                         # also drops terrain-occluded pixels — slightly stricter
                                         # than CLAUDE.md's wording, and harmless on flat coastal
                                         # Colombo. Noted so nobody "fixes" it later.
-  harmonisation: "none"               # [CLAUDE.md] C2 is inter-calibrated across TM/ETM+/OLI;
-                                      # no manual coefficients — but verify empirically on overlap years
+  harmonisation: "none"               # [CLAUDE.md] C2 is inter-calibrated across TM/ETM+/OLI, so no
+                                      # manual coefficients - "but verify empirically on overlap
+                                      # years".
+                                      #
+                                      # >>> VERIFIED 2026-08-11, AND IT FAILED OVER COLOMBO. <<<
+                                      # trends.sensor_annual_means over the CMC dry season measured:
+                                      #     L5 - L7 = +1.783 degC (sd 1.85, t=+2.72, 8 overlap yrs)
+                                      #     L7 - L8 = -2.478 degC (sd 2.18, t=-3.60, 10 overlap yrs)
+                                      #     L8 - L9 = -0.397 degC (sd 1.19, t=-0.67)  NEGLIGIBLE
+                                      # The first two are 2.4x and 3.4x the ENTIRE 26-year trend
+                                      # signal (+0.73 degC), and the L7->L8 step alone predicts the
+                                      # observed +1.70 degC decadal jump to within 0.3 degC.
+                                      #
+                                      # This value stays "none" because the fix is NOT to invent
+                                      # coefficients - estimating them from 8-10 noisy overlap years
+                                      # would inject a new error, exactly what the albedo note above
+                                      # warns against. The fix is to fit trends WITHIN one sensor
+                                      # family: see uhi.suhii.sources.landsat_oli_dry.
+                                      #
+                                      # SUHII is unaffected: it is a within-year urban-minus-rural
+                                      # difference, so a common-mode step cancels.
+                                      # DO NOT re-pool sensors for a trend without re-running the
+                                      # check (notebook 04 Step 6) and getting `negligible`.
 
 # --- MODIS MOD11A2 / MYD11A2 --------------------------------------------------
 modis_lst:
@@ -780,6 +801,26 @@ uhi:
         months_key: "dry_window"      # Jan-Mar, the primary comparison window
         reducer: "median"
         scale_m: 100                  # matches the Phase 2 Landsat-vs-MODIS comparison
+      - key: "landsat_oli_dry"          # [DECISION 2026-08-11] SINGLE-SENSOR-FAMILY Landsat trend.
+        kind: "landsat"                 # Colab run 16 measured MATERIAL cross-sensor offsets over
+        months_key: "dry_window"        # the CMC dry season:
+        reducer: "median"               #     L5 - L7 = +1.78 degC (t=+2.7, 8 overlap years)
+        scale_m: 100                    #     L7 - L8 = -2.48 degC (t=-3.6, 10 overlap years)
+        sensors: ["landsat8", "landsat9"]   # = 2.4x and 3.4x the ENTIRE 26-year trend signal
+        start_year: 2013                # (+0.73 degC). A Mann-Kendall fitted across those
+                                        # changeovers measures the STEP, not the climate - which is
+                                        # exactly what the pooled product did: a +1.70/-1.23 degC
+                                        # decadal zigzag and ZERO significant pixels.
+                                        #
+                                        # L8 - L9 = -0.40 degC (t=-0.67) is NEGLIGIBLE, so OLI/TIRS
+                                        # pools safely. Landsat 8 opens 2013-03, so the series is
+                                        # 2013-2025: 13 years. Less power than 26, but a defensible
+                                        # trend instead of an artefact, and it keeps the 100 m
+                                        # intra-urban detail that is the whole point of Landsat.
+                                        #
+                                        # `landsat_dry` is RETAINED for SUHII, which is a
+                                        # within-year urban-minus-rural difference: a common-mode
+                                        # sensor step cancels there, so Phase 3 is unaffected.
       - key: "terra_day"
         kind: "modis"
         product: "terra"              # MOD11A2, overpass ~10:30 (closest to Landsat)
@@ -911,7 +952,7 @@ trends:
   slope_units: "degC_per_year"        # [CLAUDE.md] report Sen's slope in degC/yr
 
   # --- what gets fitted --------------------------------------------------------
-  pixel_sources: ["landsat_dry", "terra_night", "aqua_night"]
+  pixel_sources: ["landsat_oli_dry", "terra_night", "aqua_night"]
                                       # [DECISION 2026-08-09] the sources that get a pixel-wise
                                       # trend raster. Keys into uhi.suhii.sources.
                                       #   landsat_dry  - 30 m, Jan-Mar, the only source with
@@ -944,6 +985,13 @@ trends:
                                       # median 10, so 3 drops single-scene years without emptying
                                       # the series. null disables the floor.
   min_years: 10                       # [DEFAULT — Phase 4] per-pixel valid-YEAR floor below which
+                                      # NOTE the interaction with landsat_oli_dry: that source spans
+                                      # 2013-2025, so 10 is 10 of THIRTEEN years, a strict floor that
+                                      # will mask more pixels than it did on the 26-year pooled
+                                      # series. That is the price of a single-sensor trend and it is
+                                      # the right trade - but read n_tested in notebook Step 8, and
+                                      # if it falls too far, lower this to 8 (about the lower limit
+                                      # for the normal approximation) rather than re-pooling sensors.
                                       # the MK statistics are MASKED. n_years is still emitted, so
                                       # an excluded pixel reads as "excluded", not "missing"
                                       # (CLAUDE.md caveat 2). The normal approximation behind Var(S)

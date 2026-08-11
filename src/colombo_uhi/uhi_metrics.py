@@ -942,6 +942,14 @@ def source_collection(
         return landsat.harmonised_collection(
             params,
             region=region,
+            # Optional per-source sensor restriction. Added 2026-08-11 after the
+            # cross-sensor check measured MATERIAL offsets over the CMC dry
+            # season: L5-L7 = +1.78 degC (t=2.7) and L7-L8 = -2.48 degC (t=-3.6),
+            # i.e. 2.4x and 3.4x the entire 26-year trend signal. A Mann-Kendall
+            # fitted across those changeovers measures the step, not the climate.
+            # Restricting a source to one sensor family is what makes a Landsat
+            # trend defensible; see uhi.suhii.sources.landsat_oli_dry.
+            sensors=resolved.get("sensors"),
             include_sr=False,   # SUHII needs LST only; the SR bands would be
             include_st_qa=False,  # carried through 26 years of compositing unused
         )
