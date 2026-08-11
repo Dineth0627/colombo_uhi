@@ -1,0 +1,9 @@
+scheme,class_code,class_label,pixel_count,below_pixel_floor,mean,stdDev
+worldcover,10,Tree cover,43493,False,-0.1886957057796051,0.1234890096692687
+worldcover,20,Shrubland,11,True,-0.2418519343066561,0.1012265296112283
+worldcover,30,Grassland,1158,False,-0.1666664452650521,0.1424853824598594
+worldcover,40,Cropland,1792,False,-0.1828480630931246,0.122256224403993
+worldcover,50,Built-up,15578,False,-0.1328337854786886,0.121647237684678
+worldcover,60,Bare / sparse vegetation,88,True,-0.101732056304515,0.2328675149046496
+worldcover,80,Permanent water bodies,1592,False,-0.1642125543981164,0.0999713544927819
+worldcover,90,Herbaceous wetland,96,True,-0.1615858262703225,0.0957314633377553

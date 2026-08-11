@@ -1,0 +1,7 @@
+sensor_a,sensor_b,n_overlap_years,mean_offset,sd_offset,se_offset,t_statistic,first_year,last_year,verdict
+landsat7,landsat8,10,-2.4780398508769856,2.176737075519816,0.6883447025976563,-3.5999984332347252,2014.0,2023.0,material
+landsat5,landsat7,8,1.7830778270273226,1.8508968206006378,0.6543908465616658,2.724790293745798,2004.0,2011.0,material
+landsat8,landsat9,4,-0.397146118674673,1.1865936367453502,0.5932968183726751,-0.6693885865829952,2022.0,2025.0,negligible
+landsat5,landsat8,0,,,,,,,insufficient_overlap
+landsat5,landsat9,0,,,,,,,insufficient_overlap
+landsat7,landsat9,2,,,,,,,insufficient_overlap
