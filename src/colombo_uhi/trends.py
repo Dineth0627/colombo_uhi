@@ -358,6 +358,48 @@ def resolve_decades(
     return windows
 
 
+def decadal_band_order(
+    params: dict[str, Any],
+    decades: Mapping[str, Sequence[int]] | None = None,
+    differences: Sequence[tuple[str, str]] | None = None,
+) -> list[str]:
+    """Band order of the exported decadal raster, in the order it is built.
+
+    Band identity in a GeoTIFF is POSITIONAL, and Earth Engine does not reliably
+    write band names into the file, so the reader needs this order to interpret
+    a downloaded decadal product. It is derived from the configured decades
+    rather than hardcoded, so adding a window cannot desync the two.
+
+    Args:
+        params: Parsed params mapping.
+        decades: Override for ``trends.decades``.
+        differences: ``(later, earlier)`` label pairs; defaults to consecutive
+            windows.
+
+    Returns:
+        Band names: ``mean_``/``sd_``/``n_years_`` per window, then
+        ``diff_<later>_minus_<earlier>``, ``diff_se``, ``diff_z`` and
+        ``n_years_min`` per difference, suffixed to stay unique.
+    """
+    windows = resolve_decades(decades, params)
+    labels = [label for label, _, _ in windows]
+
+    names: list[str] = []
+    for label in labels:
+        names.extend([f"mean_{label}", f"sd_{label}", f"n_years_{label}"])
+
+    pairs = (
+        list(differences)
+        if differences is not None
+        else list(zip(labels[1:], labels))
+    )
+    for later, earlier in pairs:
+        tag = f"{later}_minus_{earlier}"
+        names.extend([f"diff_{tag}", f"diff_se_{tag}", f"diff_z_{tag}",
+                      f"n_years_min_{tag}"])
+    return names
+
+
 def decade_years(params: dict[str, Any], decade: str) -> tuple[int, int]:
     """Look up one decadal window's year bounds.
 
@@ -1057,8 +1099,12 @@ def validate_series_metadata(
             stacklevel=3,
         )
 
+    # `size` is None whenever it was not measured (the default, because sizing a
+    # computed collection can force it to be materialised). Report that as
+    # "not measured" rather than a bare None, which reads like a failure in the
+    # notebook's printed summary.
     return {
-        "n_years": size,
+        "n_years": size if size is not None else "not measured",
         "n_probed": probed,
         "first_year": years[0],
         "last_year": years[-1],
@@ -1929,18 +1975,88 @@ def decadal_difference(
     n_a = means.select([f"n_years_{later}"])
     n_b = means.select([f"n_years_{earlier}"])
 
-    difference = mean_a.subtract(mean_b).rename(f"diff_{later}_minus_{earlier}")
+    # Suffixed so several differences can be concatenated into one exportable
+    # image without colliding; decadal_band_order() mirrors this exactly.
+    tag = f"{later}_minus_{earlier}"
+    difference = mean_a.subtract(mean_b).rename(f"diff_{tag}")
     standard_error = (
-        sd_a.pow(2).divide(n_a).add(sd_b.pow(2).divide(n_b)).sqrt().rename("diff_se")
+        sd_a.pow(2)
+        .divide(n_a)
+        .add(sd_b.pow(2).divide(n_b))
+        .sqrt()
+        .rename(f"diff_se_{tag}")
     )
     return ee.Image.cat(
         [
             difference,
             standard_error,
-            difference.divide(standard_error).rename("diff_z"),
-            n_a.min(n_b).rename("n_years_min"),
+            difference.divide(standard_error).rename(f"diff_z_{tag}"),
+            n_a.min(n_b).rename(f"n_years_min_{tag}"),
         ]
     ).toFloat()
+
+
+def decadal_product(
+    source: str | Mapping[str, Any],
+    params: dict[str, Any],
+    region: "ee.Geometry | None" = None,
+    collection: "ee.ImageCollection | None" = None,
+    decades: Mapping[str, Sequence[int]] | None = None,
+    band: str | None = None,
+    min_valid_obs: int | None = None,
+    differences: Sequence[tuple[str, str]] | None = None,
+) -> "ee.Image":
+    """The full decadal raster: every window's statistics plus every difference.
+
+    One exportable image, banded in :func:`decadal_band_order`. Built as a single
+    product rather than assembled in the notebook so that the band order the
+    reader assumes and the band order the writer produces come from the same
+    place.
+
+    .. warning::
+        The configured windows are 11 / 10 / 5 years - unequal, because the study
+        period ends in 2025. The 2021-2025 mean rests on roughly half the sample
+        of the others, so ``diff_se`` is the band that matters on any difference
+        involving it. See :func:`resolve_decades`.
+
+    Args:
+        source: Key into ``uhi.suhii.sources``.
+        params: Parsed params mapping.
+        region: Region bounding the work.
+        collection: Optional pre-built SCENE-level collection, used as a cache.
+        decades: Override for ``trends.decades``.
+        band: LST band; defaults to ``landsat_c2l2.lst_band_name``.
+        min_valid_obs: Override for ``trends.min_valid_obs``.
+        differences: ``(later, earlier)`` label pairs; defaults to consecutive
+            windows.
+
+    Returns:
+        ``ee.Image`` selected into :func:`decadal_band_order`.
+    """
+    import ee  # Deferred: see module docstring.
+
+    means = decadal_means(
+        source,
+        params,
+        region=region,
+        collection=collection,
+        decades=decades,
+        band=band,
+        min_valid_obs=min_valid_obs,
+    )
+
+    labels = [label for label, _, _ in resolve_decades(decades, params)]
+    pairs = (
+        list(differences)
+        if differences is not None
+        else list(zip(labels[1:], labels))
+    )
+    layers = [means] + [
+        decadal_difference(means, params, later=later, earlier=earlier)
+        for later, earlier in pairs
+    ]
+    order = decadal_band_order(params, decades=decades, differences=differences)
+    return ee.Image.cat(layers).select(order).toFloat()
 
 
 # =============================================================================
@@ -1984,6 +2100,47 @@ def trend_by_class(
     from colombo_uhi import landcover
 
     return landcover.stratified_stats(
+        image,
+        scheme,
+        params,
+        region,
+        band=band or params["trends"]["bands"]["sen_slope"],
+        scale_m=int(params["trends"]["fit_scale_m"] if scale_m is None else scale_m),
+        reducers=reducers,
+    )
+
+
+def trend_by_class_collection(
+    image: "ee.Image",
+    params: dict[str, Any],
+    region: "ee.Geometry",
+    scheme: str,
+    band: str | None = None,
+    scale_m: int | None = None,
+    reducers: Sequence[str] | None = None,
+) -> "ee.FeatureCollection":
+    """The export-shaped twin of :func:`trend_by_class`.
+
+    Same statistics, nothing evaluated. Hand it to
+    :func:`colombo_uhi.exports.table_to_drive` so the grouped reduction runs
+    inside a batch task, which has no interactive memory ceiling - the reason
+    this exists rather than the ``getInfo`` form (Colab runs 10-13).
+
+    Args:
+        image: A :func:`trend_image` result.
+        params: Parsed params mapping.
+        region: Region to summarise over.
+        scheme: Class scheme key, e.g. ``"worldcover"`` or ``"lcz"``.
+        band: Band to summarise; defaults to ``trends.bands.sen_slope``.
+        scale_m: Reduction scale; defaults to ``trends.fit_scale_m``.
+        reducers: Statistics to compute; defaults to ``("mean", "stdDev")``.
+
+    Returns:
+        ``ee.FeatureCollection``, one geometry-less feature per class.
+    """
+    from colombo_uhi import landcover
+
+    return landcover.stratified_stats_collection(
         image,
         scheme,
         params,

@@ -85,7 +85,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 | 1 | `01_aoi_and_boundaries` | AOI geometries, GN asset, water mask | ✅ done + Colab-verified |
 | 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | ✅ done + Colab-verified |
 | 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ✅ done + Colab-verified |
-| 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | 🟨 code written — not yet run in Colab |
+| 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | 🟨 Part 1 Colab-verified (exports submitted); Part 2 pending download |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR | ⬜ |
 | 6 | `06_prediction` | RF + CA-Markov scenario projection | ⬜ |
 | 7 | `07_greening_priority` | MCDA/AHP overlay | ⬜ |

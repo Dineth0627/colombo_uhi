@@ -10,7 +10,7 @@ _Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run 
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
-| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **code written, 540 tests pass — NOT YET RUN in Colab** |
+| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **Part 1 verified in Colab (exports submitted); Part 2 awaits the Drive download** |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
@@ -142,6 +142,71 @@ already skips bands whose min/max come back `None`.
 Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
 approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
 **exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
+
+### Run 14 (2026-08-11) — through the wall: exports submitted
+
+**The batch path works.** Run 14 reached Step 5 and submitted every export.
+
+| Step | Result |
+|---|---|
+| 2 — reducer probes | ✅ all three settled (see below) |
+| 3 — structural guard | ✅ scene rejected; constructor self-test passed |
+| 4 — trend image | ❌ on `TREND.bandNames().getInfo()` — a call left **outside** the try/except |
+| 5 — **exports** | ✅ **3 tasks submitted, READY** |
+| 6 — FDR preview | ✅ degraded gracefully, as designed |
+| 7 — MODIS | ❌ `NameError: _bands` — pure cascade from step 4 aborting |
+
+`TREND` itself was assigned fine; only its *inspection* failed. That completes
+the picture: **no interactive question about the trend graph is affordable, down
+to and including `bandNames()`** — while a batch `Export` of the very same image
+submits without complaint.
+
+**Measured, and now pinned in `trends.reducer_outputs`:**
+
+| Reduce | Output bands |
+|---|---|
+| `ee.Reducer.sensSlope()` | `['slope', 'offset']` — bare |
+| `ee.Reducer.kendallsCorrelation(2)` | `['tau', 'p-value']` — bare |
+| `ee.Reducer.kendallsCorrelation(1)` | `['fit_y_tau', 'fit_y_p-value']` — prefixed |
+
+Sen's input order confirmed **x then y** (`slope=2, offset=10` for `y = 10+2x`).
+`ee` tau = 0.9090909, matching scipy exactly. **`ee`'s own p-value came back
+`None`** — expect `mk_p_ee` to be an entirely masked band; it is exported for
+comparison only and never reaches the FDR correction.
+
+### The restructure: build → export → download → analyse
+
+Phase 4's notebook is now **two parts**, which is what the ceiling forces and is
+also the better design — `viz.plot_trend_map` already worked from local arrays,
+and a downloaded GeoTIFF makes a real map rather than a `getThumbURL` preview.
+
+* **Part 1** builds the products and submits **six** batch tasks: three trend
+  rasters, one decadal raster, two by-class tables. It asks Earth Engine nothing
+  it does not have to, and every remaining interactive call goes through a
+  `_try_ee` helper that degrades to a note.
+* **Part 2** is pure numpy/pandas over `data/interim/`: FDR, the significant-area
+  figures under BH **and** BY, the slope maps, the decadal differences, and the
+  by-class tables. Only the per-GN reduction still touches Earth Engine, and it
+  works on annual composites in 4-year batches (the Phase 3 pattern that
+  succeeded), not on the trend graph.
+
+**New code this run:**
+
+* `trends.trend_by_class_collection` / `landcover.stratified_stats_collection` —
+  the *unevaluated* twins of the grouped reduction, so it can run inside an
+  `Export.table` task. The same reduction that fails interactively succeeds as a
+  submitted task.
+* `trends.decadal_product` + `trends.decadal_band_order` — the decadal statistics
+  as one exportable image with a derived, duplicate-free band order.
+  `decadal_difference` now suffixes `diff_se`/`diff_z` with the window pair so
+  several differences can share one image.
+* `viz.build_decadal_difference_figure` — the difference **beside its
+  signal-to-noise panel**, because with 11/10/5-year windows the difference alone
+  is not interpretable.
+* Every import and constant moved into Step 0, so Part 2 runs as a standalone
+  session and a skipped step cannot cascade into a `NameError`.
+
+**Test count: 566 passing, 5 skipped** (the rasterio round-trip tests).
 
 ### Runs 10–13 (2026-08-09) — the interactive memory ceiling, and the retreat
 

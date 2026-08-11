@@ -317,7 +317,7 @@ def class_image(
 # =============================================================================
 # Stratified statistics
 # =============================================================================
-def stratified_stats(
+def _grouped_reduction(
     image: "ee.Image",
     scheme: str,
     params: dict[str, Any],
@@ -326,32 +326,12 @@ def stratified_stats(
     scale_m: int | None = None,
     reducers: Sequence[str] | None = None,
     year: int | None = None,
-) -> "pd.DataFrame":
-    """Reduce one image band to per-class statistics in a single round trip.
+) -> tuple["ee.Dictionary", list[str], str]:
+    """Build the grouped reduction, unevaluated. Shared by both public callers.
 
-    The project's first use of a grouped reducer. The class band is stacked LAST
-    and ``groupField`` is its index, made explicit here rather than left for the
-    caller to infer - a mis-grouped reduction returns a plausible-looking table
-    rather than an error.
-
-    Args:
-        image: Image to summarise.
-        scheme: Class scheme key.
-        params: Parsed params mapping.
-        region: Region to summarise over.
-        band: Band to summarise; defaults to the image's first band.
-        scale_m: Reduction scale; defaults to ``crs.analysis_scale_m``.
-        reducers: Statistics to compute; defaults to ``("mean", "stdDev")``.
-            ``count`` is always appended.
-        year: Passed through to :func:`class_image` for ``"dynamic_world"``.
-
-    Returns:
-        ``pd.DataFrame`` with :data:`STRATIFIED_COLUMNS` plus one column per
-        reducer.
-
-    Raises:
-        RuntimeError: If the grouped reduction returns no ``groups`` key, naming
-            what it did return.
+    The class band is stacked LAST and ``groupField`` is its index, made explicit
+    here rather than left for the caller to infer - a mis-grouped reduction
+    returns a plausible-looking table rather than an error.
     """
     import ee  # Deferred: see module docstring.
 
@@ -378,13 +358,110 @@ def stratified_stats(
         combined = combined.combine(factories[name](), sharedInputs=True)
     combined = combined.combine(ee.Reducer.count(), sharedInputs=True)
 
-    result = stacked.reduceRegion(
+    reduction = stacked.reduceRegion(
         reducer=combined.group(groupField=1, groupName="class"),
         geometry=region,
         scale=scale,
         maxPixels=comp["reduce_max_pixels"],
         tileScale=comp["tile_scale"],
-    ).getInfo()
+    )
+    return reduction, names, resolved
+
+
+def stratified_stats_collection(
+    image: "ee.Image",
+    scheme: str,
+    params: dict[str, Any],
+    region: "ee.Geometry",
+    band: str | None = None,
+    scale_m: int | None = None,
+    reducers: Sequence[str] | None = None,
+    year: int | None = None,
+) -> "ee.FeatureCollection":
+    """The grouped per-class reduction as an EXPORTABLE FeatureCollection.
+
+    Identical statistics to :func:`stratified_stats`, but nothing is evaluated:
+    the ``groups`` list is wrapped into geometry-less features so the whole
+    reduction can be handed to
+    :func:`colombo_uhi.exports.table_to_drive` and run inside a batch task.
+
+    .. note::
+        This exists because a grouped ``reduceRegion`` over a district-sized
+        trend surface cannot be evaluated interactively - Colab runs 10-13
+        established that **no** interactive question about the trend graph is
+        affordable, down to and including ``bandNames()``. A batch ``Export``
+        task has no such ceiling, so the same reduction that fails in-session
+        succeeds as a submitted task.
+
+    Args:
+        image: Image to summarise.
+        scheme: Class scheme key.
+        params: Parsed params mapping.
+        region: Region to summarise over.
+        band: Band to summarise; defaults to the image's first band.
+        scale_m: Reduction scale; defaults to ``crs.analysis_scale_m``.
+        reducers: Statistics to compute; defaults to ``("mean", "stdDev")``.
+        year: Passed through to :func:`class_image` for ``"dynamic_world"``.
+
+    Returns:
+        ``ee.FeatureCollection``, one geometry-less feature per class.
+    """
+    import ee  # Deferred: see module docstring.
+
+    reduction, _, _ = _grouped_reduction(
+        image, scheme, params, region,
+        band=band, scale_m=scale_m, reducers=reducers, year=year,
+    )
+    groups = ee.List(reduction.get("groups"))
+    return ee.FeatureCollection(
+        groups.map(lambda group: ee.Feature(None, ee.Dictionary(group)))
+    )
+
+
+def stratified_stats(
+    image: "ee.Image",
+    scheme: str,
+    params: dict[str, Any],
+    region: "ee.Geometry",
+    band: str | None = None,
+    scale_m: int | None = None,
+    reducers: Sequence[str] | None = None,
+    year: int | None = None,
+) -> "pd.DataFrame":
+    """Reduce one image band to per-class statistics in a single round trip.
+
+    .. warning::
+        This EVALUATES the reduction. Over a district-sized trend surface that
+        exceeds the Earth Engine interactive memory limit; use
+        :func:`stratified_stats_collection` with
+        :func:`colombo_uhi.exports.table_to_drive` instead, and read the
+        resulting CSV. This form remains correct and convenient for small
+        regions and cheap source images.
+
+    Args:
+        image: Image to summarise.
+        scheme: Class scheme key.
+        params: Parsed params mapping.
+        region: Region to summarise over.
+        band: Band to summarise; defaults to the image's first band.
+        scale_m: Reduction scale; defaults to ``crs.analysis_scale_m``.
+        reducers: Statistics to compute; defaults to ``("mean", "stdDev")``.
+            ``count`` is always appended.
+        year: Passed through to :func:`class_image` for ``"dynamic_world"``.
+
+    Returns:
+        ``pd.DataFrame`` with :data:`STRATIFIED_COLUMNS` plus one column per
+        reducer.
+
+    Raises:
+        RuntimeError: If the grouped reduction returns no ``groups`` key, naming
+            what it did return.
+    """
+    reduction, names, resolved = _grouped_reduction(
+        image, scheme, params, region,
+        band=band, scale_m=scale_m, reducers=reducers, year=year,
+    )
+    result = reduction.getInfo()
 
     groups = result.get("groups")
     if groups is None:

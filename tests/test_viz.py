@@ -770,3 +770,76 @@ def test_class_figure_writes_a_png(
 ) -> None:
     out = viz.plot_trend_by_class(class_trend_frame, tmp_path / "byclass.png", params)
     assert out.exists() and out.stat().st_size > 0
+
+
+# --- decadal difference figure -----------------------------------------------
+@pytest.fixture()
+def decadal_arrays() -> dict[str, Any]:
+    import numpy as np
+
+    rng = np.random.default_rng(23)
+    difference = rng.normal(0.6, 0.4, size=(20, 28))
+    standard_error = np.full((20, 28), 0.35)
+    difference[:4, :4] = np.nan
+    standard_error[:4, :4] = np.nan
+    return {"diff_a_minus_b": difference, "diff_se_a_minus_b": standard_error}
+
+
+def test_decadal_figure_draws_the_signal_to_noise_panel(
+    decadal_arrays: dict[str, Any], params: dict[str, Any]
+) -> None:
+    # The difference alone is not interpretable: the windows are 11/10/5 years,
+    # so any difference involving the short one rests on half the sample. The
+    # second panel is what shows which parts survive that.
+    figure = viz.build_decadal_difference_figure(
+        decadal_arrays, params,
+        difference_key="diff_a_minus_b", se_key="diff_se_a_minus_b",
+    )
+    assert len([ax for ax in figure.axes if ax.get_images()]) == 2
+
+
+def test_decadal_figure_without_a_standard_error_draws_one_panel(
+    decadal_arrays: dict[str, Any], params: dict[str, Any]
+) -> None:
+    figure = viz.build_decadal_difference_figure(
+        decadal_arrays, params, difference_key="diff_a_minus_b"
+    )
+    assert len([ax for ax in figure.axes if ax.get_images()]) == 1
+
+
+def test_decadal_figure_footer_warns_it_is_not_the_warming_rate(
+    decadal_arrays: dict[str, Any], params: dict[str, Any]
+) -> None:
+    figure = viz.build_decadal_difference_figure(
+        decadal_arrays, params,
+        difference_key="diff_a_minus_b", se_key="diff_se_a_minus_b",
+    )
+    footer = " ".join(text.get_text() for text in figure.texts)
+    assert "NOT the warming rate" in footer
+    assert "UNEQUAL" in footer
+
+
+def test_decadal_figure_raises_on_a_missing_array(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="missing"):
+        viz.build_decadal_difference_figure(
+            {"diff_a": [[0.1, 0.2]]}, params, difference_key="nope"
+        )
+
+
+def test_decadal_figure_rejects_a_non_positive_limit(
+    decadal_arrays: dict[str, Any], params: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="positive"):
+        viz.build_decadal_difference_figure(
+            decadal_arrays, params, difference_key="diff_a_minus_b", max_degc=0
+        )
+
+
+def test_decadal_figure_writes_a_png(
+    decadal_arrays: dict[str, Any], params: dict[str, Any], tmp_path: Path
+) -> None:
+    out = viz.plot_decadal_difference(
+        decadal_arrays, tmp_path / "decadal.png", params,
+        difference_key="diff_a_minus_b", se_key="diff_se_a_minus_b",
+    )
+    assert out.exists() and out.stat().st_size > 0

@@ -569,6 +569,50 @@ def test_trend_validity_mask_excludes_pixels_below_the_year_floor(
 
 
 # --- the structural guard ----------------------------------------------------
+def test_export_shaped_twins_exist_and_are_not_getinfo_shaped() -> None:
+    # No interactive question about the trend graph is affordable (Colab runs
+    # 10-13), so the grouped reduction has to be able to run inside a batch
+    # Export task. These are the unevaluated twins that make that possible.
+    import inspect
+
+    from colombo_uhi import landcover
+
+    assert hasattr(trends, "trend_by_class_collection")
+    assert hasattr(landcover, "stratified_stats_collection")
+
+    signature = inspect.signature(trends.trend_by_class_collection)
+    assert list(signature.parameters)[0] == "image"
+    # The evaluated form must still exist for cheap regions.
+    assert hasattr(trends, "trend_by_class")
+
+
+def test_decadal_product_takes_a_source_key() -> None:
+    # Same door as trend_image: it builds its own series, so a scene stack
+    # cannot reach it.
+    import inspect
+
+    parameters = list(inspect.signature(trends.decadal_product).parameters)
+    assert parameters[0] == "source"
+
+
+def test_guard_summary_labels_an_unmeasured_size(params: dict[str, Any]) -> None:
+    # The default guard does not measure the collection size, and a bare None in
+    # the notebook's printed summary reads like a failure rather than a
+    # deliberate omission.
+    metadata = {
+        "size": None,
+        "probed": 2,
+        "property_names": ["year", params["composites"]["series_basis_property"]],
+        "series_basis": [params["trends"]["series_basis"]] * 2,
+        "years": [2023, 2025],
+        "months": [],
+        "n_scenes": [],
+    }
+    summary = trends.validate_series_metadata(metadata, params)
+    assert summary["n_years"] == "not measured"
+    assert summary["n_probed"] == 2
+
+
 def test_guard_accepts_a_well_formed_annual_series(params: dict[str, Any]) -> None:
     years = list(range(2000, 2026))
     summary = trends.validate_series_metadata(
@@ -944,6 +988,44 @@ def test_decades_reject_overlapping_windows(params_copy: dict[str, Any]) -> None
 def test_decade_years_reject_an_unknown_label(params: dict[str, Any]) -> None:
     with pytest.raises(KeyError, match="unknown decade"):
         trends.decade_years(params, "1990_1999")
+
+
+def test_decadal_band_order_covers_every_window(params: dict[str, Any]) -> None:
+    order = trends.decadal_band_order(params)
+    for label, _, _ in trends.resolve_decades(None, params):
+        # CLAUDE.md caveat 2: the count travels with the statistic.
+        assert f"mean_{label}" in order
+        assert f"sd_{label}" in order
+        assert f"n_years_{label}" in order
+
+
+def test_decadal_band_order_has_no_duplicates(params: dict[str, Any]) -> None:
+    # Band identity in a GeoTIFF is POSITIONAL, so a duplicated name means the
+    # reader silently maps two different bands onto one.
+    order = trends.decadal_band_order(params)
+    assert len(order) == len(set(order))
+
+
+def test_decadal_band_order_suffixes_every_difference(
+    params: dict[str, Any],
+) -> None:
+    # Several differences share one image, so diff_se and diff_z must carry the
+    # window pair or the second difference overwrites the first.
+    order = trends.decadal_band_order(params)
+    ses = [name for name in order if name.startswith("diff_se")]
+    assert len(ses) == 2
+    assert all(name != "diff_se" for name in ses)
+
+
+def test_decadal_band_order_follows_the_configured_windows(
+    params_copy: dict[str, Any],
+) -> None:
+    # Derived from params rather than hardcoded, so adding a window cannot
+    # desync the writer from the reader.
+    params_copy["trends"]["decades"] = {"a": [2000, 2009], "b": [2010, 2019]}
+    order = trends.decadal_band_order(None or params_copy)
+    assert "mean_a" in order and "mean_b" in order
+    assert len([n for n in order if n.startswith("diff_se")]) == 1
 
 
 # --- modified Mann-Kendall wrapper -------------------------------------------

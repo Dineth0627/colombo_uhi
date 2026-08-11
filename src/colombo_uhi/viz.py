@@ -1380,3 +1380,158 @@ def plot_trend_by_class(
         ),
         out_path,
     )
+
+
+def build_decadal_difference_figure(
+    arrays: Mapping[str, Any],
+    params: dict[str, Any],
+    difference_key: str,
+    se_key: str | None = None,
+    max_degc: float = 2.0,
+    title: str | None = None,
+) -> Any:
+    """Build the decadal difference map, beside its signal-to-noise panel.
+
+    Two panels, because the difference alone is not interpretable. The
+    configured windows are 11 / 10 / 5 years - unequal by construction, since
+    the study period ends in 2025 - so a difference involving the short window
+    rests on roughly half the sample and carries about sqrt(2) the standard
+    error. The right panel divides by that standard error so a reader can see
+    which parts of the difference are distinguishable from interannual noise.
+
+    .. warning::
+        A decadal difference is NOT the warming rate. It conflates trend with
+        interannual variability (a hot year at either end moves it) and with
+        changing observation counts. Sen's slope is the warming number; these
+        maps exist to show WHERE it is concentrated.
+
+    Args:
+        arrays: Mapping of band name to 2-D array, from
+            :func:`colombo_uhi.trends.read_trend_raster`.
+        params: Parsed params mapping.
+        difference_key: Band holding the difference in degC.
+        se_key: Band holding its standard error. ``None`` draws one panel.
+        max_degc: Symmetric colour limit for the difference panel.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If a required array is missing, naming what is present.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+    from matplotlib.figure import Figure
+
+    wanted = [difference_key] + ([se_key] if se_key else [])
+    missing = [key for key in wanted if key not in arrays]
+    if missing:
+        raise ValueError(
+            f"decadal arrays are missing {missing}; they hold {sorted(arrays)}"
+        )
+    if max_degc <= 0:
+        raise ValueError(f"max_degc must be positive, got {max_degc}")
+
+    colours = [
+        "#" + str(colour).lstrip("#")
+        for colour in params["trends"]["slope_vis"]["palette"]
+    ]
+    cmap = LinearSegmentedColormap.from_list("decadal_diverging", colours)
+    cmap = cmap.with_extremes(bad="#dcdcdc")
+
+    difference = np.asarray(arrays[difference_key], dtype="float64")
+    panels_needed = 2 if se_key else 1
+
+    figure = Figure(figsize=(5.9 * panels_needed, 5.9))
+    FigureCanvasAgg(figure)
+    axes_list = figure.subplots(1, panels_needed, squeeze=False)[0]
+    # Each panel carries its own colorbar, so wspace must leave room for the
+    # left panel's bar AND its label without either landing on the right panel.
+    figure.subplots_adjust(
+        left=0.03, right=0.92, top=0.90, bottom=0.27, wspace=0.30
+    )
+
+    image = axes_list[0].imshow(
+        np.ma.masked_invalid(difference),
+        cmap=cmap,
+        norm=TwoSlopeNorm(vmin=-max_degc, vcenter=0.0, vmax=max_degc),
+        interpolation="nearest",
+    )
+    axes_list[0].set_title("Difference in mean LST (degC)", fontsize=10)
+    axes_list[0].set_xticks([])
+    axes_list[0].set_yticks([])
+
+    bar = figure.colorbar(
+        image, ax=axes_list[0], orientation="vertical", fraction=0.04, pad=0.02
+    )
+    bar.set_label("degC", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    if se_key:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = difference / np.asarray(arrays[se_key], dtype="float64")
+        ratio_image = axes_list[1].imshow(
+            np.ma.masked_invalid(ratio),
+            cmap=cmap,
+            norm=TwoSlopeNorm(vmin=-3.0, vcenter=0.0, vmax=3.0),
+            interpolation="nearest",
+        )
+        axes_list[1].set_title(
+            "Difference / standard error", fontsize=10
+        )
+        axes_list[1].set_xticks([])
+        axes_list[1].set_yticks([])
+        ratio_bar = figure.colorbar(
+            ratio_image, ax=axes_list[1], orientation="vertical",
+            fraction=0.04, pad=0.02,
+        )
+        ratio_bar.set_label("standard errors", fontsize=9)
+        ratio_bar.ax.tick_params(labelsize=8)
+
+    figure.suptitle(title or difference_key.replace("_", " "), fontsize=12)
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(
+            params,
+            ["lst_not_air_temp", "valid_obs_required", "sensitivity_reporting"],
+        )
+        + "\n- A decadal difference is NOT the warming rate: it conflates trend "
+        "with interannual variability and with changing observation\n  counts. "
+        "Sen's slope is the warming number; this map shows WHERE it is "
+        "concentrated.\n- The windows are 11 / 10 / 5 years - UNEQUAL, because "
+        "the study period ends in 2025. Any difference involving 2021-2025 "
+        "rests on\n  about half the sample of the others, which is what the "
+        "right-hand panel exists to show. Roughly |ratio| < 2 is not "
+        "distinguishable\n  from noise.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_decadal_difference(
+    arrays: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    difference_key: str,
+    se_key: str | None = None,
+    max_degc: float = 2.0,
+    title: str | None = None,
+) -> Path:
+    """Write the decadal difference map. See :func:`build_decadal_difference_figure`."""
+    return _save_figure(
+        build_decadal_difference_figure(
+            arrays,
+            params,
+            difference_key=difference_key,
+            se_key=se_key,
+            max_degc=max_degc,
+            title=title,
+        ),
+        out_path,
+    )
