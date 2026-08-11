@@ -1500,3 +1500,45 @@ def test_sensor_annual_means_takes_params_first() -> None:
     parameters = list(inspect.signature(trends.sensor_annual_means).parameters)
     assert parameters[0] == "params"
     assert "collection" not in parameters
+
+
+def test_source_years_honour_a_sensor_restricted_floor(params: dict[str, Any]) -> None:
+    # THE bug from Colab run 17: a 2013 source built 2000-2025, wasting seven
+    # round trips on years that cannot contain data and then warning that 54%
+    # of every division's series was "missing".
+    source = {"key": "landsat_oli_dry", "start_year": 2013}
+    first, last = trends.resolve_source_years(source, params)
+    assert first == 2013
+    assert last == params["time"]["end_year"]
+
+
+def test_source_years_fall_back_to_the_project_range(params: dict[str, Any]) -> None:
+    first, last = trends.resolve_source_years({"key": "landsat_dry"}, params)
+    assert first == params["time"]["start_year"]
+    assert last == params["time"]["end_year"]
+
+
+def test_source_years_let_an_explicit_argument_win(params: dict[str, Any]) -> None:
+    # Batching passes an explicit window, and that must override the floor.
+    source = {"key": "landsat_oli_dry", "start_year": 2013}
+    assert trends.resolve_source_years(source, params, start_year=2018)[0] == 2018
+
+
+def test_source_years_reject_an_inverted_range(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="must be >= start_year"):
+        trends.resolve_source_years({"key": "x"}, params, start_year=2020, end_year=2010)
+
+
+def test_configured_oli_source_starts_when_landsat8_does(
+    params: dict[str, Any],
+) -> None:
+    # Landsat 8 opens 2013-03; a source restricted to OLI cannot start earlier.
+    source = next(
+        s for s in params["uhi"]["suhii"]["sources"] if s["key"] == "landsat_oli_dry"
+    )
+    assert source["start_year"] == 2013
+    assert set(source["sensors"]) == {"landsat8", "landsat9"}
+    # L8-L9 measured negligible (-0.40 degC, t=-0.67), so they pool; L5 and L7
+    # measured MATERIAL against L8 and must never join this source.
+    assert "landsat5" not in source["sensors"]
+    assert "landsat7" not in source["sensors"]

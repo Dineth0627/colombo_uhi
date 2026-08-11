@@ -1214,9 +1214,10 @@ trends:
 
   # --- visualisation -----------------------------------------------------------
   slope_vis:                          # [MEASURED — Colab run 14] MUST be diverging and zero-centred:
-    min: -0.25                        # on a sequential ramp a reader cannot tell warming from
-    max: 0.25                         # cooling. Widened from +/-0.15 after run 14 measured 5.66% of
-                                      # landsat_dry pixels outside it (p1 -0.205, p99 +0.237); a
+    min: -0.50                        # on a sequential ramp a reader cannot tell warming from
+    max: 0.50                         # cooling. Widened again after run 17: the single-sensor
+                                      # landsat_oli_dry slopes run far more negative (p1 -0.472,
+                                      # p50 -0.176, p99 +0.133) and 13.28% saturated at +/-0.25. A
                                       # saturated map understates the extremes it exists to show.
                                       # +/-0.25 degC/yr is +/-6.5 degC over 26 years. Re-check the
                                       # printed percentiles whenever the source or scale changes.

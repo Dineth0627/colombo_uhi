@@ -10,7 +10,7 @@ _Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run 
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
-| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **ran end to end. Cross-sensor check FAILED → switched to single-sensor `landsat_oli_dry` (L8+L9, 2013–2025); rerun pending** |
+| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **pipeline complete + verified. Deliverable is the class CONTRAST (stable across 2 configs) + MODIS Terra night. Landsat absolute magnitude NOT reportable — Step 6b tests why** |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
@@ -142,6 +142,74 @@ already skips bands whose min/max come back `None`.
 Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
 approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
 **exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
+
+### Run 17 (2026-08-11) — the single-sensor fix works, and exposes a SECOND artefact
+
+Clean run on `landsat_oli_dry` (L8+L9, 2013–2025). Sensor offsets re-confirmed
+identically. **The fix removed the step and revealed a different problem.**
+
+#### The headline: absolute magnitudes are not reportable, contrasts are
+
+| | pooled 26-yr | OLI 13-yr |
+|---|---|---|
+| median Sen's slope | **+0.028 °C/yr** | **−0.176 °C/yr** |
+| slope p1 / p99 | −0.205 / +0.237 | −0.472 / +0.133 |
+| FDR-significant | 0 | **0** |
+| n_tested | 66,787 | 62,887 |
+
+−0.176 °C/yr is **−2.3 °C over 13 years** — no more credible as cooling than the
+pooled series was as "no trend". **The absolute level swings by 0.204 °C/yr
+between two defensible configurations of the same data.**
+
+**But the class CONTRASTS are stable across both:**
+
+| contrast | pooled | OLI | Δ |
+|---|---|---|---|
+| Built-up − Tree cover | +0.0339 | +0.0559 | +0.022 |
+| LCZ 6 open low-rise − LCZ A dense trees | +0.0929 | +0.1081 | +0.015 |
+| LCZ 9 sparsely built − LCZ A dense trees | +0.0586 | +0.0768 | +0.018 |
+
+**Identical ranking in both**, agreement to ~0.02 °C/yr while the level moves ten
+times that. That is the signature of a **common-mode bias** — it shifts every
+class equally, cancels in a difference, survives in a level. Two independent
+configurations now confirm it empirically.
+
+> **The Phase 4 deliverable is the CONTRAST, not the magnitude.** "Built-up warms
+> ~0.06 °C/yr faster than tree cover, and open low-rise ~0.11 °C/yr faster than
+> dense trees" is supported. Any absolute Landsat °C/yr figure is not.
+
+Per-GN on the clean series: **0 of 557** FDR-significant (was 8). Fort is still
+the top warmer at +0.474 °C/yr but with n=12, p=0.034, p_adj=0.298 — it no longer
+survives correction. The earlier "Fort +0.365 °C/yr, p_adj=1.1e-4" is **withdrawn**.
+
+MODIS Terra night is unchanged and remains the only robust *magnitude*:
+**17.6% BH / 0.33% BY** of tested area significantly warming.
+
+#### Leading hypothesis for the −0.176 °C/yr: growing observation counts
+
+Landsat 9 launched late 2021, roughly doubling dry-season scene availability from
+2022. An annual composite is a **median over whatever clear-sky days existed**:
+with few scenes the median is pinned to a handful of clear (and in a tropical dry
+season, HOT) days; with more scenes it regresses toward a cooler, more
+representative value. **A growing constellation can manufacture apparent cooling
+with no change in climate.**
+
+**Notebook Step 6b now tests this directly** — per-year CMC mean LST against
+per-year mean `obs_count`, with an explicit verdict. If the correlation is strongly
+negative while obs_count rises, the magnitude is unreportable at any window.
+
+#### Bugs found and fixed this run
+
+* **`zonal_annual_series` ignored the source's `start_year`.** It computed
+  2000–2025 for a 2013 source, spending seven round trips on years that cannot
+  contain data and then warning that 54% of every division's series was
+  "missing". Now routed through a new pure `trends.resolve_source_years`.
+* **`trend_image` centred the x axis on `time.start_year`,** so `sen_offset` for
+  the OLI product was the fitted LST in 2000 — thirteen years outside the data.
+  Same fix.
+* `trends.slope_vis` widened to **±0.50** (13.28% saturated at ±0.25).
+
+**Tests: 580 passing, 5 skipped.**
 
 ### Run 16 (2026-08-11) — C2 INTER-CALIBRATION FAILS OVER COLOMBO
 

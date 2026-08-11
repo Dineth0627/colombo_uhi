@@ -358,6 +358,56 @@ def resolve_decades(
     return windows
 
 
+def resolve_source_years(
+    source: Mapping[str, Any],
+    params: dict[str, Any],
+    start_year: int | None = None,
+    end_year: int | None = None,
+) -> tuple[int, int]:
+    """First and last year to build for one source, honouring its own floor.
+
+    A sensor-restricted source has a first usable year of its own - Landsat 8
+    does not exist before 2013-03, so ``landsat_oli_dry`` starts in 2013. Every
+    consumer must agree on that, or the series gets padded with empty years:
+    Colab run 17 built 2000-2025 for a 2013 source and spent seven round trips
+    on fourteen years that could not contain data, then warned about them.
+
+    Args:
+        source: A resolved source mapping.
+        params: Parsed params mapping.
+        start_year: Explicit override, which wins over the source's floor.
+        end_year: Explicit override.
+
+    Returns:
+        ``(first_year, last_year)``.
+
+    Raises:
+        ValueError: If the resulting range is inverted.
+    """
+    source_start = source.get("start_year")
+    if start_year is not None:
+        first = int(start_year)
+    elif source_start is not None:
+        first = int(source_start)
+    else:
+        first = int(params["time"]["start_year"])
+
+    source_end = source.get("end_year")
+    if end_year is not None:
+        last = int(end_year)
+    elif source_end is not None:
+        last = int(source_end)
+    else:
+        last = int(params["time"]["end_year"])
+
+    if last < first:
+        raise ValueError(
+            f"end_year ({last}) must be >= start_year ({first}) for source "
+            f"{source.get('key', source)!r}"
+        )
+    return first, last
+
+
 def decadal_band_order(
     params: dict[str, Any],
     decades: Mapping[str, Sequence[int]] | None = None,
@@ -1241,13 +1291,9 @@ def annual_series(
         else uhi_metrics.source_collection(resolved, params, region=region)
     )
 
-    # A sensor-restricted source has its own first usable year - Landsat 8 does
-    # not exist before 2013-03 - and padding the series with empty years before
-    # it would put `obs_count == 0` rows on the axis that the trend then has to
-    # mask out. Honour the source's own floor unless the caller overrides it.
-    source_start = resolved.get("start_year")
-    if start_year is None and source_start is not None:
-        start_year = int(source_start)
+    start_year, end_year = resolve_source_years(
+        resolved, params, start_year=start_year, end_year=end_year
+    )
 
     return composites.annual_composites(
         scenes,
@@ -1741,6 +1787,8 @@ def trend_image(
             composite graphs, and is not implemented as a production path - use
             ``tau_derived``, which is exact with no ties.
     """
+    from colombo_uhi import uhi_metrics
+
     routing = resolve_mk_method(method, params)
     if routing == "pairwise":
         raise NotImplementedError(
@@ -1753,7 +1801,15 @@ def trend_image(
         )
 
     floor_years = resolve_min_years(min_years, params)
-    first = int(params["time"]["start_year"] if start_year is None else start_year)
+    # The x origin must be the series' OWN first year, not the project's. With a
+    # 2013 source and a 2000 origin, sen_offset becomes the fitted LST in 2000 -
+    # thirteen years outside the data it was fitted to.
+    first, _ = resolve_source_years(
+        uhi_metrics.resolve_source(source, params),
+        params,
+        start_year=start_year,
+        end_year=end_year,
+    )
 
     series = annual_series(
         source,
@@ -2565,7 +2621,7 @@ def zonal_annual_series(
     import ee  # Deferred: see module docstring.
     import pandas as pd  # Deferred: see module docstring.
 
-    from colombo_uhi import aoi
+    from colombo_uhi import aoi, uhi_metrics
 
     # Validation before the deferred work, so it stays cheap to get wrong.
     if level not in ("gn", "ds"):
@@ -2579,8 +2635,16 @@ def zonal_annual_series(
     comp = params["composites"]
     target = band or params["landsat_c2l2"]["lst_band_name"]
     scale = int(params["trends"]["fit_scale_m"] if scale_m is None else scale_m)
-    first = int(params["time"]["start_year"] if start_year is None else start_year)
-    last = int(params["time"]["end_year"] if end_year is None else end_year)
+    # Honour the source's own first year. Passing the project-wide range here
+    # overrides it, which is how Colab run 17 spent seven round trips building
+    # 2000-2012 for a source that starts in 2013 and then warned that 54% of
+    # every division's series was missing.
+    first, last = resolve_source_years(
+        uhi_metrics.resolve_source(source, params),
+        params,
+        start_year=start_year,
+        end_year=end_year,
+    )
 
     divisions = (
         aoi.gn_divisions(params) if level == "gn" else aoi.ds_divisions(params)
