@@ -1542,3 +1542,84 @@ def test_configured_oli_source_starts_when_landsat8_does(
     # measured MATERIAL against L8 and must never join this source.
     assert "landsat5" not in source["sensors"]
     assert "landsat7" not in source["sensors"]
+
+
+# --- observation-count sampling artefact -------------------------------------
+def _obs_frame(years, lst, obs):
+    import pandas as pd
+
+    return pd.DataFrame({
+        "year": years, "lst_mean": lst, "obs_count_mean": obs,
+        "valid_pixels": [4000] * len(years),
+    })
+
+
+def test_obs_verdict_flags_a_rising_count_with_falling_lst(
+    params: dict[str, Any],
+) -> None:
+    # THE hypothesis: Landsat 9 roughly doubled dry-season scenes from 2022, and
+    # a median over more clear-sky days regresses off the hot tail. That
+    # manufactures cooling with no change in climate.
+    years = list(range(2013, 2026))
+    obs = [3, 3, 4, 4, 4, 5, 5, 5, 6, 6, 11, 12, 12]
+    lst = [30.5 - 0.18 * i for i in range(13)]
+    verdict = trends.obs_count_verdict(_obs_frame(years, lst, obs), params)
+
+    assert verdict["verdict"] == "sampling_artefact_likely"
+    assert verdict["obs_slope"] > 0
+    assert verdict["lst_slope"] < 0
+    assert verdict["correlation"] < -0.5
+
+
+def test_obs_verdict_acquits_a_constant_count(params: dict[str, Any]) -> None:
+    # A count that never varies cannot explain anything - that is a clean
+    # acquittal, not the ambiguous middle case, and the correlation is NaN.
+    years = list(range(2013, 2026))
+    lst = [30.5 - 0.18 * i for i in range(13)]
+    verdict = trends.obs_count_verdict(_obs_frame(years, lst, [5] * 13), params)
+    assert verdict["verdict"] == "not_explained_by_sampling"
+    assert np.isnan(verdict["correlation"])
+
+
+def test_obs_verdict_acquits_an_uncorrelated_count(params: dict[str, Any]) -> None:
+    rng = np.random.default_rng(11)
+    years = list(range(2013, 2026))
+    lst = [30.5 - 0.18 * i for i in range(13)]
+    obs = list(rng.integers(3, 12, size=13).astype(float))
+    verdict = trends.obs_count_verdict(_obs_frame(years, lst, obs), params)
+    assert verdict["verdict"] in {"not_explained_by_sampling", "partial_association"}
+
+
+def test_obs_verdict_needs_three_years(params: dict[str, Any]) -> None:
+    verdict = trends.obs_count_verdict(
+        _obs_frame([2013, 2014], [30.0, 29.9], [4, 5]), params
+    )
+    assert verdict["verdict"] == "insufficient_data"
+
+
+def test_obs_check_frame_shapes_the_reduction(params: dict[str, Any]) -> None:
+    band = params["landsat_c2l2"]["lst_band_name"]
+    obs = params["composites"]["obs_count_band"]
+    year = params["composites"]["year_property"]
+    rows = [
+        {year: 2014, f"{band}_mean": 30.1, f"{obs}_mean": 4.0, f"{band}_count": 4000},
+        {year: 2013, f"{band}_mean": 30.6, f"{obs}_mean": 3.0, f"{band}_count": 3900},
+    ]
+    frame = trends.build_obs_check_frame(rows, params)
+    assert list(frame.columns) == list(trends.OBS_CHECK_COLUMNS)
+    # Ascending by year, whatever order Earth Engine returned them in.
+    assert list(frame["year"]) == [2013, 2014]
+    assert frame["obs_count_mean"].iloc[0] == 3.0
+
+
+def test_obs_check_frame_of_no_rows_is_shaped(params: dict[str, Any]) -> None:
+    frame = trends.build_obs_check_frame([], params)
+    assert frame.empty
+    assert list(frame.columns) == list(trends.OBS_CHECK_COLUMNS)
+
+
+def test_obs_count_series_takes_a_source_key() -> None:
+    import inspect
+
+    parameters = list(inspect.signature(trends.obs_count_series).parameters)
+    assert parameters[0] == "source"

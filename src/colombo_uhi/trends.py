@@ -3191,3 +3191,244 @@ def sensor_annual_means(
         columns={composites.VALID_PIXELS_COLUMN: "valid_pixels"}
     )
     return combined[list(SENSOR_SERIES_COLUMNS)]
+
+
+# =============================================================================
+# Observation-count diagnostic (shaping half is pure; unit-tested)
+# =============================================================================
+#: Column order of the observation-count diagnostic table.
+OBS_CHECK_COLUMNS: tuple[str, ...] = (
+    "year",
+    "lst_mean",
+    "obs_count_mean",
+    "valid_pixels",
+)
+
+
+def build_obs_check_frame(
+    rows: Sequence[Mapping[str, Any]],
+    params: dict[str, Any],
+    band: str | None = None,
+) -> "pd.DataFrame":
+    """Shape the per-year LST / obs_count reduction into a tidy table.
+
+    Args:
+        rows: Feature property mappings, one per year.
+        params: Parsed params mapping.
+        band: LST band name; defaults to ``landsat_c2l2.lst_band_name``.
+
+    Returns:
+        ``pd.DataFrame`` with columns :data:`OBS_CHECK_COLUMNS`, ascending by
+        year; empty but correctly shaped when no rows are given.
+    """
+    import pandas as pd  # Deferred: see module docstring.
+
+    comp = params["composites"]
+    target = band or params["landsat_c2l2"]["lst_band_name"]
+    year_key = comp["year_property"]
+    obs_band = comp["obs_count_band"]
+
+    if not rows:
+        return pd.DataFrame(columns=list(OBS_CHECK_COLUMNS))
+
+    shaped = [
+        {
+            "year": row.get(year_key),
+            "lst_mean": row.get(f"{target}_mean", row.get("mean")),
+            "obs_count_mean": row.get(f"{obs_band}_mean"),
+            "valid_pixels": row.get(f"{target}_count", row.get("count")),
+        }
+        for row in rows
+    ]
+    frame = pd.DataFrame(shaped)[list(OBS_CHECK_COLUMNS)]
+    return frame.sort_values("year").reset_index(drop=True)
+
+
+def obs_count_series(
+    source: str | Mapping[str, Any],
+    params: dict[str, Any],
+    region: "ee.Geometry",
+    band: str | None = None,
+    scale_m: int | None = None,
+    batch_years: int | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    water: "ee.Image | None" = None,
+    progress: bool = False,
+) -> "pd.DataFrame":
+    """Per-year regional mean LST alongside the mean per-pixel observation count.
+
+    The diagnostic for a sampling artefact. An annual composite is a MEDIAN over
+    whatever clear-sky days a year happened to provide. In a tropical dry season
+    the clear days are the hot ones, so a year with few scenes has its median
+    pinned to the hot tail, while a year with many scenes regresses toward a
+    cooler, more representative value.
+
+    **A growing constellation can therefore manufacture apparent cooling with no
+    change in climate.** Landsat 9 launched in late 2021 and roughly doubled
+    dry-season scene availability from 2022, which is exactly the period over
+    which the single-sensor ``landsat_oli_dry`` product trends downward.
+
+    If ``lst_mean`` falls as ``obs_count_mean`` rises, the trend MAGNITUDE is not
+    reportable at any window, and the deliverable falls back to class contrasts,
+    which cancel a common-mode effect.
+
+    .. note::
+        ``obs_count`` is PRODUCED by compositing - it does not exist on the
+        scenes - so this cannot be obtained by asking
+        :func:`colombo_uhi.composites.zonal_annual_means_by_year` for a different
+        band. Both means are read off the composite in one reduction here.
+
+    Args:
+        source: Key into ``uhi.suhii.sources``.
+        params: Parsed params mapping.
+        region: Region to average over. Use a compact one.
+        band: LST band; defaults to ``landsat_c2l2.lst_band_name``.
+        scale_m: Reduction scale; defaults to ``trends.fit_scale_m``.
+        batch_years: Years per request; defaults to ``trends.batch_years``.
+        start_year: Defaults to the source's own first year.
+        end_year: Defaults to the source's own last year.
+        water: Optional water mask to exclude.
+        progress: Print a line per batch.
+
+    Returns:
+        ``pd.DataFrame`` with columns :data:`OBS_CHECK_COLUMNS`.
+
+    Raises:
+        ValueError: If ``batch_years`` is less than 1.
+    """
+    import ee  # Deferred: see module docstring.
+
+    from colombo_uhi import uhi_metrics
+
+    batch = int(params["trends"]["batch_years"] if batch_years is None else batch_years)
+    if batch < 1:
+        raise ValueError(f"batch_years must be >= 1, got {batch}")
+
+    comp = params["composites"]
+    target = band or params["landsat_c2l2"]["lst_band_name"]
+    obs_band = comp["obs_count_band"]
+    scale = int(params["trends"]["fit_scale_m"] if scale_m is None else scale_m)
+
+    resolved = uhi_metrics.resolve_source(source, params)
+    first, last = resolve_source_years(
+        resolved, params, start_year=start_year, end_year=end_year
+    )
+    scenes = uhi_metrics.source_collection(resolved, params, region=region)
+
+    def per_year(image: "ee.Image") -> "ee.Feature":
+        selected = image.select([target, obs_band])
+        if water is not None:
+            selected = selected.updateMask(water.Not())
+        stats = selected.reduceRegion(
+            reducer=ee.Reducer.mean().combine(ee.Reducer.count(), sharedInputs=True),
+            geometry=region,
+            scale=scale,
+            maxPixels=comp["reduce_max_pixels"],
+            tileScale=comp["tile_scale"],
+        )
+        return ee.Feature(None, stats).set(
+            comp["year_property"], image.get(comp["year_property"])
+        )
+
+    rows: list[dict[str, Any]] = []
+    for low in range(first, last + 1, batch):
+        high = min(low + batch - 1, last)
+        series = annual_series(
+            resolved, params, region=region, collection=scenes,
+            start_year=low, end_year=high,
+        )
+        features = ee.FeatureCollection(series.map(per_year)).getInfo()["features"]
+        rows.extend(feature["properties"] for feature in features)
+        if progress:
+            print(f"  years {low}-{high} done")
+
+    frame = build_obs_check_frame(rows, params, band=target)
+    if not frame.empty:
+        from colombo_uhi import composites
+
+        composites.warn_if_counts_are_empty(
+            frame["valid_pixels"].fillna(0), "obs_count diagnostic"
+        )
+    return frame
+
+
+def obs_count_verdict(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    strong_correlation: float = 0.5,
+) -> dict[str, Any]:
+    """Decide whether an apparent trend tracks the observation count.
+
+    Args:
+        frame: Output of :func:`obs_count_series`.
+        params: Parsed params mapping.
+        strong_correlation: |r| at or above this counts as a strong association.
+
+    Returns:
+        Mapping with ``n_years``, ``lst_slope``, ``obs_slope``, ``correlation``,
+        ``verdict`` and a human-readable ``explanation``.
+    """
+    import numpy as np  # Deferred: see module docstring.
+
+    usable = frame.dropna(subset=["lst_mean", "obs_count_mean"])
+    if len(usable) < 3:
+        return {
+            "n_years": int(len(usable)),
+            "lst_slope": float("nan"),
+            "obs_slope": float("nan"),
+            "correlation": float("nan"),
+            "verdict": "insufficient_data",
+            "explanation": "fewer than three years with both values",
+        }
+
+    years = usable["year"].to_numpy(dtype="float64")
+    lst = usable["lst_mean"].to_numpy(dtype="float64")
+    obs = usable["obs_count_mean"].to_numpy(dtype="float64")
+
+    lst_slope, _ = sens_slope_array(years, lst)
+    obs_slope, _ = sens_slope_array(years, obs)
+    correlation = (
+        float(np.corrcoef(obs, lst)[0, 1]) if np.std(obs) > 0 else float("nan")
+    )
+
+    if not np.isfinite(correlation):
+        # obs_count never varies, so it cannot explain anything. That is a clean
+        # acquittal, not the ambiguous middle case.
+        verdict = "not_explained_by_sampling"
+        explanation = (
+            "the observation count does not vary across the series, so it "
+            "cannot explain any trend in LST."
+        )
+    elif correlation <= -strong_correlation and obs_slope > 0:
+        verdict = "sampling_artefact_likely"
+        explanation = (
+            "observation counts are RISING and LST falls with them. The apparent "
+            "cooling is consistent with a median regressing off the hot tail as "
+            "more clear-sky days become available. Do NOT report the trend "
+            "magnitude; fall back to class contrasts, which cancel a "
+            "common-mode effect."
+        )
+    elif abs(correlation) < 0.3:
+        verdict = "not_explained_by_sampling"
+        explanation = (
+            "LST and observation count are essentially uncorrelated, so the "
+            "sampling hypothesis does not explain the trend. The cause is "
+            "elsewhere - investigate before reporting any magnitude."
+        )
+    else:
+        verdict = "partial_association"
+        explanation = (
+            "LST and observation count are partly associated. Treat the "
+            "magnitude as unreliable, report contrasts, and state the "
+            "correlation explicitly."
+        )
+
+    return {
+        "n_years": int(len(usable)),
+        "lst_slope": lst_slope,
+        "obs_slope": obs_slope,
+        "correlation": correlation,
+        "verdict": verdict,
+        "explanation": explanation,
+    }

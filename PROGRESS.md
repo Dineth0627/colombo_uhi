@@ -195,8 +195,19 @@ representative value. **A growing constellation can manufacture apparent cooling
 with no change in climate.**
 
 **Notebook Step 6b now tests this directly** — per-year CMC mean LST against
-per-year mean `obs_count`, with an explicit verdict. If the correlation is strongly
-negative while obs_count rises, the magnitude is unreportable at any window.
+per-year mean `obs_count`, with an explicit verdict from
+`trends.obs_count_verdict`. If the correlation is strongly negative while
+obs_count rises, the magnitude is unreportable at any window.
+
+> **Bug in the first Step 6b, fixed:** it asked
+> `composites.zonal_annual_means_by_year(band="obs_count")`. That `band` argument
+> selects from the **scene** collection, and scenes carry only `LST_C` —
+> `obs_count` is *produced by* compositing and does not exist as an input, so
+> Earth Engine failed with *"Band pattern 'obs_count' did not match any bands"*.
+> Replaced by `trends.obs_count_series`, which reads both means off the
+> **composite** in one reduction, batched by year. The distinction is worth
+> remembering: anything `annual_composites` *creates* (`obs_count`, the
+> percentile band) can only be read after compositing.
 
 #### Bugs found and fixed this run
 
