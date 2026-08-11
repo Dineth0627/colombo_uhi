@@ -173,7 +173,7 @@ New `trends.mk_detection_threshold` and `trends.minimum_detectable_slope`:
 
 | series | n | sd | smallest detectable trend |
 |---|---|---|---|
-| `landsat_oli_dry`, CMC | 12 | 1.22 °C | **0.333 °C/yr** (3.66 °C over the record) |
+| `landsat_oli_dry`, CMC | 12 | 1.22 °C | **0.342 °C/yr** (3.76 °C over the record) — *measured in Colab, run 19* |
 | hypothetically, 26 years | 26 | 1.22 °C | 0.102 °C/yr |
 | MODIS-like (26 yr, lower noise) | 26 | 0.50 °C | 0.042 °C/yr |
 
@@ -182,7 +182,7 @@ only resolve trends **an order of magnitude larger**. MK at n=12 needs
 |S| > 30 of a maximum 66, i.e. |tau| > 0.448; we observed 24 / 0.364.
 
 > **The correct statement is NOT "Colombo shows no warming".** It is: *a 12-year
-> dry-season Landsat series over Colombo cannot resolve trends below ~0.33 °C/yr,
+> dry-season Landsat series over Colombo cannot resolve trends below ~0.34 °C/yr,
 > an order of magnitude above the expected signal.* The zero FDR-significant
 > pixels is the honest consequence of that, not a measurement of the climate.
 

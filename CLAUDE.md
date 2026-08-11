@@ -118,6 +118,16 @@ a clear, actionable message if it is missing.
 - Standard mask: bits 0–4 all zero, AND `QA_RADSAT == 0`
 - C2 is inter-calibrated across TM/ETM+/OLI — **no manual harmonisation coefficients needed.**
   Still verify empirically on overlapping years.
+  **VERIFIED 2026-08-11 OVER COLOMBO, AND IT FAILED.** Dry-season CMC means at 100 m:
+  L5−L7 = **+1.78 °C** (t=+2.7, 8 overlap yrs), L7−L8 = **−2.48 °C** (t=−3.6, 10 yrs),
+  L8−L9 = −0.40 °C (t=−0.7, negligible). The first two are **2.4× and 3.4× the entire
+  26-year trend signal**, and the L7→L8 step alone predicts the observed +1.70 °C
+  decadal jump to within 0.3 °C. **Never fit a multi-year trend across a Landsat
+  changeover here.** Fit within one sensor family — `uhi.suhii.sources.landsat_oli_dry`
+  (L8+L9, 2014–2025) — and re-run notebook 04 Step 6 before pooling sensors for any
+  new product. SUHII is unaffected: it is a within-year urban-minus-rural difference,
+  so a common-mode step cancels. Coefficients are deliberately NOT estimated: 8–10
+  noisy overlap years would inject a new error rather than remove one.
 
 ## MODIS constants
 - MOD/MYD11A2 LST scale factor **0.02** → Kelvin
