@@ -1529,14 +1529,17 @@ def test_source_years_reject_an_inverted_range(params: dict[str, Any]) -> None:
         trends.resolve_source_years({"key": "x"}, params, start_year=2020, end_year=2010)
 
 
-def test_configured_oli_source_starts_when_landsat8_does(
+def test_configured_oli_source_starts_at_its_first_usable_dry_season(
     params: dict[str, Any],
 ) -> None:
-    # Landsat 8 opens 2013-03; a source restricted to OLI cannot start earlier.
+    # Landsat 8 opens 2013-03 and the dry window is Jan-Mar, so 2013 has
+    # essentially no L8 dry-season coverage - run 18 measured obs_count = 0 for
+    # it. Starting at 2013 puts an empty year on the axis; the first USABLE
+    # dry season is 2014.
     source = next(
         s for s in params["uhi"]["suhii"]["sources"] if s["key"] == "landsat_oli_dry"
     )
-    assert source["start_year"] == 2013
+    assert source["start_year"] == 2014
     assert set(source["sensors"]) == {"landsat8", "landsat9"}
     # L8-L9 measured negligible (-0.40 degC, t=-0.67), so they pool; L5 and L7
     # measured MATERIAL against L8 and must never join this source.
@@ -1623,3 +1626,58 @@ def test_obs_count_series_takes_a_source_key() -> None:
 
     parameters = list(inspect.signature(trends.obs_count_series).parameters)
     assert parameters[0] == "source"
+
+
+# --- detection limit ---------------------------------------------------------
+def test_mk_threshold_matches_the_closed_form(params: dict[str, Any]) -> None:
+    del params
+    from scipy import stats
+
+    for n in (8, 12, 26, 40):
+        variance = n * (n - 1) * (2 * n + 5) / 18.0
+        expected = float(stats.norm.ppf(0.975)) * np.sqrt(variance) + 1.0
+        assert trends.mk_detection_threshold(n)["s_threshold"] == pytest.approx(expected)
+
+
+def test_mk_threshold_for_twelve_years_needs_most_of_the_pairs() -> None:
+    # The measured case: 12 years needs |S| > ~30 of a maximum 66, i.e. tau
+    # beyond 0.45. That is a demanding bar, and it is why a short series can
+    # miss a real trend.
+    result = trends.mk_detection_threshold(12)
+    assert result["max_s"] == 66
+    assert result["s_threshold"] == pytest.approx(29.58, abs=0.05)
+    assert result["tau_threshold"] == pytest.approx(0.448, abs=0.005)
+
+
+def test_mk_threshold_rejects_too_few_years() -> None:
+    with pytest.raises(ValueError, match="n_years must be >= 3"):
+        trends.mk_detection_threshold(2)
+
+
+def test_detectable_slope_improves_with_more_years() -> None:
+    # The whole argument for preferring a longer single-sensor record.
+    short = trends.minimum_detectable_slope(12, 1.22, trials=120, seed=3)
+    long = trends.minimum_detectable_slope(26, 1.22, trials=120, seed=3)
+    assert long["slope_per_year"] < short["slope_per_year"]
+
+
+def test_detectable_slope_worsens_with_more_noise() -> None:
+    quiet = trends.minimum_detectable_slope(20, 0.5, trials=120, seed=4)
+    noisy = trends.minimum_detectable_slope(20, 2.0, trials=120, seed=4)
+    assert noisy["slope_per_year"] > quiet["slope_per_year"]
+
+
+def test_detectable_slope_bounds_the_measured_landsat_case() -> None:
+    # MEASURED, run 18: the 12-year OLI CMC series has interannual sd 1.22 degC,
+    # so it can only detect trends far larger than the ~0.03 degC/yr climate
+    # signal. This is what turns "no significant trend" into a BOUND.
+    result = trends.minimum_detectable_slope(12, 1.22, trials=200, seed=1)
+    assert result["slope_per_year"] > 0.2
+    assert result["change_over_record"] > 2.0
+
+
+def test_detectable_slope_rejects_degenerate_input() -> None:
+    with pytest.raises(ValueError, match="noise_sd must be > 0"):
+        trends.minimum_detectable_slope(12, 0.0)
+    with pytest.raises(ValueError, match="power must be"):
+        trends.minimum_detectable_slope(12, 1.0, power=1.5)

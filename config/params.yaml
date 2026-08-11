@@ -807,14 +807,17 @@ uhi:
         reducer: "median"               #     L5 - L7 = +1.78 degC (t=+2.7, 8 overlap years)
         scale_m: 100                    #     L7 - L8 = -2.48 degC (t=-3.6, 10 overlap years)
         sensors: ["landsat8", "landsat9"]   # = 2.4x and 3.4x the ENTIRE 26-year trend signal
-        start_year: 2013                # (+0.73 degC). A Mann-Kendall fitted across those
+        start_year: 2014                # (+0.73 degC). A Mann-Kendall fitted across those
                                         # changeovers measures the STEP, not the climate - which is
                                         # exactly what the pooled product did: a +1.70/-1.23 degC
                                         # decadal zigzag and ZERO significant pixels.
                                         #
                                         # L8 - L9 = -0.40 degC (t=-0.67) is NEGLIGIBLE, so OLI/TIRS
-                                        # pools safely. Landsat 8 opens 2013-03, so the series is
-                                        # 2013-2025: 13 years. Less power than 26, but a defensible
+                                        # pools safely. Landsat 8 opens 2013-03 and the dry window
+                                        # is Jan-Mar, so 2013 has essentially NO L8 dry-season
+                                        # coverage - run 18 measured obs_count = 0 for 2013. The
+                                        # usable series is 2014-2025: 12 years. Less power than 26,
+                                        # but a defensible
                                         # trend instead of an artefact, and it keeps the 100 m
                                         # intra-urban detail that is the whole point of Landsat.
                                         #

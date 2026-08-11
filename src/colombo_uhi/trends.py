@@ -3432,3 +3432,137 @@ def obs_count_verdict(
         "verdict": verdict,
         "explanation": explanation,
     }
+
+
+# =============================================================================
+# Detection limit (pure; unit-tested)
+# =============================================================================
+def mk_detection_threshold(n_years: int, alpha: float = 0.05) -> dict[str, float]:
+    """The smallest |S| and |tau| Mann-Kendall can call significant.
+
+    Distribution-free and exact: it follows from Var(S) and the normal
+    approximation alone, with no assumption about the noise. Useful for saying
+    *how far* a non-significant result was from significance.
+
+    Args:
+        n_years: Number of observations.
+        alpha: Two-sided significance level.
+
+    Returns:
+        Mapping with ``n_years``, ``max_s`` (the largest S a perfectly monotonic
+        series could produce), ``s_threshold`` and ``tau_threshold``.
+
+    Raises:
+        ValueError: If ``n_years`` is below 3, or ``alpha`` is not in (0, 1).
+    """
+    import math as _math
+
+    from scipy import stats  # Deferred: see module docstring.
+
+    n = int(n_years)
+    if n < 3:
+        raise ValueError(f"n_years must be >= 3, got {n}")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be strictly between 0 and 1, got {alpha}")
+
+    variance = n * (n - 1) * (2 * n + 5) / 18.0
+    critical = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    # Z = (|S| - 1) / sqrt(Var), so |S| must exceed z*sqrt(Var) + 1.
+    s_threshold = critical * _math.sqrt(variance) + 1.0
+    max_s = n * (n - 1) / 2.0
+    return {
+        "n_years": float(n),
+        "max_s": max_s,
+        "s_threshold": s_threshold,
+        "tau_threshold": s_threshold / max_s,
+    }
+
+
+def minimum_detectable_slope(
+    n_years: int,
+    noise_sd: float,
+    alpha: float = 0.05,
+    power: float = 0.8,
+    trials: int = 400,
+    seed: int = 0,
+) -> dict[str, float]:
+    """Smallest linear trend this series length and noise level could detect.
+
+    Turns "no significant trend" into the far stronger "no trend larger than X
+    degC/yr is detectable here" - a bound rather than an absence. A short, noisy
+    series can fail to detect a real signal, and reporting the detection limit
+    is what distinguishes that from having shown there is no signal.
+
+    Estimated by Monte Carlo: plant a linear trend in Gaussian noise of the
+    observed interannual standard deviation, run Mann-Kendall, and find the
+    smallest slope detected in at least ``power`` of trials.
+
+    .. note::
+        Gaussian white noise is optimistic. Real annual LST is positively
+        autocorrelated, which further inflates Var(S), so the true detection
+        limit is **worse** than this. Quote it as a lower bound on the limit.
+
+    Args:
+        n_years: Number of observations.
+        noise_sd: Interannual standard deviation of the series, in degC.
+        alpha: Two-sided significance level.
+        power: Required detection rate.
+        trials: Monte Carlo trials per candidate slope.
+        seed: Reproducibility.
+
+    Returns:
+        Mapping with ``n_years``, ``noise_sd``, ``alpha``, ``power``,
+        ``slope_per_year`` and ``change_over_record``.
+
+    Raises:
+        ValueError: If ``n_years`` < 3, ``noise_sd`` <= 0, or ``power`` is not
+            in (0, 1).
+    """
+    import numpy as np  # Deferred: see module docstring.
+    from scipy import stats  # Deferred: see module docstring.
+
+    n = int(n_years)
+    if n < 3:
+        raise ValueError(f"n_years must be >= 3, got {n}")
+    if noise_sd <= 0:
+        raise ValueError(f"noise_sd must be > 0, got {noise_sd}")
+    if not 0.0 < power < 1.0:
+        raise ValueError(f"power must be strictly between 0 and 1, got {power}")
+
+    rng = np.random.default_rng(seed)
+    years = np.arange(n, dtype="float64")
+    threshold = mk_detection_threshold(n, alpha=alpha)["s_threshold"]
+
+    def detection_rate(slope: float) -> float:
+        noise = rng.normal(0.0, noise_sd, size=(trials, n))
+        series = slope * years + noise
+        # S as the pairwise sign sum, vectorised over trials.
+        detected = 0
+        for row in series:
+            difference = row[None, :] - row[:, None]
+            s = float(np.sign(difference[np.triu_indices(n, k=1)]).sum())
+            if abs(s) >= threshold:
+                detected += 1
+        return detected / trials
+
+    # Bisect on slope. The upper bracket is generous: a trend of 4 sd across the
+    # record is detected essentially always.
+    low, high = 0.0, 4.0 * noise_sd / max(n - 1, 1)
+    while detection_rate(high) < power and high < 100.0 * noise_sd:
+        high *= 2.0
+    for _ in range(24):
+        middle = (low + high) / 2.0
+        if detection_rate(middle) >= power:
+            high = middle
+        else:
+            low = middle
+
+    del stats  # Imported for symmetry with mk_detection_threshold.
+    return {
+        "n_years": float(n),
+        "noise_sd": float(noise_sd),
+        "alpha": float(alpha),
+        "power": float(power),
+        "slope_per_year": float(high),
+        "change_over_record": float(high * (n - 1)),
+    }

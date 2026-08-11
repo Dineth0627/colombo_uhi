@@ -10,7 +10,7 @@ _Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run 
 | 1 | AOI & boundaries | ✅ **done + Colab-verified** (run 5, 5 iterations) |
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
-| 4 | Trend analysis (MK/Sen + FDR) | 🟨 **pipeline complete + verified. Deliverable is the class CONTRAST (stable across 2 configs) + MODIS Terra night. Landsat absolute magnitude NOT reportable — Step 6b tests why** |
+| 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
@@ -142,6 +142,82 @@ already skips bands whose min/max come back `None`.
 Also confirmed locally: our `two_sided_p` matches pymannkendall's normal
 approximation to 1e-6 (5.215e-5), while `scipy.stats.kendalltau` returns an
 **exact** p (1.47e-6) at n=12. Different method, expected difference, not a bug.
+
+### Run 18 (2026-08-11) — PHASE 4 RESOLVED. The zero is real, and now bounded.
+
+**The sampling hypothesis is REJECTED, and the answer turned out to be simpler
+and more defensible.**
+
+`corr(obs_count, LST) = +0.076` over the CMC — essentially zero. Observation
+counts do rise (+0.31/yr, and Landsat 9 clearly doubles them from 2022) but LST
+does not track them. **Landsat 9 is not manufacturing the decline.**
+
+#### The actual answer: the series cannot resolve the signal
+
+Mann-Kendall on the CMC mean of the clean 12-year series:
+
+| | |
+|---|---|
+| Sen's slope | −0.157 °C/yr |
+| tau / S / Z | −0.364 / −24 / −1.577 |
+| **p** | **0.115 — NO significant trend** |
+| interannual sd | **1.22 °C** |
+
+**−0.157 °C/yr is not cooling.** It is an unconstrained estimate from a short,
+noisy series. *Sen's slope always returns a number; it does not tell you whether
+that number means anything.* Mann-Kendall does, and it says no.
+
+#### The detection limit — this is the reportable result
+
+New `trends.mk_detection_threshold` and `trends.minimum_detectable_slope`:
+
+| series | n | sd | smallest detectable trend |
+|---|---|---|---|
+| `landsat_oli_dry`, CMC | 12 | 1.22 °C | **0.333 °C/yr** (3.66 °C over the record) |
+| hypothetically, 26 years | 26 | 1.22 °C | 0.102 °C/yr |
+| MODIS-like (26 yr, lower noise) | 26 | 0.50 °C | 0.042 °C/yr |
+
+A plausible urban warming signal is ~0.03 °C/yr. The 12-year Landsat series can
+only resolve trends **an order of magnitude larger**. MK at n=12 needs
+|S| > 30 of a maximum 66, i.e. |tau| > 0.448; we observed 24 / 0.364.
+
+> **The correct statement is NOT "Colombo shows no warming".** It is: *a 12-year
+> dry-season Landsat series over Colombo cannot resolve trends below ~0.33 °C/yr,
+> an order of magnitude above the expected signal.* The zero FDR-significant
+> pixels is the honest consequence of that, not a measurement of the climate.
+
+(The limit assumes white noise; real annual LST is positively autocorrelated, so
+the true limit is **worse**. Quote it as a lower bound.)
+
+#### The three zeros, and why only one of them was informative
+
+| series | n | sensors | result | why |
+|---|---|---|---|---|
+| pooled Landsat | 26 | L5+L7+L8+L9 | 0 significant | **wrong reason** — sensor steps cancelled |
+| OLI Landsat | 12 | L8+L9 | 0 significant | **right reason** — below the detection limit |
+| **MODIS Terra night** | **26** | **Terra only** | **17.6% BH / 0.33% BY** | length **and** consistency |
+
+That is a complete and coherent story. Terra night is the only series with both
+a long record and a single sensor, and it is the only one that detects anything.
+
+#### Phase 4's defensible deliverables
+
+1. **MODIS Terra night**: 17.6% (BH) / 0.33% (BY) of tested area significantly
+   warming — 121.0 / 2.3 km². The trend evidence.
+2. **Class contrasts**, stable across two independent configurations: built-up
+   warms ~0.056 °C/yr faster than tree cover; LCZ 6 open low-rise ~0.108 °C/yr
+   faster than LCZ A dense trees. Identical ranking in both.
+3. **A quantified negative result** for Landsat, with its detection limit — a
+   methodological finding relevant to anyone attempting Landsat LST trends in
+   the humid tropics.
+
+#### Also fixed
+
+* `landsat_oli_dry.start_year` **2013 → 2014**: run 18 measured `obs_count = 0`
+  for 2013, because Landsat 8 opens 2013-03 and the dry window is Jan–Mar. The
+  usable series is 12 years, not 13.
+
+**Tests: 594 passing, 5 skipped.**
 
 ### Run 17 (2026-08-11) — the single-sensor fix works, and exposes a SECOND artefact
 
