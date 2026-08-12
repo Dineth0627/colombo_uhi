@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-12 (Phase 5 **Colab run 2 analysed**; S1/S3/S4/S5 closed, fixes applied, **awaiting run 3**)_
+_Last updated: 2026-08-12 (Phase 5 **Colab run 3 analysed**; notebook ran end to end, S1/S3/S4/S5/S6/S7/S9/S10 closed, **awaiting run 4** for MGWR + landscape)_
 
 ## Status snapshot
 
@@ -11,10 +11,118 @@ _Last updated: 2026-08-12 (Phase 5 **Colab run 2 analysed**; S1/S3/S4/S5 closed,
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
-| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **run 2 done: S1/S3/S4/S5 CLOSED**, LISA + Gi\* maps produced, DS Gi\* = 0 hot spots (the MAUP result). S6 vacuous (regression, fixed); Steps 11–13 not yet reached. 764 tests pass locally |
+| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **run 3 ran END TO END. 8 of 11 checks closed.** Spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Open: MGWR bandwidths (S8) and the landscape metrics (S11), both fixed and awaiting run 4. 768 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 3 (2026-08-12) — the notebook ran end to end. S6, S7, S10 closed
+
+**Every cell executed, Step 2 through Step 14, with no errors.** 59 artefacts
+bundled. The whole ladder ran for the first time.
+
+#### S6 — CLOSED, and the guard is what makes it meaningful
+
+```
+557 of 557 zones differ between the two series
+class agreement 93.7% | Gi* z correlation 0.999
+```
+
+Run 2's "100 %" was the two exports being identical; with the shared-collection
+regression reverted they genuinely differ in every zone, and the cluster
+geography still survives the sensor swap. **D2 is now empirically justified**:
+the pooled-series epoch maps may be used, provided no epoch-to-epoch magnitude
+is quoted from them.
+
+#### S7 — CLOSED, and it is the sharpest MAUP contrast in the phase
+
+| | GN (557) | DS (13) |
+|---|---|---|
+| OLS R² | 0.956 | 0.994 (adj 0.987) |
+| Residual Moran's I | **0.411**, z=15.6, **p=8.2e-55** | **−0.241**, p=0.38 |
+| LM decision | rule 3 → **spatial ERROR model** | rule 1 → **OLS stands** |
+| Fitted | `ML_Error`, λ = **0.711** (z=19.9), pseudo R² 0.954 | — |
+
+Spatial dependence is overwhelming at GN and **undetectable at DS**. The same
+data, the same predictors, and the modelling ladder terminates at a different
+rung purely because of the aggregation unit. Note also that DS's *higher* R²
+(0.994 on 13 observations against 6 predictors) is the overfitting the
+estimability gate exists to flag, not a better model.
+
+**VIF fired exactly as Phase 3 predicted**, and worsens with coarsening:
+
+| predictor | GN | DS |
+|---|---|---|
+| NDBI | 28.4 | **187.6** |
+| NDVI | 14.3 | **167.3** |
+| built_fraction | 9.8 | 28.1 |
+
+That is the concrete justification for ending the ladder at a local model rather
+than at a single global coefficient.
+
+#### GWR ran; MGWR was lost to one unimplemented property
+
+GWR at GN: **R² 0.982, AICc −390.3, bandwidth 76**, adjusted critical t 2.939
+(the multiple-testing correction applied, as required).
+
+MGWR **fitted** — the backfitting and inference passes both ran — and was then
+discarded by `NotImplementedError: Not yet implemented for multiple bandwidths`.
+The cause was ours, not `mgwr`'s: `getattr(results, "R2"/"aicc"/"localR2",
+default)` falls back only on `AttributeError`, so an unimplemented *diagnostic*
+propagated and took the **per-covariate bandwidths — the entire point of running
+MGWR — with it**. Fixed with `_safe_attr`; **S8 and S9 remain open**.
+
+#### S10 — CLOSED, and D5 changed the picture substantially
+
+Under the final-bin rule, "no pattern" grows and everything in it is
+underpowered:
+
+| series / level | `no_pattern` before D5 | after D5 | underpowered |
+|---|---|---|---|
+| `landsat_oli_dry` / GN | 117 | **283** | 283 of 283 |
+| `terra_night` / GN | 5 | **259** | 258 of 259 |
+| `terra_night` / DS | 6 | **9** | 9 of 9 |
+
+`sporadic_cold` at `terra_night`/GN fell from 329 to 142. The surviving
+structure is the real result: **83 persistent hot spots** and 2 intensifying at
+GN on the 26-bin MODIS series, against 54 persistent hot and 10 diminishing on
+the 12-bin Landsat series. Median detectable Gi\* trend is 0.185/bin for
+Landsat and 0.074/bin for MODIS — the short series can resolve less than half
+what the long one can, which is exactly why both are reported.
+
+#### The landscape metrics from this run are WRONG — do not quote them
+
+```
+dynamic_world 2016: 5,669 ha green (4.5%),  490 patches
+dynamic_world 2024: 30,423 ha green (24.3%), 2,816 patches
+worldcover   2021: 48,669 ha green (38.9%), 14,474 patches
+```
+
+A 5.4× increase in green space over eight years is not credible, and
+`landscape_area_ha` came back as **125,259 ha for a district of 69,900 ha**.
+Both symptoms have one cause: **a 0/1 GeoTIFF cannot distinguish "classified,
+not green" from "never classified" from "outside the district"** — all three are
+written as 0. So:
+
+* the analysed landscape was the export's **bounding box**, diluting every
+  fraction and density with sea and neighbouring districts;
+* Dynamic World begins 2015-06 and its early Sentinel-2 coverage is thin, so
+  unclassified 2016 pixels counted as *not green*. **Most of the apparent gain
+  is observations, not vegetation.**
+
+`green_class_image` now emits an `observed` band — 1 only where the classifier
+produced a value *and* the pixel is inside the district. Every metric is
+computed within it, every row carries `observed_fraction`, and the notebook
+**refuses to describe the Dynamic World difference as change** when the two
+dates were classified over materially different areas. A synthetic check
+confirms the behaviour: across coverages of 50 % and 100 % the green *fraction*
+holds at 29.3 % vs 29.5 % while the *area* doubles — which is the artefact,
+isolated.
+
+This is CLAUDE.md caveat 2 (always emit a valid-observation count) applied to
+land cover, and it had been missed there.
+
+**768 tests pass, 8 skip** (was 764).
 
 ### Colab run 2 (2026-08-12) — both run-1 fixes confirmed; S1 and S5 closed
 
@@ -420,11 +528,12 @@ Written, then tested against all 13 categories, which is how these surfaced:
 | S3 | How many GN divisions are **islands** under queen contiguity? | ✅ **ZERO**, at both levels, before any repair. GN min 1 / mean 5.43 / max 10 neighbours |
 | S4 | Does the GN GeoJSON fit under `geometry.max_geojson_mb` (8 MB)? | ✅ **yes** — GN 2102 KB, DS 327 KB |
 | S5 | Is global Moran's I on 2020s GN LST positive and significant? | ✅ **CLOSED in run 2.** GN 0.885 (z=33.5, p_sim 0.001); DS 0.671 (z=4.20). Positive and significant in **every** epoch at **both** levels, and rising |
-| S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | ⛔ **run 2's PASS was VACUOUS** — a shared-collection regression made both exports the same series. Reverted; re-check in run 3. Step 9 now refuses to score identical inputs |
-| S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | ⬜ Step 11 has not run yet — run 2 stopped at Step 10's `NameError` |
-| S8 | Do MGWR bandwidths differ per covariate? | ⬜ not reached |
-| S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | ⬜ not reached |
-| S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | ✅ **all of them, in every run.** `landsat_oli_dry`/GN 117 of 117 (median detectable Gi\* trend 0.185/bin); `terra_night`/GN 5 of 5 (0.074); `terra_night`/DS 6 of 6 (0.029). **Under D5 the "no pattern" class grows substantially, so re-read this in run 2** — it is the honest headline, not a disappointment |
+| S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | ✅ **CLOSED in run 3.** 557 of 557 zones differ; class agreement **93.7 %**, r=0.999. Run 2's "100 %" was a regression making both exports identical |
+| S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | ✅ **CLOSED in run 3.** GN: residual Moran's I **0.411** (p=8.2e-55) → rule 3 → **spatial ERROR model**, λ=0.711. DS: **−0.241 (p=0.38)** → rule 1 → **OLS stands**. The ladder terminates at a different rung purely because of the aggregation unit |
+| S8 | Do MGWR bandwidths differ per covariate? | ⬜ **still open.** MGWR fitted in run 3 but the result was discarded by an unguarded `NotImplementedError` from an `mgwr` diagnostic. Fixed with `_safe_attr`; re-check in run 4 |
+| S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | ✅ **yes** — `ML_Error` converged at GN, λ=0.711 (z=19.9), pseudo R² 0.954. No need for the `"gm"` fallback |
+| S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | ✅ **CLOSED. Essentially all of them, under D5.** `landsat_oli_dry`/GN **283 of 283** (median detectable Gi\* trend 0.185/bin); `terra_night`/GN **258 of 259** (0.074); `terra_night`/DS 9 of 9 (0.029). The short series resolves less than half what the long one does — which is why both are reported |
+| S11 | **New in run 3.** Are the landscape metrics computed over the district, and are the two Dynamic World dates comparably classified? | ⛔ **NO on both counts in run 3** — landscape area was the export bounding box (125,259 ha vs a 69,900 ha district) and DW 2016 coverage is far thinner than 2024, so a 5.4× "green increase" was mostly observations. `observed` band added; re-check in run 4 |
 
 ### Caveats that travel into Phase 6+
 

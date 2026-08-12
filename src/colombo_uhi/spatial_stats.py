@@ -219,6 +219,10 @@ LANDSCAPE_COLUMNS: tuple[str, ...] = (
     "mean_patch_area_ha",
     "largest_patch_index_pct",
     "aggregation_index_pct",
+    # Share of the unit the classifier actually reached. Without it, a date with
+    # sparser satellite coverage looks like a date with less green space - which
+    # is exactly what Dynamic World 2016 did in Colab run 3.
+    "observed_fraction",
 )
 
 #: Column order of the MAUP comparison table.
@@ -2732,6 +2736,7 @@ def landscape_metrics_by_zone(
     zone_labels: Mapping[int, Any] | None = None,
     scheme: str = "",
     year: int | None = None,
+    valid: "np.ndarray | None" = None,
 ) -> "pd.DataFrame":
     """Landscape metrics computed separately inside each zone.
 
@@ -2747,12 +2752,18 @@ def landscape_metrics_by_zone(
         zone_labels: Zone raster code -> ``zone_id``.
         scheme: Recorded in the output.
         year: Recorded in the output.
+        valid: Optional analysable-pixel mask, normally the ``observed`` band
+            from :func:`green_class_image`. Without it a zone's unclassified
+            pixels count as "not green" and its green fraction is understated by
+            however much of it the classifier missed.
 
     Returns:
-        ``pandas.DataFrame`` with :data:`LANDSCAPE_COLUMNS`, one row per zone.
+        ``pandas.DataFrame`` with :data:`LANDSCAPE_COLUMNS`, one row per zone,
+        plus ``observed_fraction`` - the share of the zone that was classified
+        at all.
 
     Raises:
-        ValueError: If the two rasters have different shapes.
+        ValueError: If the rasters have different shapes.
     """
     import numpy as np  # Deferred: see module docstring.
 
@@ -2763,17 +2774,31 @@ def landscape_metrics_by_zone(
             f"class raster {classes.shape} and zone raster {zones.shape} must "
             "have the same shape; they must be exported on the same grid"
         )
+    observed = (
+        np.ones_like(zones, dtype=bool) if valid is None
+        else np.asarray(valid, dtype=bool)
+    )
+    if observed.shape != zones.shape:
+        raise ValueError(
+            f"valid mask {observed.shape} and zone raster {zones.shape} must "
+            "have the same shape"
+        )
 
     green = np.isin(classes, list(green_codes))
     records: list[dict[str, Any]] = []
     for code in sorted(int(c) for c in np.unique(zones) if int(c) != 0):
         inside = zones == code
-        metrics = landscape_metrics(green, cell_size_m, params, valid=inside)
+        analysable = inside & observed
+        metrics = landscape_metrics(green, cell_size_m, params, valid=analysable)
+        cells = int(inside.sum())
         metrics.update(
             {
                 "scheme": scheme,
                 "year": year,
                 "zone_id": (zone_labels or {}).get(code, code),
+                "observed_fraction": (
+                    float(analysable.sum()) / cells if cells else float("nan")
+                ),
             }
         )
         records.append(metrics)
@@ -3172,6 +3197,30 @@ def _fit_spreg_model(
     return result
 
 
+def _safe_attr(obj: Any, name: str, default: Any = None) -> Any:
+    """Read an attribute that may raise rather than merely be absent.
+
+    ``getattr(obj, name, default)`` falls back only on ``AttributeError``.
+    ``mgwr`` raises ``NotImplementedError("Not yet implemented for multiple
+    bandwidths")`` from several ``MGWRResults`` properties, which propagates and
+    - in Colab run 3 - discarded an entire successful MGWR fit, **including the
+    per-covariate bandwidths that are its whole point**. One unimplemented
+    diagnostic must not cost the result.
+
+    Args:
+        obj: Object to read from.
+        name: Attribute name.
+        default: Returned if the attribute is missing OR raises.
+
+    Returns:
+        The attribute value, or ``default``.
+    """
+    try:
+        return getattr(obj, name)
+    except Exception:  # noqa: BLE001 - see docstring; any failure means "absent"
+        return default
+
+
 def gwr_model(
     frame: "pd.DataFrame",
     coords: "np.ndarray",
@@ -3256,7 +3305,7 @@ def gwr_model(
 
     terms = ["intercept", *names]
     betas = np.asarray(results.params)
-    t_values = np.asarray(results.tvalues)
+    t_values = np.asarray(_safe_attr(results, "tvalues", np.full(betas.shape, np.nan)))
 
     adj_alpha = float("nan")
     critical_t = float("nan")
@@ -3280,7 +3329,16 @@ def gwr_model(
         local[f"beta_{term}"] = betas[:, index]
         local[f"t_{term}"] = t_values[:, index]
         local[f"sig_{term}"] = np.abs(t_values[:, index]) > critical_t
-    local["local_r2"] = np.asarray(getattr(results, "localR2", np.full((n, 1), np.nan))).ravel()
+    local["local_r2"] = np.asarray(
+        _safe_attr(results, "localR2", np.full((n, 1), np.nan))
+    ).ravel()
+
+    def _scalar(name: str) -> float:
+        value = _safe_attr(results, name)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("nan")
 
     return {
         "model": "mgwr" if multiscale else "gwr",
@@ -3291,8 +3349,8 @@ def gwr_model(
             if multiscale
             else float(bandwidth)
         ),
-        "aicc": float(getattr(results, "aicc", float("nan"))),
-        "r_squared": float(getattr(results, "R2", float("nan"))),
+        "aicc": _scalar("aicc"),
+        "r_squared": _scalar("R2"),
         "critical_t": critical_t,
         "adj_alpha": adj_alpha,
         "estimable": True,
@@ -4098,7 +4156,25 @@ def green_class_image(
     year: int | None = None,
     region: "ee.Geometry | None" = None,
 ) -> "ee.Image":
-    """Binary green-space mask from a land-cover scheme.
+    """Green-space mask and its observation mask, as a two-band image.
+
+    .. warning::
+        **The second band is not optional bookkeeping.** A 0/1 raster written to
+        GeoTIFF cannot distinguish "classified, not green" from "never
+        classified" or "outside the study area" - masked pixels are written as
+        0. Colab run 3 shows what that costs twice over:
+
+        * landscape area came back as **125,259 ha** for a district of
+          **69,900 ha**, because every pixel of the export's bounding box
+          counted as analysable land;
+        * Dynamic World green appeared to grow from 5,669 ha in 2016 to
+          30,423 ha in 2024 - a 5.4x rise that is mostly Sentinel-2 coverage.
+          Dynamic World begins mid-2015 and 2016 has far fewer scenes, so
+          unclassified pixels were silently counted as *not green*.
+
+        ``observed`` is 1 only where the scheme actually classified the pixel
+        AND it is inside ``region``, which is exactly the analysable set
+        (CLAUDE.md caveat 2 applied to land cover).
 
     Args:
         scheme: ``"dynamic_world"`` or ``"worldcover"``.
@@ -4107,8 +4183,8 @@ def green_class_image(
         region: Optional region to bound the work.
 
     Returns:
-        Single-band 0/1 ``ee.Image`` named ``green``, with ``scheme`` and
-        ``year`` properties.
+        Two-band ``ee.Image`` - ``green`` (0/1) and ``observed`` (0/1) - with
+        ``scheme`` and ``year`` properties.
     """
     import ee  # Deferred: see module docstring.
 
@@ -4116,5 +4192,24 @@ def green_class_image(
 
     codes = resolve_green_classes(scheme, params)
     classes = landcover.class_image(scheme, params, year=year, region=region)
-    mask = classes.remap(codes, [1] * len(codes), 0).rename("green").toByte()
-    return mask.set({"scheme": scheme, "year": year if year is not None else -1})
+    if region is not None:
+        classes = classes.clip(region)
+
+    # `.mask()` BEFORE unmasking: it is 1 wherever the classifier produced a
+    # value and 0 everywhere else, which after the clip means "inside the study
+    # area and actually classified".
+    observed = classes.mask().reduce("min").gt(0).rename("observed").toByte()
+    green = (
+        classes.remap(codes, [1] * len(codes), 0)
+        .unmask(0)
+        .rename("green")
+        .toByte()
+    )
+    return ee.Image.cat([green, observed]).set(
+        {"scheme": scheme, "year": year if year is not None else -1}
+    )
+
+
+#: Band order :func:`green_class_image` produces, and the order the exported
+#: GeoTIFF must be read back in.
+GREEN_BANDS: tuple[str, ...] = ("green", "observed")

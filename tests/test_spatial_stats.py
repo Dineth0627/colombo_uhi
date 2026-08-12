@@ -1219,6 +1219,71 @@ def test_landscape_metrics_by_zone_rejects_mismatched_rasters(
         )
 
 
+def test_safe_attr_falls_back_when_a_property_RAISES() -> None:
+    # Colab run 3: mgwr raises NotImplementedError("Not yet implemented for
+    # multiple bandwidths") from several MGWRResults properties. getattr's
+    # default only covers AttributeError, so one unimplemented diagnostic
+    # propagated and discarded an entire successful MGWR fit - including the
+    # per-covariate bandwidths, which are the whole point of running MGWR.
+    class _Results:
+        @property
+        def aicc(self) -> float:
+            raise NotImplementedError("Not yet implemented for multiple bandwidths")
+
+        @property
+        def bandwidths(self) -> list[int]:
+            return [43, 557]
+
+    results = _Results()
+    with pytest.raises(NotImplementedError):
+        getattr(results, "aicc", float("nan"))  # the trap, spelled out
+    assert np.isnan(ss._safe_attr(results, "aicc", float("nan")))
+    assert ss._safe_attr(results, "bandwidths") == [43, 557]
+    assert ss._safe_attr(results, "not_there", "fallback") == "fallback"
+
+
+def test_landscape_metrics_by_zone_excludes_unobserved_pixels(
+    params: dict[str, Any],
+) -> None:
+    # THE run-3 bug, in miniature. A 0/1 GeoTIFF cannot distinguish "classified,
+    # not green" from "never classified", so without the observed mask a date
+    # with sparser satellite coverage reads as a date with less green space.
+    classes = np.full((4, 4), 10, dtype=int)   # all tree cover
+    zones = np.ones((4, 4), dtype=int)
+    observed = np.zeros((4, 4), dtype=bool)
+    observed[:, :2] = True                     # classifier reached half the zone
+
+    without = ss.landscape_metrics_by_zone(
+        classes, zones, params, 10.0, [10], scheme="worldcover"
+    )
+    with_mask = ss.landscape_metrics_by_zone(
+        classes, zones, params, 10.0, [10], scheme="worldcover", valid=observed
+    )
+    # The green FRACTION is 1.0 either way here, but the analysable AREA is not:
+    # counting unobserved pixels doubles the apparent landscape.
+    assert without.iloc[0]["landscape_area_ha"] == pytest.approx(
+        2 * with_mask.iloc[0]["landscape_area_ha"]
+    )
+    assert with_mask.iloc[0]["observed_fraction"] == pytest.approx(0.5)
+    assert without.iloc[0]["observed_fraction"] == pytest.approx(1.0)
+
+
+def test_landscape_metrics_by_zone_rejects_a_mismatched_valid_mask(
+    params: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="valid mask"):
+        ss.landscape_metrics_by_zone(
+            np.zeros((4, 4), dtype=int), np.ones((4, 4), dtype=int),
+            params, 10.0, [10], valid=np.ones((3, 3), dtype=bool),
+        )
+
+
+def test_green_bands_are_declared_in_export_order() -> None:
+    # The exported GeoTIFF is read back by band position, so this order is the
+    # contract between green_class_image and the notebook.
+    assert ss.GREEN_BANDS == ("green", "observed")
+
+
 def test_landscape_metrics_by_zone_computes_one_row_per_zone(
     params: dict[str, Any],
 ) -> None:
