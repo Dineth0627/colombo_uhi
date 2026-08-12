@@ -107,6 +107,23 @@ LISA_QUADRANTS: dict[int, str] = {1: "HH", 2: "LH", 3: "LL", 4: "HL"}
 #: Label used for a local statistic that did not survive FDR correction.
 NOT_SIGNIFICANT = "ns"
 
+#: Column order of the global Moran's I table.
+MORANS_COLUMNS: tuple[str, ...] = (
+    "level",
+    "epoch",
+    "variable",
+    "status",
+    "n",
+    "n_missing",
+    "morans_i",
+    "expectation",
+    "z_norm",
+    "p_norm",
+    "z_sim",
+    "p_sim",
+    "permutations",
+)
+
 #: Column order of the LISA table.
 LISA_COLUMNS: tuple[str, ...] = (
     "zone_id",
@@ -948,6 +965,37 @@ def global_morans_i(
     }
 
 
+def build_morans_frame(
+    records: Sequence[Mapping[str, Any]],
+) -> "pd.DataFrame":
+    """Shape global Moran's I results into the reporting table.
+
+    .. note::
+        **An empty result is a SHAPED empty frame, never a column-less one.**
+        ``pandas.DataFrame([])`` has a ``RangeIndex`` for columns, so every
+        later ``frame["variable"]`` raises ``KeyError`` rather than returning
+        nothing - which is exactly how the first Colab run of notebook 05 died
+        twice when its covariate exports had not been downloaded. Same reason
+        :func:`colombo_uhi.trends.build_mk_frame` exists.
+
+    Args:
+        records: One mapping per level x epoch x variable. Missing keys are
+            filled with ``None``; unknown keys are dropped.
+
+    Returns:
+        ``pandas.DataFrame`` with :data:`MORANS_COLUMNS`.
+    """
+    import pandas as pd  # Deferred: see module docstring.
+
+    if not records:
+        return pd.DataFrame(columns=list(MORANS_COLUMNS))
+    frame = pd.DataFrame(list(records))
+    for column in MORANS_COLUMNS:
+        if column not in frame.columns:
+            frame[column] = None
+    return frame[list(MORANS_COLUMNS)]
+
+
 def local_morans(
     values: "np.ndarray | Sequence[float]",
     matrix: "np.ndarray",
@@ -1475,6 +1523,7 @@ def classify_zone_pattern(
     trend: str,
     trend_significant: bool,
     params: dict[str, Any],
+    require_final_bin: bool | None = None,
 ) -> tuple[str, str]:
     """Assign one zone's Gi* z-series to an emerging-hot-spot category.
 
@@ -1484,13 +1533,16 @@ def classify_zone_pattern(
     ==============================  ====================================================
     Category                        Rule (tested in this order)
     ==============================  ====================================================
-    ``oscillating_hot_spot``        hot in the final bin, having been significantly
-                                    COLD at some earlier bin
+    ``oscillating_hot_spot``        **final bin hot**, having been significantly COLD at
+                                    some earlier bin
     ``new_hot_spot``                hot only in the final ``new_tail_bins`` bin(s),
                                     never before
     ``consecutive_hot_spot``        an unbroken final run of >= ``consecutive_min_run``
                                     hot bins, never hot before it, and still below
                                     ``persistent_share`` of all bins
+    ``sporadic_hot_spot``           **final bin hot**, on-and-off hot below
+                                    ``sporadic_max_share``, never cold
+    ------------------------------  ----------------------------------------------------
     ``historical_hot_spot``         hot in >= ``persistent_share`` of bins but NOT in
                                     the last ``historical_recent_bins``
     ``intensifying_hot_spot``       hot in >= ``persistent_share`` of bins AND a
@@ -1499,9 +1551,12 @@ def classify_zone_pattern(
                                     significant decreasing trend
     ``persistent_hot_spot``         hot in >= ``persistent_share`` of bins, no
                                     significant trend
-    ``sporadic_hot_spot``           on-and-off hot below ``sporadic_max_share``,
-                                    never cold
     ==============================  ====================================================
+
+    The four above the rule are the "what is it doing NOW" categories and need
+    the final bin to be significant; the four below need only the share, so a
+    zone that has been hot throughout still classifies even if the last bin
+    happens to fall short.
 
     The cold-spot categories are the exact mirror. A zone that is never
     significantly hot or cold is :data:`EHSA_NO_PATTERN` - which, over a short
@@ -1515,12 +1570,23 @@ def classify_zone_pattern(
         division that was a cold spot for a decade and is a hot spot now is an
         *oscillating hot spot*, not a cold spot.
 
+    .. warning::
+        Under ``ehsa.require_final_bin`` (**on** by default) the first four
+        categories in the table can only fire when the final bin is itself
+        significant; everything else falls through to
+        :data:`EHSA_NO_PATTERN`. That is the published definition, and it is
+        what makes this an *emerging* hot-spot analysis rather than an
+        "was ever hot" map. With the flag off, ``sporadic`` alone absorbed 329
+        of 557 GN divisions on the 26-bin MODIS series in Colab run 1 - a
+        category covering most of the study area has stopped discriminating.
+
     Args:
         z_series: Gi* z-scores in bin order, oldest first.
         trend: ``"increasing"``, ``"decreasing"`` or anything else. These are
             the labels :func:`colombo_uhi.trends.mk_comparison` emits.
         trend_significant: Whether the Mann-Kendall test rejected.
         params: Parsed params mapping.
+        require_final_bin: Override for ``spatial_stats.ehsa.require_final_bin``.
 
     Returns:
         ``(category, reason)``. The reason is a short human-readable string that
@@ -1539,6 +1605,9 @@ def classify_zone_pattern(
     persistent = float(cfg["persistent_share"])
     sporadic_max = float(cfg["sporadic_max_share"])
     recent = int(cfg["historical_recent_bins"])
+    final_required = bool(
+        cfg["require_final_bin"] if require_final_bin is None else require_final_bin
+    )
 
     z = np.asarray(z_series, dtype="float64")
     n = int(z.size)
@@ -1623,10 +1692,21 @@ def classify_zone_pattern(
             f"{word} in {share:.0%} of bins with no significant trend",
         )
 
-    if share < sporadic_max and not opposite.any():
+    if share < sporadic_max and not opposite.any() and (flag[-1] or not final_required):
         return (
             f"sporadic_{suffix}",
-            f"on and off {word} in {share:.0%} of bins, never the opposite",
+            f"on and off {word} in {share:.0%} of bins, never the opposite"
+            + ("" if flag[-1] else " (final bin not significant)"),
+        )
+
+    # Below the persistent share and NOT significant in the final bin. Under the
+    # published taxonomy that is no pattern: the zone has been significant at
+    # some point but is not doing anything now, and an EMERGING hot-spot map
+    # that colours it in is answering "was it ever hot" instead.
+    if final_required and not flag[-1]:
+        return (
+            EHSA_NO_PATTERN,
+            f"{word} in only {share:.0%} of bins and not in the final bin",
         )
 
     if trend_significant and trend == increasing:
@@ -1692,6 +1772,7 @@ def classify_emerging_hotspots(
     names: Mapping[Any, str] | None = None,
     mk_alpha: float | None = None,
     power_check: bool | None = None,
+    require_final_bin: bool | None = None,
 ) -> "pd.DataFrame":
     """Emerging Hot Spot Analysis over a Gi* space-time panel.
 
@@ -1713,6 +1794,9 @@ def classify_emerging_hotspots(
         names: Optional zone id -> display name mapping.
         mk_alpha: Override for ``spatial_stats.ehsa.mk_alpha``.
         power_check: Override for ``spatial_stats.ehsa.power_check``.
+        require_final_bin: Override for
+            ``spatial_stats.ehsa.require_final_bin``. Pass ``False`` to
+            reproduce the looser pre-run-1 classification as a sensitivity.
 
     Returns:
         ``pandas.DataFrame`` with :data:`EHSA_COLUMNS`, one row per zone.
@@ -1747,7 +1831,9 @@ def classify_emerging_hotspots(
         significant = bool(p_value == p_value and p_value < level)
         status = str(record["status"]) if record is not None else STATUS_INSUFFICIENT
 
-        category, reason = classify_zone_pattern(z, trend_word, significant, params)
+        category, reason = classify_zone_pattern(
+            z, trend_word, significant, params, require_final_bin=require_final_bin
+        )
 
         hot = z > hot_z
         cold = z < cold_z
@@ -2712,13 +2798,21 @@ def esda_cross_check(
 
     .. note::
         **Local Moran's I is compared after rescaling, deliberately.** Anselin
-        (1995) normalises by the population second moment; GeoDa and ``esda``
-        use ``(n-1)``. The two therefore differ by a constant factor of
-        ``n/(n-1)`` that is identical for every zone, so quadrants, permutation
-        p-values and the cluster map are unaffected. The raw ratio is reported
-        as its own row so the difference is visible rather than hidden, and the
-        rescaled residual is what must be zero. Global Moran's I and Gi\\* have
-        one convention each and are compared exactly.
+        (1995) normalises by the population second moment (divide by ``n``);
+        GeoDa and ``esda`` divide by ``(n-1)``. ``esda``'s values are therefore
+        ours times ``(n-1)/n`` - a constant identical for every zone, so
+        quadrants, permutation p-values and the cluster map are unaffected. The
+        raw ratio is reported as its own row so the difference is visible rather
+        than hidden, and the rescaled residual is what must be zero. Global
+        Moran's I and Gi\\* have one convention each and are compared exactly.
+
+    .. warning::
+        Moran's I and Gi\\* are compared under **different weights**, because
+        they are defined under different weights: row-standardised for Moran's
+        I, binary-with-self for Gi\\*. Handing ``esda.G_Local`` the
+        row-standardised matrix - which this function did until the first Colab
+        run - compares two different statistics and reports the mismatch as
+        though the implementation were wrong.
 
     Args:
         values: ``(n,)`` non-negative attribute values.
@@ -2751,10 +2845,35 @@ def esda_cross_check(
     reference_local = esda.Moran_Local(y, w, permutations=0)
     theirs_local = np.asarray(reference_local.Is, dtype="float64")
 
+    # Gi* needs its OWN weights object, and getting this wrong is what the first
+    # Colab run caught. `w` above is row-standardised, which is right for
+    # Moran's I and wrong for Gi*; passing it to G_Local made the two sides
+    # compute the statistic under different weightings and produced a 1.48
+    # "disagreement" that was entirely an artefact of the comparison. esda even
+    # warned about it: "Gi* requested, but (a) weights are already
+    # row-standardized, (b) no weights are on the diagonal".
+    #
+    # So: binary weights WITH the self-weight on the diagonal - exactly what
+    # gi_star builds internally - `transform="B"` so esda does not
+    # row-standardise it back (its default is "R"), and `star=None`, which is
+    # what esda's own warning prescribes once the diagonal is set.
     binary = (array > 0).astype("float64")
+    star_matrix = add_self_neighbours(binary)
+    star_neighbours = {
+        i: [int(j) for j in np.flatnonzero(star_matrix[i] > 0)] for i in range(n)
+    }
+    w_star = W(
+        star_neighbours,
+        {
+            i: [float(star_matrix[i, j]) for j in star_neighbours[i]]
+            for i in range(n)
+        },
+        silence_warnings=True,
+    )
     ours_gi = gi_star(y, binary, params, permutations=99)["gi_z"].to_numpy()
     theirs_gi = np.asarray(
-        esda.G_Local(y, w, star=True, permutations=0).Zs, dtype="float64"
+        esda.G_Local(y, w_star, transform="B", star=None, permutations=0).Zs,
+        dtype="float64",
     )
 
     # The constant that separates the two local-Moran normalisations. If the two
@@ -2781,7 +2900,11 @@ def esda_cross_check(
             "ours": float(np.abs(ours_gi).max()),
             "esda": float(np.abs(theirs_gi).max()),
             "abs_diff": float(np.abs(ours_gi - theirs_gi).max()),
-            "note": "one convention; must match exactly",
+            "note": (
+                "one convention; must match exactly. BOTH sides use binary "
+                "weights with the self-weight on the diagonal - a "
+                "row-standardised W here is a different statistic"
+            ),
         },
         {
             "statistic": "local_morans_i (after rescaling)",
@@ -2790,7 +2913,7 @@ def esda_cross_check(
             "abs_diff": rescaled_diff,
             "note": (
                 f"esda/ours = {scale:.6f} for every zone "
-                f"(expected n/(n-1) = {n / (n - 1):.6f}); spread "
+                f"(expected (n-1)/n = {(n - 1) / n:.6f}); spread "
                 f"{float(np.nanmax(ratio) - np.nanmin(ratio)):.2e}"
             ),
         },

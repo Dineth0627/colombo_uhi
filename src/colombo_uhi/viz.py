@@ -1568,6 +1568,71 @@ def spatial_palette(params: dict[str, Any], name: str) -> dict[str, str]:
     return {str(key): f"#{value}" for key, value in entry.items()}
 
 
+def map_aspect_ratio(zones: Any, default: float = 1.0) -> float:
+    """Height-to-width ratio of a zone layer's bounding box.
+
+    Choropleths are drawn with ``set_aspect("equal")``, so a canvas whose shape
+    ignores the data leaves the difference as blank paper. Colombo District is
+    roughly twice as wide as it is tall, and the first Colab run produced maps
+    occupying the top 60 % of the figure with the legend floating in the void
+    below.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame``.
+        default: Returned when the bounds are degenerate.
+
+    Returns:
+        ``dy / dx``, clamped to ``[0.25, 3.0]`` so one pathological geometry
+        cannot produce a figure thousands of inches tall.
+    """
+    try:
+        min_x, min_y, max_x, max_y = (float(v) for v in zones.total_bounds)
+    except Exception:  # pragma: no cover - defensive, non-geo input
+        return default
+    width = max_x - min_x
+    height = max_y - min_y
+    if width <= 0 or height <= 0:
+        return default
+    return float(min(max(height / width, 0.25), 3.0))
+
+
+def _map_figure(
+    zones: Any,
+    footer_inches: float,
+    legend_inches: float = 0.0,
+    width_inches: float = 9.5,
+    title_inches: float = 0.45,
+) -> tuple[Any, Any, float]:
+    """Create a figure whose map axes matches the data's shape.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` the map will draw.
+        footer_inches: Vertical space reserved for the caveat footer.
+        legend_inches: Vertical space reserved for a legend below the map.
+        width_inches: Figure width.
+        title_inches: Vertical space reserved for the title.
+
+    Returns:
+        ``(figure, axes, height_inches)``.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    map_inches = width_inches * map_aspect_ratio(zones)
+    height = map_inches + legend_inches + footer_inches + title_inches
+    figure = Figure(figsize=(width_inches, height))
+    FigureCanvasAgg(figure)
+    axes = figure.add_axes(
+        (
+            0.02,
+            (footer_inches + legend_inches) / height,
+            0.96,
+            map_inches / height,
+        )
+    )
+    return figure, axes, height
+
+
 def _zone_choropleth(
     axes: Any,
     frame: Any,
@@ -1606,14 +1671,20 @@ def _zone_choropleth(
 
 
 def _category_legend(
-    axes: Any, colours: Mapping[str, str], order: Sequence[str]
+    axes: Any, colours: Mapping[str, str], order: Sequence[str], ncol: int = 4
 ) -> None:
-    """Attach a categorical legend built from a palette.
+    """Attach a categorical legend BELOW the map axes.
+
+    Placing it inside the axes only works when the map leaves empty corners.
+    Once the canvas is sized to the data (see :func:`_map_figure`) there are no
+    empty corners, so the legend goes underneath where it cannot cover a
+    division.
 
     Args:
         axes: Target axes.
         colours: Class label to colour.
         order: Labels to show, in legend order.
+        ncol: Legend columns.
     """
     from matplotlib.patches import Patch
 
@@ -1627,11 +1698,13 @@ def _category_legend(
     ]
     axes.legend(
         handles=handles,
-        fontsize=7,
-        loc="lower left",
+        fontsize=7.5,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.01),
         frameon=False,
-        ncol=2,
-        handlelength=1.2,
+        ncol=ncol,
+        handlelength=1.3,
+        columnspacing=1.4,
     )
 
 
@@ -1661,9 +1734,6 @@ def build_cluster_map_figure(
     Raises:
         ValueError: If the join leaves no rows.
     """
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from matplotlib.figure import Figure
-
     merged = zones.merge(
         lisa.assign(zone_id=lisa["zone_id"].astype(str)), on="zone_id", how="left"
     )
@@ -1676,15 +1746,17 @@ def build_cluster_map_figure(
 
     colours = spatial_palette(params, "lisa")
     footer_inches = 1.15
-    height = 8.6 + footer_inches
-    figure = Figure(figsize=(8.0, height))
-    FigureCanvasAgg(figure)
-    axes = figure.subplots()
+    figure, axes, height = _map_figure(
+        merged, footer_inches, legend_inches=0.45
+    )
 
     _zone_choropleth(axes, merged, "cluster", colours)
     present = set(merged["cluster"])
     _category_legend(
-        axes, colours, [label for label in ("HH", "LL", "HL", "LH", "ns") if label in present]
+        axes,
+        colours,
+        [label for label in ("HH", "LL", "HL", "LH", "ns") if label in present],
+        ncol=5,
     )
     significant = int((merged["cluster"] != "ns").sum())
     axes.set_title(
@@ -1714,7 +1786,6 @@ def build_cluster_map_figure(
         ha="left",
         color="#444444",
     )
-    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
     return figure
 
 
@@ -1751,9 +1822,6 @@ def build_hotspot_map_figure(
     Raises:
         ValueError: If the join leaves no rows.
     """
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from matplotlib.figure import Figure
-
     merged = zones.merge(
         hotspots.assign(zone_id=hotspots["zone_id"].astype(str)),
         on="zone_id",
@@ -1767,13 +1835,12 @@ def build_hotspot_map_figure(
     order = ["hot_99", "hot_95", "hot_90", "ns", "cold_90", "cold_95", "cold_99"]
 
     footer_inches = 1.05
-    height = 8.6 + footer_inches
-    figure = Figure(figsize=(8.0, height))
-    FigureCanvasAgg(figure)
-    axes = figure.subplots()
+    figure, axes, height = _map_figure(
+        merged, footer_inches, legend_inches=0.45
+    )
 
     _zone_choropleth(axes, merged, "confidence_class", colours)
-    _category_legend(axes, colours, order)
+    _category_legend(axes, colours, order, ncol=7)
 
     hot = int(merged["confidence_class"].astype(str).str.startswith("hot").sum())
     cold = int(merged["confidence_class"].astype(str).str.startswith("cold").sum())
@@ -1794,7 +1861,6 @@ def build_hotspot_map_figure(
         ha="left",
         color="#444444",
     )
-    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
     return figure
 
 
@@ -1838,9 +1904,6 @@ def build_ehsa_map_figure(
     Raises:
         ValueError: If the join leaves no rows.
     """
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from matplotlib.figure import Figure
-
     merged = zones.merge(
         ehsa.assign(zone_id=ehsa["zone_id"].astype(str)), on="zone_id", how="left"
     )
@@ -1853,10 +1916,12 @@ def build_ehsa_map_figure(
     present = [name for name in colours if name in set(merged["category"])]
 
     footer_inches = 1.35
-    height = 8.6 + footer_inches
-    figure = Figure(figsize=(8.6, height))
-    FigureCanvasAgg(figure)
-    axes = figure.subplots()
+    # The EHSA legend can run to a dozen categories, so it needs more than one
+    # row underneath the map.
+    legend_inches = 0.34 * max(1, -(-len(present) // 4))
+    figure, axes, height = _map_figure(
+        merged, footer_inches, legend_inches=legend_inches
+    )
 
     _zone_choropleth(
         axes,
@@ -1866,7 +1931,7 @@ def build_ehsa_map_figure(
         hatch_mask=merged["underpowered"],
         hatch=str(params["spatial_stats"]["palettes"]["underpowered_hatch"]),
     )
-    _category_legend(axes, colours, present)
+    _category_legend(axes, colours, present, ncol=4)
 
     under = int(merged["underpowered"].sum())
     axes.set_title(
@@ -1888,7 +1953,6 @@ def build_ehsa_map_figure(
         ha="left",
         color="#444444",
     )
-    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
     return figure
 
 
@@ -1968,8 +2032,13 @@ def build_gwr_coefficient_figure(
     columns = min(3, len(terms))
     rows = int(np.ceil(len(terms) / columns))
     footer_inches = 1.0
-    height = 4.2 * rows + footer_inches
-    figure = Figure(figsize=(4.0 * columns, height))
+    panel_width = 4.6
+    # Same reason as the single maps: with set_aspect("equal") a panel taller
+    # than the data leaves blank paper under every subplot, multiplied by the
+    # number of covariates. +0.5 in per row for the title and colour bar.
+    panel_height = panel_width * map_aspect_ratio(zones) + 0.5
+    height = panel_height * rows + footer_inches
+    figure = Figure(figsize=(panel_width * columns, height))
     FigureCanvasAgg(figure)
     axes_grid = figure.subplots(rows, columns, squeeze=False)
 

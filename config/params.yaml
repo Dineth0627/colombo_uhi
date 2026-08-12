@@ -1346,6 +1346,28 @@ spatial_stats:
                                       # alone and neither may be quoted alone.
     hot_z: 1.96                       # [DEFAULT — Phase 5] |z| for a bin to count as hot/cold
     cold_z: -1.96                     # (two-sided 0.05 on the Gi* z-score).
+    require_final_bin: true           # *** [DECISION 2026-08-12, after Colab run 1] ***
+                                      # New / Consecutive / Sporadic / Oscillating all
+                                      # require the FINAL bin to be significant, per the
+                                      # published (ESRI) taxonomy. Only the
+                                      # >= persistent_share categories — Persistent,
+                                      # Intensifying, Diminishing, Historical — may fire
+                                      # without it.
+                                      #
+                                      # WHY THIS CHANGED. With the rule off, "sporadic"
+                                      # fires for any zone ever significant on one side and
+                                      # never the opposite, regardless of what it is doing
+                                      # NOW. Run 1 put 329 of 557 GN divisions into
+                                      # sporadic_cold on terra_night and 158+126 into the
+                                      # two sporadic classes on landsat_oli_dry — a category
+                                      # covering most of the district has stopped
+                                      # discriminating. The whole point of an EMERGING
+                                      # hot-spot analysis is what a place is doing at the
+                                      # end of the record, not whether it was ever hot.
+                                      #
+                                      # Setting this false restores the looser behaviour;
+                                      # it is kept reachable and tested so the choice stays
+                                      # a recorded decision rather than a lost one.
     new_tail_bins: 1                  # a "New" hot spot is hot in the final `new_tail_bins`
                                       # bins and never before.
     consecutive_min_run: 2            # "Consecutive" needs a final run of at least this many

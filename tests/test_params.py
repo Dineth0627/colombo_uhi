@@ -772,6 +772,14 @@ def test_ehsa_sources_are_single_sensor_series(params: dict[str, Any]) -> None:
             )
 
 
+def test_ehsa_requires_the_final_bin_by_default(params: dict[str, Any]) -> None:
+    # [DECISION 2026-08-12, after Colab run 1] Without it "sporadic" fires for
+    # any zone ever significant on one side, regardless of what it is doing now,
+    # and it absorbed 329 of 557 GN divisions on the 26-bin MODIS series. An
+    # EMERGING hot-spot analysis is about the end of the record.
+    assert params["spatial_stats"]["ehsa"]["require_final_bin"] is True
+
+
 def test_ehsa_power_check_is_on(params: dict[str, Any]) -> None:
     # Required by the Phase 4 sign-off: over a short panel "no pattern" must be
     # separable from "the series could not have resolved it".

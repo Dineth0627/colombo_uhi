@@ -22,6 +22,33 @@ def params() -> dict[str, Any]:
     return load_params()
 
 
+class _Bounds:
+    """Minimal stand-in for a GeoDataFrame: only ``total_bounds`` is read."""
+
+    def __init__(self, bounds: tuple[float, float, float, float]) -> None:
+        self.total_bounds = bounds
+
+
+# --- Phase 5 map geometry ----------------------------------------------------
+def test_map_aspect_ratio_follows_the_bounding_box() -> None:
+    # Colombo District is roughly twice as wide as it is tall. A choropleth is
+    # drawn with set_aspect("equal"), so a canvas that ignores this leaves the
+    # difference as blank paper - which is what the first Colab run produced.
+    assert viz.map_aspect_ratio(_Bounds((0.0, 0.0, 60000.0, 30000.0))) == pytest.approx(0.5)
+    assert viz.map_aspect_ratio(_Bounds((0.0, 0.0, 10.0, 10.0))) == pytest.approx(1.0)
+
+
+def test_map_aspect_ratio_is_clamped_against_pathological_bounds() -> None:
+    # One degenerate geometry must not produce a figure thousands of inches tall.
+    assert viz.map_aspect_ratio(_Bounds((0.0, 0.0, 1.0, 10_000.0))) == pytest.approx(3.0)
+    assert viz.map_aspect_ratio(_Bounds((0.0, 0.0, 10_000.0, 1.0))) == pytest.approx(0.25)
+
+
+def test_map_aspect_ratio_falls_back_on_degenerate_or_missing_bounds() -> None:
+    assert viz.map_aspect_ratio(_Bounds((5.0, 5.0, 5.0, 5.0))) == pytest.approx(1.0)
+    assert viz.map_aspect_ratio(object(), default=0.75) == pytest.approx(0.75)
+
+
 @pytest.fixture()
 def landsat_series() -> pd.DataFrame:
     return pd.DataFrame(

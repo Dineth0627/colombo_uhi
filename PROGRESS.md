@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-12 (Phase 5 code written; **awaiting the first Colab run of notebook 05**)_
+_Last updated: 2026-08-12 (Phase 5 **Colab run 1 analysed**; fixes applied, **awaiting run 2**)_
 
 ## Status snapshot
 
@@ -11,10 +11,101 @@ _Last updated: 2026-08-12 (Phase 5 code written; **awaiting the first Colab run 
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
-| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **code written 2026-08-12, NOT YET RUN.** 736 tests pass locally |
+| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **run 1 done: Part 1 complete, EHSA complete, S3/S4 answered.** Part 2 blocked on undownloaded exports; run 2 pending. 757 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 1 (2026-08-12) — Part 1 complete; most of Phase 5's own checks passed
+
+**Part 1 ran end to end.** All 12 tasks submitted. Part 2 ran as far as its
+inputs allowed — which was not far, because only the two GeoJSONs had been
+copied out of Drive when it was run. **That is the headline operational
+lesson**: the geometry exports finish in seconds while the six `zone_covariates`
+tables and the three 10 m green rasters take much longer, so copying early gets
+the geometry and nothing else, and every step from 7 onwards then has no input.
+
+Environment: libpysal 4.14.1, esda 2.9.0, spreg 1.9.0, mgwr 2.2.1.
+
+#### Verified — these answer S1 (partly), S3 and S4
+
+| Check | Result |
+|---|---|
+| Zone counts | **557 GN / 13 DS**, both exactly as expected |
+| Geometry CRS | **EPSG:32644**, projected — the reprojection works |
+| **S3 — islands** | **ZERO at both levels, before any repair.** GN queen: min 1 / mean 5.43 / max 10 neighbours. DS: min 2 / mean 3.69 / max 5 |
+| **S4 — GeoJSON budget** | GN 2102 KB, DS 327 KB, against an 8 MB cap |
+| Global Moran's I vs `esda` | agrees to **1.1e-16** |
+| LISA vs `esda` | ratio **0.972222 = 35/36** for every zone, zero spread; rescaled residual **4.4e-16**; **quadrant agreement 1.000** |
+| OLS + all four LM tests vs `spreg` | agree to **< 1.3e-15** |
+| EHSA | all three runs completed — `landsat_oli_dry`/GN 12 bins, `terra_night`/GN and /DS 26 bins, 557-of-557 and 13-of-13 zone match |
+
+The `terra_night`/GN map is a coherent nocturnal UHI: a contiguous **persistent
+hot spot** block over the CMC and the western coastal strip, **intensifying hot
+spot** cells on its inland edge, and only 5 "no pattern" zones. That is the
+series Phase 4 identified as the only one with both length and single-sensor
+consistency, and it behaves.
+
+#### The Step 1 "STOP" was a FALSE ALARM — the bug was in the checker
+
+Step 1 reported a 1.484 disagreement on Gi\* and told the user to stop.
+`esda_cross_check` built the libpysal `W` from the **row-standardised** matrix
+and handed it to `esda.G_Local`, while handing our own `gi_star` the **binary**
+matrix. esda said so itself, in a warning the cell printed:
+
+> Gi\* requested, but (a) weights are already row-standardized, (b) no weights
+> are on the diagonal, and (c) no default value supplied to star.
+
+So the two sides computed Gi\* under different weightings. **The module's own
+docstring warns that Moran's I and Gi\* need different weights, and the
+cross-check violated exactly that rule.** Fixed by building a second weights
+object from `add_self_neighbours(binary)` and calling
+`G_Local(..., transform="B", star=None)` — esda's own prescribed form once the
+diagonal is set. Gi\* itself is not implicated and remains unverified against
+`esda` until run 2.
+
+Also corrected: the local-Moran note printed `expected n/(n-1)`; the measured
+constant is `35/36`, i.e. `(n-1)/n`. Ours divides by `n`, esda by `(n-1)`.
+
+#### Two crashes, both the same defect
+
+Steps 7 and 12 died with `KeyError: 'variable'` / `KeyError: 'level'`.
+`pandas.DataFrame([])` has a `RangeIndex` for columns, so with no covariates
+downloaded the Moran table had **no columns** and every filter on it raised.
+Step 7 wrote an empty CSV before crashing. Fixed structurally with
+`MORANS_COLUMNS` + `build_morans_frame`, mirroring `trends.build_mk_frame` —
+an empty result is a **shaped** empty frame, never a column-less one. Step 9
+produced no output at all when its loop body never ran, which reads as success;
+it and Step 11 now say so.
+
+#### D5 — `sporadic` was not classifying anything
+
+| Run | Series / level | Result |
+|---|---|---|
+| 1 | `terra_night` / GN | **329 of 557** zones `sporadic_cold_spot` |
+| 1 | `landsat_oli_dry` / GN | 158 `sporadic_hot` + 126 `sporadic_cold` of 557 |
+
+Our rule fired whenever a zone was ever significant on one side and never the
+opposite, **ignoring what it is doing in the final bin**. A category covering
+60 % of the district has stopped discriminating, and the whole point of an
+*emerging* hot-spot analysis is the end of the record.
+
+`spatial_stats.ehsa.require_final_bin` (**true**) now gates `sporadic` — and
+`new`, `consecutive`, `oscillating`, which already implied it — on the final bin
+being significant. The four share-based categories (`persistent`,
+`intensifying`, `diminishing`, `historical`) are untouched. On a synthetic
+gradient panel of the same shape: `sporadic_cold` 100 → 25, `no_pattern`
+76 → 154, share categories identical. The loose branch stays reachable and
+tested so the choice is a recorded decision.
+
+#### Figures
+
+The maps used a near-square canvas with `set_aspect("equal")` while Colombo
+District is about twice as wide as it is tall, so they occupied the top ~60 % of
+the figure with the legend floating in the blank half. `viz.map_aspect_ratio`
+now sizes the canvas from `total_bounds` and the legend sits below the map.
+
+**757 tests pass, 8 skip** (was 747).
 
 ### Colab run 1 (2026-08-12) — a Phase 4 bug, surfaced by the first Phase 5 export
 
@@ -172,18 +263,18 @@ Written, then tested against all 13 categories, which is how these surfaced:
 
 ### Things Colab must settle (notebook 05) — record the answers here
 
-| # | Unknown | If it fails |
+| # | Unknown | Status after run 1 |
 |---|---|---|
-| S1 | **Do the analytic statistics match `esda`/`spreg`?** (Step 1 probe) | STOP. Nothing below Step 1 is trustworthy until explained |
-| S2 | Installed PySAL API signatures, and `esda`'s `.q` quadrant coding | documentation only — nothing depends on them, but a `.q` mismatch would invert a cluster legend |
-| S3 | How many GN divisions are **islands** under queen contiguity? | expected small and repairable; if large, revisit `weights.scheme` |
-| S4 | Does the GN GeoJSON fit under `geometry.max_geojson_mb` (8 MB)? | raise `geometry.simplify_m` and re-export rather than committing it |
-| S5 | Is global Moran's I on 2020s GN LST positive and significant? | if not, the covariate table and the weights are in different zone orders — far likelier than Colombo being unusual |
-| S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | if not, D2 is wrong: re-scope the epoch maps onto `landsat_oli_dry` and accept the shorter record |
-| S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | a non-significant residual Moran's I would mean the spatial models were unnecessary — itself reportable |
-| S8 | Do MGWR bandwidths differ per covariate? | identical bandwidths mean the multiscale search collapsed and the result is only GWR |
-| S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | switch `regression.lag_estimator` to `"gm"` |
-| S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | over the 12-bin Landsat panel a high fraction is **expected** and is the honest headline |
+| S1 | **Do the analytic statistics match `esda`/`spreg`?** (Step 1 probe) | ✅ **Moran's I, LISA and all four LM tests: yes**, to 1e-15 or better. ⬜ **Gi\*: still open** — run 1's comparison was miscoded (row-standardised vs binary weights); fixed, re-check in run 2 |
+| S2 | Installed PySAL API signatures, and `esda`'s `.q` quadrant coding | ✅ **settled.** `.q` matches ours exactly (agreement 1.000). Signatures recorded in the run-1 notebook |
+| S3 | How many GN divisions are **islands** under queen contiguity? | ✅ **ZERO**, at both levels, before any repair. GN min 1 / mean 5.43 / max 10 neighbours |
+| S4 | Does the GN GeoJSON fit under `geometry.max_geojson_mb` (8 MB)? | ✅ **yes** — GN 2102 KB, DS 327 KB |
+| S5 | Is global Moran's I on 2020s GN LST positive and significant? | ⬜ blocked in run 1 — the covariate exports were not downloaded |
+| S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | ⬜ blocked — same reason. The decision is currently **argued but not tested** |
+| S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | ⬜ blocked — same reason |
+| S8 | Do MGWR bandwidths differ per covariate? | ⬜ blocked — same reason |
+| S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | ⬜ blocked — same reason |
+| S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | ✅ **all of them, in every run.** `landsat_oli_dry`/GN 117 of 117 (median detectable Gi\* trend 0.185/bin); `terra_night`/GN 5 of 5 (0.074); `terra_night`/DS 6 of 6 (0.029). **Under D5 the "no pattern" class grows substantially, so re-read this in run 2** — it is the honest headline, not a disappointment |
 
 ### Caveats that travel into Phase 6+
 

@@ -343,6 +343,25 @@ def test_morans_i_expectation_is_minus_one_over_n_minus_one() -> None:
     assert moments["variance"] > 0
 
 
+def test_build_morans_frame_of_no_records_is_shaped_not_columnless() -> None:
+    # THE crash from Colab run 1: pandas.DataFrame([]) has a RangeIndex for
+    # columns, so frame["variable"] raises KeyError instead of returning
+    # nothing, and the notebook died twice on it when its inputs were missing.
+    frame = ss.build_morans_frame([])
+    assert frame.empty
+    assert list(frame.columns) == list(ss.MORANS_COLUMNS)
+    assert frame[frame["variable"] == "LST_C"].empty  # must not raise
+
+
+def test_build_morans_frame_fills_absent_keys() -> None:
+    frame = ss.build_morans_frame(
+        [{"level": "gn", "epoch": "2020s", "variable": "LST_C", "morans_i": 0.6}]
+    )
+    assert list(frame.columns) == list(ss.MORANS_COLUMNS)
+    assert frame.iloc[0]["morans_i"] == pytest.approx(0.6)
+    assert frame.iloc[0]["p_sim"] is None
+
+
 def test_global_morans_i_is_reproducible_from_the_seed(params: dict[str, Any]) -> None:
     side = 5
     matrix = ss.row_standardise(_rook_matrix(side))
@@ -573,11 +592,23 @@ def test_gi_star_confidence_rejects_non_increasing_breaks(
             "historical_hot_spot",
         ),
         (
-            "intermittently hot",
-            [3, 0, 3, 0, 0, 3, 0, 0, 3, 0],
+            "intermittently hot, still hot at the end",
+            [3, 0, 3, 0, 0, 3, 0, 0, 0, 3],
             "no trend",
             False,
             "sporadic_hot_spot",
+        ),
+        # THE run-1 correction. Under the published taxonomy a zone that was
+        # significant at some point but is not doing anything in the final bin
+        # is "no pattern": an EMERGING hot-spot map that colours it in is
+        # answering "was it ever hot". With the rule off this was sporadic, and
+        # sporadic then absorbed 329 of 557 GN divisions.
+        (
+            "intermittently hot, quiet at the end",
+            [3, 0, 3, 0, 0, 3, 0, 0, 3, 0],
+            "no trend",
+            False,
+            ss.EHSA_NO_PATTERN,
         ),
         (
             "cold, then hot in the final bin",
@@ -630,6 +661,51 @@ def test_ehsa_classifier_prefers_oscillating_over_new(params: dict[str, Any]) ->
         np.array([-3.0, -3.0, 0.0, 0.0, 3.0]), "no trend", False, params
     )
     assert category == "oscillating_hot_spot"
+
+
+def test_ehsa_final_bin_rule_is_what_separates_sporadic_from_no_pattern(
+    params: dict[str, Any],
+) -> None:
+    # The same series classifies differently under the two rules, which is the
+    # whole point of making it a config option rather than a silent edit.
+    series = np.array([3.0, 0, 3.0, 0, 0, 3.0, 0, 0, 3.0, 0])
+    strict, _ = ss.classify_zone_pattern(
+        series, "no trend", False, params, require_final_bin=True
+    )
+    loose, loose_reason = ss.classify_zone_pattern(
+        series, "no trend", False, params, require_final_bin=False
+    )
+    assert strict == ss.EHSA_NO_PATTERN
+    assert loose == "sporadic_hot_spot"
+    assert "final bin not significant" in loose_reason
+
+
+def test_ehsa_final_bin_rule_does_not_touch_the_share_categories(
+    params: dict[str, Any],
+) -> None:
+    # Persistent / intensifying / diminishing / historical qualify on share
+    # alone, so a zone hot throughout must classify identically under both
+    # rules even when its final bin falls short.
+    series = np.array([3.0] * 9 + [0.0])
+    for flag in (True, False):
+        category, _ = ss.classify_zone_pattern(
+            series, "no trend", False, params, require_final_bin=flag
+        )
+        assert category == "historical_hot_spot"
+
+
+def test_ehsa_classifier_defaults_to_the_configured_rule(
+    params: dict[str, Any], params_copy: dict[str, Any]
+) -> None:
+    assert params["spatial_stats"]["ehsa"]["require_final_bin"] is True
+    series = np.array([3.0, 0, 3.0, 0, 0, 3.0, 0, 0, 3.0, 0])
+    assert ss.classify_zone_pattern(series, "no trend", False, params)[0] == (
+        ss.EHSA_NO_PATTERN
+    )
+    params_copy["spatial_stats"]["ehsa"]["require_final_bin"] = False
+    assert ss.classify_zone_pattern(series, "no trend", False, params_copy)[0] == (
+        "sporadic_hot_spot"
+    )
 
 
 def test_ehsa_classifier_rejects_an_empty_series(params: dict[str, Any]) -> None:
