@@ -44,6 +44,30 @@ def test_map_aspect_ratio_is_clamped_against_pathological_bounds() -> None:
     assert viz.map_aspect_ratio(_Bounds((0.0, 0.0, 10_000.0, 1.0))) == pytest.approx(0.25)
 
 
+def test_footer_height_grows_with_the_caveat_text(params: dict[str, Any]) -> None:
+    # Colab run 2 put the legend on top of the footer: the reserved band was a
+    # fixed 1.15 in while the four-caveat LISA footer needs ~2.2 in, so it
+    # overflowed upward into the legend.
+    one = viz.caveat_footer(params, ["lst_not_air_temp"])
+    four = viz.caveat_footer(
+        params,
+        ["lst_not_air_temp", "within_epoch_only", "zonal_not_pixel", "fdr_dependence"],
+    )
+    assert viz.footer_inches(four) > viz.footer_inches(one)
+    # The four-caveat footer must need more than the constant it replaced.
+    assert viz.footer_inches(four) > 1.35
+
+
+def test_footer_height_covers_every_line_it_is_given() -> None:
+    text = "\n".join(f"line {i}" for i in range(10))
+    reserved = viz.footer_inches(text, pad_inches=0.0)
+    assert reserved == pytest.approx(10 * viz.FOOTER_LINE_INCHES)
+
+
+def test_footer_height_of_nothing_is_just_padding() -> None:
+    assert viz.footer_inches("", pad_inches=0.2) == pytest.approx(0.2)
+
+
 def test_map_aspect_ratio_falls_back_on_degenerate_or_missing_bounds() -> None:
     assert viz.map_aspect_ratio(_Bounds((5.0, 5.0, 5.0, 5.0))) == pytest.approx(1.0)
     assert viz.map_aspect_ratio(object(), default=0.75) == pytest.approx(0.75)

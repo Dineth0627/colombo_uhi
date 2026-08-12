@@ -3657,19 +3657,19 @@ def covariate_stack(
     key = str(cfg["epochs_source"] if source is None else source)
     start, _ = uhi_metrics.epoch_years(params, epoch)
 
-    # Build the harmonised Landsat collection ONCE and share it. Left to
-    # themselves, epoch_composite and driver_stack each construct their own -
-    # two full four-sensor graphs in one request, for the same scenes over the
-    # same region. driver_stack's needs surface reflectance and
-    # epoch_composite's does not, but a collection WITH reflectance serves both
-    # (epoch_composite selects the LST band out of it).
-    if collection is None:
-        from colombo_uhi import landsat
-
-        collection = landsat.harmonised_collection(
-            params, region=region, include_st_qa=False
-        )
-
+    # *** DO NOT "OPTIMISE" THIS BY BUILDING ONE SHARED COLLECTION HERE. ***
+    # That was tried (commit 2ac7934) and silently broke the science. Passing a
+    # prebuilt collection makes epoch_composite and driver_stack skip
+    # uhi_metrics.source_collection, which is the ONLY place the per-source
+    # sensor restriction is applied (`sensors=resolved.get("sensors")`). So
+    # `landsat_oli_dry` - L8+L9 only, the whole point of which is to avoid the
+    # cross-sensor steps Phase 4 measured - quietly ran with all four sensors,
+    # and the run-2 sensitivity check compared the pooled series WITH ITSELF and
+    # reported a perfect 100% agreement.
+    #
+    # It saved about 12 KB of a 38 KB graph against a ~10 MB limit. The graph was
+    # never the constraint; a distance transform on an inherited 30 m grid was.
+    # Leave each consumer to build the collection its own source asks for.
     epoch_image = uhi_metrics.epoch_composite(
         key, params, epoch, collection=collection, region=region
     )

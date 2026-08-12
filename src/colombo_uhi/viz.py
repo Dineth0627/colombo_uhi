@@ -1596,41 +1596,60 @@ def map_aspect_ratio(zones: Any, default: float = 1.0) -> float:
     return float(min(max(height / width, 0.25), 3.0))
 
 
+#: Vertical inches one line of 7 pt footer text occupies, including leading.
+FOOTER_LINE_INCHES = 0.125
+
+
+def footer_inches(text: str, pad_inches: float = 0.22) -> float:
+    """Vertical space a caveat footer actually needs.
+
+    Reserving a fixed constant is what put the legend on top of the footer in
+    Colab run 2: the LISA footer carries four caveats plus an explanatory line -
+    about thirteen wrapped lines, well over the 1.15 in it had been given - so it
+    overflowed upward into the legend band.
+
+    Args:
+        text: The assembled footer, as :func:`caveat_footer` returns it.
+        pad_inches: Breathing room above and below.
+
+    Returns:
+        Height in inches.
+    """
+    lines = text.count("\n") + 1 if text else 0
+    return lines * FOOTER_LINE_INCHES + pad_inches
+
+
 def _map_figure(
     zones: Any,
-    footer_inches: float,
+    footer_text: str,
     legend_inches: float = 0.0,
     width_inches: float = 9.5,
     title_inches: float = 0.45,
-) -> tuple[Any, Any, float]:
+) -> tuple[Any, Any, float, float]:
     """Create a figure whose map axes matches the data's shape.
 
     Args:
         zones: ``geopandas.GeoDataFrame`` the map will draw.
-        footer_inches: Vertical space reserved for the caveat footer.
+        footer_text: The caveat footer; its line count sizes the reserved band.
         legend_inches: Vertical space reserved for a legend below the map.
         width_inches: Figure width.
         title_inches: Vertical space reserved for the title.
 
     Returns:
-        ``(figure, axes, height_inches)``.
+        ``(figure, axes, height_inches, footer_inches)``.
     """
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
 
+    reserved = footer_inches(footer_text)
     map_inches = width_inches * map_aspect_ratio(zones)
-    height = map_inches + legend_inches + footer_inches + title_inches
+    height = map_inches + legend_inches + reserved + title_inches
     figure = Figure(figsize=(width_inches, height))
     FigureCanvasAgg(figure)
     axes = figure.add_axes(
-        (
-            0.02,
-            (footer_inches + legend_inches) / height,
-            0.96,
-            map_inches / height,
-        )
+        (0.02, (reserved + legend_inches) / height, 0.96, map_inches / height)
     )
-    return figure, axes, height
+    return figure, axes, height, reserved
 
 
 def _zone_choropleth(
@@ -1745,9 +1764,21 @@ def build_cluster_map_figure(
     merged["cluster"] = merged["cluster"].fillna("ns")
 
     colours = spatial_palette(params, "lisa")
-    footer_inches = 1.15
-    figure, axes, height = _map_figure(
-        merged, footer_inches, legend_inches=0.45
+    footer = (
+        caveat_footer(
+            params,
+            [
+                "lst_not_air_temp",
+                "within_epoch_only",
+                "zonal_not_pixel",
+                "fdr_dependence",
+            ],
+        )
+        + "\n- HL and LH are spatial OUTLIERS, not clusters. Significance is the "
+        "Benjamini-Hochberg adjusted permutation p-value."
+    )
+    figure, axes, height, reserved = _map_figure(
+        merged, footer, legend_inches=0.45
     )
 
     _zone_choropleth(axes, merged, "cluster", colours)
@@ -1767,25 +1798,8 @@ def build_cluster_map_figure(
         ),
         fontsize=12,
     )
-    figure.text(
-        0.01,
-        0.01,
-        caveat_footer(
-            params,
-            [
-                "lst_not_air_temp",
-                "within_epoch_only",
-                "zonal_not_pixel",
-                "fdr_dependence",
-            ],
-        )
-        + "\n- HL and LH are spatial OUTLIERS, not clusters. Significance is the "
-        "Benjamini-Hochberg adjusted permutation p-value.",
-        fontsize=7,
-        va="bottom",
-        ha="left",
-        color="#444444",
-    )
+    figure.text(0.01, 0.01, footer, fontsize=7, va="bottom", ha="left",
+                color="#444444")
     return figure
 
 
@@ -1834,9 +1848,15 @@ def build_hotspot_map_figure(
     colours = spatial_palette(params, "gi_star")
     order = ["hot_99", "hot_95", "hot_90", "ns", "cold_90", "cold_95", "cold_99"]
 
-    footer_inches = 1.05
-    figure, axes, height = _map_figure(
-        merged, footer_inches, legend_inches=0.45
+    footer = (
+        caveat_footer(
+            params, ["lst_not_air_temp", "within_epoch_only", "zonal_not_pixel"]
+        )
+        + "\n- Confidence classes are bins of the FDR-adjusted permutation "
+        "p-value, so the legend means what it says after multiple testing."
+    )
+    figure, axes, height, reserved = _map_figure(
+        merged, footer, legend_inches=0.45
     )
 
     _zone_choropleth(axes, merged, "confidence_class", colours)
@@ -1848,19 +1868,8 @@ def build_hotspot_map_figure(
         title or f"Getis-Ord Gi* - {hot} hot and {cold} cold zones (FDR adjusted)",
         fontsize=12,
     )
-    figure.text(
-        0.01,
-        0.01,
-        caveat_footer(
-            params, ["lst_not_air_temp", "within_epoch_only", "zonal_not_pixel"]
-        )
-        + "\n- Confidence classes are bins of the FDR-adjusted permutation "
-        "p-value, so the legend means what it says after multiple testing.",
-        fontsize=7,
-        va="bottom",
-        ha="left",
-        color="#444444",
-    )
+    figure.text(0.01, 0.01, footer, fontsize=7, va="bottom", ha="left",
+                color="#444444")
     return figure
 
 
@@ -1915,12 +1924,20 @@ def build_ehsa_map_figure(
     colours = spatial_palette(params, "ehsa")
     present = [name for name in colours if name in set(merged["category"])]
 
-    footer_inches = 1.35
+    footer = (
+        caveat_footer(
+            params, ["lst_not_air_temp", "zonal_not_pixel", "sensitivity_reporting"]
+        )
+        + "\n- HATCHED zones are those whose series could not have detected a "
+        "trend of the size sought. For them 'no pattern' means UNRESOLVABLE,\n"
+        "  not stable. Gi* is standardised within each time bin, so a "
+        "common-mode shift between bins cancels and only pattern change remains."
+    )
     # The EHSA legend can run to a dozen categories, so it needs more than one
     # row underneath the map.
     legend_inches = 0.34 * max(1, -(-len(present) // 4))
-    figure, axes, height = _map_figure(
-        merged, footer_inches, legend_inches=legend_inches
+    figure, axes, height, reserved = _map_figure(
+        merged, footer, legend_inches=legend_inches
     )
 
     _zone_choropleth(
@@ -1938,21 +1955,8 @@ def build_ehsa_map_figure(
         title or f"Emerging hot spots - {under} zone(s) hatched as underpowered",
         fontsize=12,
     )
-    figure.text(
-        0.01,
-        0.01,
-        caveat_footer(
-            params, ["lst_not_air_temp", "zonal_not_pixel", "sensitivity_reporting"]
-        )
-        + "\n- HATCHED zones are those whose series could not have detected a "
-        "trend of the size sought. For them 'no pattern' means UNRESOLVABLE,\n"
-        "  not stable. Gi* is standardised within each time bin, so a "
-        "common-mode shift between bins cancels and only pattern change remains.",
-        fontsize=7,
-        va="bottom",
-        ha="left",
-        color="#444444",
-    )
+    figure.text(0.01, 0.01, footer, fontsize=7, va="bottom", ha="left",
+                color="#444444")
     return figure
 
 
@@ -2031,13 +2035,20 @@ def build_gwr_coefficient_figure(
 
     columns = min(3, len(terms))
     rows = int(np.ceil(len(terms) / columns))
-    footer_inches = 1.0
+    footer = (
+        caveat_footer(params, ["lst_not_air_temp", "zonal_not_pixel"])
+        + "\n- HATCHED zones are NOT significant at the multiple-testing "
+        "adjusted critical t. Predictors are standardised, so coefficients are\n"
+        "  comparable across panels but are per standard deviation, not per "
+        "native unit."
+    )
+    reserved = footer_inches(footer)
     panel_width = 4.6
     # Same reason as the single maps: with set_aspect("equal") a panel taller
     # than the data leaves blank paper under every subplot, multiplied by the
     # number of covariates. +0.5 in per row for the title and colour bar.
     panel_height = panel_width * map_aspect_ratio(zones) + 0.5
-    height = panel_height * rows + footer_inches
+    height = panel_height * rows + reserved
     figure = Figure(figsize=(panel_width * columns, height))
     FigureCanvasAgg(figure)
     axes_grid = figure.subplots(rows, columns, squeeze=False)
@@ -2079,20 +2090,9 @@ def build_gwr_coefficient_figure(
         axes_grid[index // columns][index % columns].axis("off")
 
     figure.suptitle(title or "GWR local coefficients", fontsize=13)
-    figure.text(
-        0.01,
-        0.01,
-        caveat_footer(params, ["lst_not_air_temp", "zonal_not_pixel"])
-        + "\n- HATCHED zones are NOT significant at the multiple-testing "
-        "adjusted critical t. Predictors are standardised, so coefficients are\n"
-        "  comparable across panels but are per standard deviation, not per "
-        "native unit.",
-        fontsize=7,
-        va="bottom",
-        ha="left",
-        color="#444444",
-    )
-    figure.tight_layout(rect=(0, footer_inches / height, 1, 0.97))
+    figure.text(0.01, 0.01, footer, fontsize=7, va="bottom", ha="left",
+                color="#444444")
+    figure.tight_layout(rect=(0, reserved / height, 1, 0.97))
     return figure
 
 
@@ -2165,9 +2165,14 @@ def build_maup_table_figure(
     # overflows its cell and covers the row beneath it.
     line_counts = [max(1, text.count("\n") + 1) for text in display["detail"]]
     total_lines = sum(line_counts) + 1
-    footer_inches = 1.05
+    footer = (
+        caveat_footer(params, ["sensitivity_reporting", "zonal_not_pixel"])
+        + "\n- Shaded rows are statistics that are NOT ESTIMABLE at that "
+        "aggregation level. That is a reported result, not a missing value."
+    )
+    reserved = footer_inches(footer)
     table_inches = 0.19 * total_lines + 0.35
-    height = table_inches + 0.5 + footer_inches
+    height = table_inches + 0.5 + reserved
     figure = Figure(figsize=(11.5, height))
     FigureCanvasAgg(figure)
     axes = figure.subplots()
@@ -2200,18 +2205,9 @@ def build_maup_table_figure(
     axes.set_title(
         title or "Aggregation-unit (MAUP) sensitivity", fontsize=12, pad=14
     )
-    figure.text(
-        0.01,
-        0.01,
-        caveat_footer(params, ["sensitivity_reporting", "zonal_not_pixel"])
-        + "\n- Shaded rows are statistics that are NOT ESTIMABLE at that "
-        "aggregation level. That is a reported result, not a missing value.",
-        fontsize=7,
-        va="bottom",
-        ha="left",
-        color="#444444",
-    )
-    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
+    figure.text(0.01, 0.01, footer, fontsize=7, va="bottom", ha="left",
+                color="#444444")
+    figure.tight_layout(rect=(0, reserved / height, 1, 1))
     return figure
 
 
@@ -2277,10 +2273,22 @@ def build_landscape_change_figure(
         for scheme, year in zip(work["scheme"], work["year"])
     ]
 
-    footer_inches = 1.0
+    scale = (
+        float(frame["cell_size_m"].iloc[0])
+        if "cell_size_m" in frame.columns
+        else float(params["spatial_stats"]["landscape"]["raster_scale_m"])
+    )
+    footer = (
+        caveat_footer(params, ["sensitivity_reporting"])
+        + f"\n- EVERY metric here is scale dependent and was computed at "
+        f"{scale:g} m. The same city at 30 m gives different patch counts, edge "
+        "density and\n  aggregation index, so the grid size must be quoted with "
+        "any figure. Cross-scheme differences are partly classifier differences."
+    )
+    reserved = footer_inches(footer)
     columns = min(3, len(chosen))
     rows = int(np.ceil(len(chosen) / columns))
-    height = 3.1 * rows + footer_inches
+    height = 3.1 * rows + reserved
     figure = Figure(figsize=(4.2 * columns, height))
     FigureCanvasAgg(figure)
     axes_grid = figure.subplots(rows, columns, squeeze=False)
@@ -2298,26 +2306,10 @@ def build_landscape_change_figure(
     for index in range(len(chosen), rows * columns):
         axes_grid[index // columns][index % columns].axis("off")
 
-    scale = (
-        float(frame["cell_size_m"].iloc[0])
-        if "cell_size_m" in frame.columns
-        else float(params["spatial_stats"]["landscape"]["raster_scale_m"])
-    )
     figure.suptitle(title or "Green-space landscape metrics", fontsize=13)
-    figure.text(
-        0.01,
-        0.01,
-        caveat_footer(params, ["sensitivity_reporting"])
-        + f"\n- EVERY metric here is scale dependent and was computed at "
-        f"{scale:g} m. The same city at 30 m gives different patch counts, edge "
-        "density and\n  aggregation index, so the grid size must be quoted with "
-        "any figure. Cross-scheme differences are partly classifier differences.",
-        fontsize=7,
-        va="bottom",
-        ha="left",
-        color="#444444",
-    )
-    figure.tight_layout(rect=(0, footer_inches / height, 1, 0.95))
+    figure.text(0.01, 0.01, footer, fontsize=7, va="bottom", ha="left",
+                color="#444444")
+    figure.tight_layout(rect=(0, reserved / height, 1, 0.95))
     return figure
 
 

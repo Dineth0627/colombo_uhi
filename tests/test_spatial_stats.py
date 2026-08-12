@@ -1238,6 +1238,62 @@ def test_landscape_metrics_by_zone_computes_one_row_per_zone(
 # =============================================================================
 # Exported-table plumbing (pure; the Earth Engine side runs only in Colab)
 # =============================================================================
+def test_covariate_stack_lets_each_consumer_build_its_own_collection() -> None:
+    """The regression from Colab run 2, pinned so it cannot come back.
+
+    ``covariate_stack`` once built one harmonised Landsat collection and passed
+    it to both ``epoch_composite`` and ``driver_stack``. Handing them a prebuilt
+    collection makes them skip ``uhi_metrics.source_collection``, which is the
+    ONLY place the per-source sensor restriction is applied. ``landsat_oli_dry``
+    - restricted to L8+L9 precisely to avoid the cross-sensor steps Phase 4
+    measured - then silently ran with all four sensors, and the sensitivity
+    check compared the pooled series with itself and reported 100 % agreement.
+
+    This is a source-level guard rather than a behavioural one because the
+    failure is structural: the numbers it produces are perfectly plausible, so
+    only the call graph reveals it.
+    """
+    import inspect
+
+    body = inspect.getsource(ss.covariate_stack)
+    assert "harmonised_collection" not in body, (
+        "covariate_stack must NOT build a Landsat collection itself. Doing so "
+        "bypasses uhi_metrics.source_collection and drops the source's "
+        "`sensors` restriction, which silently turns landsat_oli_dry back into "
+        "the pooled four-sensor series."
+    )
+
+
+def test_source_collection_is_where_the_sensor_restriction_lives() -> None:
+    # The other half of the invariant above: if this ever stops passing
+    # `sensors` through, the guard on covariate_stack protects nothing.
+    import inspect
+
+    from colombo_uhi import uhi_metrics
+
+    body = inspect.getsource(uhi_metrics.source_collection)
+    assert 'sensors=resolved.get("sensors")' in body, (
+        "source_collection is the single place a per-source sensor restriction "
+        "is applied; every LST source depends on it"
+    )
+
+
+def test_the_sensitivity_source_actually_restricts_its_sensors(
+    params: dict[str, Any],
+) -> None:
+    # A sensitivity check between two sources that resolve to the same sensors
+    # is vacuous no matter how the code is wired.
+    sources = {s["key"]: s for s in params["uhi"]["suhii"]["sources"]}
+    spatial = params["spatial_stats"]
+    pooled = sources[spatial["epochs_source"]]
+    sensitivity = sources[spatial["epoch_sensitivity_source"]]
+    assert sensitivity.get("sensors"), (
+        f"{spatial['epoch_sensitivity_source']} must restrict its sensors, or "
+        "the epoch sensitivity check compares the pooled series with itself"
+    )
+    assert pooled.get("sensors") != sensitivity.get("sensors")
+
+
 def test_zone_covariate_bands_lead_with_the_response(params: dict[str, Any]) -> None:
     bands = ss.zone_covariate_bands(params)
     assert bands[0] == params["spatial_stats"]["response_band"]

@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-12 (Phase 5 **Colab run 1 analysed**; fixes applied, **awaiting run 2**)_
+_Last updated: 2026-08-12 (Phase 5 **Colab run 2 analysed**; S1/S3/S4/S5 closed, fixes applied, **awaiting run 3**)_
 
 ## Status snapshot
 
@@ -11,10 +11,104 @@ _Last updated: 2026-08-12 (Phase 5 **Colab run 1 analysed**; fixes applied, **aw
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
-| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **run 1 done: Part 1 complete, EHSA complete, S3/S4 answered.** Part 2 blocked on undownloaded exports; run 2 pending. 757 tests pass locally |
+| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **run 2 done: S1/S3/S4/S5 CLOSED**, LISA + Gi\* maps produced, DS Gi\* = 0 hot spots (the MAUP result). S6 vacuous (regression, fixed); Steps 11–13 not yet reached. 764 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 2 (2026-08-12) — both run-1 fixes confirmed; S1 and S5 closed
+
+**Part 1 completed fully and all seven covariate exports succeeded** (27–58 s
+each). Part 2 ran through Step 9 and produced the first real Phase 5 maps.
+
+#### The two run-1 fixes, verified
+
+| | run 1 | run 2 |
+|---|---|---|
+| Assembled covariate stack, serialised | **159,861,536 B** | **38,958 B (0.037 MB)** |
+| Gi\* vs `esda`, `abs_diff` | **1.484** | **6.66e-15** |
+
+The per-component size table confirmed the diagnosis exactly:
+`distance_to_coast` had been the whole of it. **4,100× reduction**, and the
+notebook's pre-submission check now passes with three orders of magnitude to
+spare.
+
+#### S1 — CLOSED. Every statistic agrees with the reference libraries
+
+| Statistic | `abs_diff` |
+|---|---|
+| global Moran's I | 1.11e-16 |
+| **Gi\* z** | **6.66e-15** |
+| local Moran's I (after rescaling) | 4.44e-16 — ratio **0.972222 = 35/36**, exactly the predicted `(n-1)/n` |
+| LISA quadrant agreement | **1.000** |
+| OLS R², LM-error, LM-lag, RLM-error, RLM-lag | all < 1.3e-15 |
+
+The decision to implement the statistics analytically rather than delegate to
+`esda`/`spreg` is now empirically justified, not merely argued.
+
+#### S5 — CLOSED. Global Moran's I, and clustering strengthens over time
+
+| level | 2000s | 2010s | 2020s |
+|---|---|---|---|
+| **GN** (557) | 0.834 (z=31.6) | 0.863 (z=32.7) | **0.885** (z=33.5) |
+| **DS** (13) | 0.577 (z=3.67) | 0.642 (z=4.04) | **0.671** (z=4.20) |
+
+All `p_sim` ≤ 0.003. The monotonic rise at **both** levels says the thermal
+pattern is becoming more spatially organised, independent of aggregation.
+
+#### LISA and Gi\* — and the MAUP result lands hard
+
+LISA (GN), significant after FDR / raw at α=0.05:
+**224/297, 240/294, 247/293** — the correction removing 46–73 apparent clusters
+per epoch. HH grows 107 → 116 → 124; LL 114 → 122 → 122. Spatial outliers are
+almost absent (1–3 per epoch).
+
+Gi\* (GN): 139/141/152 hot and 165/157/149 cold of 557.
+
+**Gi\* (DS): 0 hot and 3 cold, in all three epochs.** Coarsening from 557 units
+to 13 does not blur the hot spots — it **annihilates** them, while leaving some
+cold spots standing. That asymmetry is a far stronger MAUP finding than the
+means-based spread Phase 3 recorded, and it should lead the Phase 5 write-up.
+
+The maps are textbook: a contiguous hot/HH core along the coastal CMC strip, a
+cold/LL mass inland east, a non-significant transition band between.
+
+#### S6 — INVALID. A regression I introduced in `2ac7934`
+
+The check reported **100.0 % class agreement and r = 1.000**. That is not a
+pass; it is the signature of comparing something with itself.
+
+`2ac7934` added a "build the harmonised collection once and share it"
+optimisation to `covariate_stack`. Passing a prebuilt collection makes
+`epoch_composite` and `driver_stack` skip `uhi_metrics.source_collection`,
+which is the **only** place the per-source sensor restriction is applied
+(`sensors=resolved.get("sensors")`). So `landsat_oli_dry` — restricted to L8+L9
+precisely to avoid the cross-sensor steps Phase 4 measured — silently ran with
+all four sensors, and the sensitivity export was identical to the pooled one.
+
+It saved ~12 KB of a 38 KB graph against a ~10 MB limit. **The graph was never
+the constraint**; the optimisation was premised on a hypothesis that the same
+run disproved. Reverted, with the reasoning left in the code so it is not
+re-attempted, and pinned by
+`test_covariate_stack_lets_each_consumer_build_its_own_collection`.
+
+The deeper lesson is that the failure was **invisible in the output** — a
+perfect score reads as success. Step 9 now compares the two LST columns
+directly and refuses to score at all when they are identical.
+
+#### Two smaller defects
+
+* **`NameError: EHSA_SERIES`.** Part 2 ran in a fresh kernel, as the WAIT HERE
+  cell says it may. The EHSA series are the only Part 2 input Earth Engine
+  produces *without* an Export task, so they lived only in the recycled VM.
+  Step 4 now writes them to `data/outputs/` (committed) and Step 10 reads them
+  from disk.
+* **The legend overlapped the caveat footer in every map.** `footer_inches` was
+  a fixed 1.05–1.35 while the four-caveat LISA footer needs **2.22 in**.
+  `viz.footer_inches` now derives the band from the text's line count; the GWR
+  and MAUP figures were overflowing too, by smaller margins.
+
+**764 tests pass, 8 skip** (was 758).
 
 ### Colab run 1 (2026-08-12) — Part 1 complete; most of Phase 5's own checks passed
 
@@ -321,15 +415,15 @@ Written, then tested against all 13 categories, which is how these surfaced:
 
 | # | Unknown | Status after run 1 |
 |---|---|---|
-| S1 | **Do the analytic statistics match `esda`/`spreg`?** (Step 1 probe) | ✅ **Moran's I, LISA and all four LM tests: yes**, to 1e-15 or better. ⬜ **Gi\*: still open** — run 1's comparison was miscoded (row-standardised vs binary weights); fixed, re-check in run 2 |
+| S1 | **Do the analytic statistics match `esda`/`spreg`?** (Step 1 probe) | ✅ **CLOSED in run 2.** All five agree to 1e-15 or better; Gi\* 6.66e-15 once the cross-check compared like with like |
 | S2 | Installed PySAL API signatures, and `esda`'s `.q` quadrant coding | ✅ **settled.** `.q` matches ours exactly (agreement 1.000). Signatures recorded in the run-1 notebook |
 | S3 | How many GN divisions are **islands** under queen contiguity? | ✅ **ZERO**, at both levels, before any repair. GN min 1 / mean 5.43 / max 10 neighbours |
 | S4 | Does the GN GeoJSON fit under `geometry.max_geojson_mb` (8 MB)? | ✅ **yes** — GN 2102 KB, DS 327 KB |
-| S5 | Is global Moran's I on 2020s GN LST positive and significant? | ⬜ blocked in run 1 — the covariate exports were not downloaded |
-| S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | ⬜ blocked — same reason. The decision is currently **argued but not tested** |
-| S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | ⬜ blocked — same reason |
-| S8 | Do MGWR bandwidths differ per covariate? | ⬜ blocked — same reason |
-| S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | ⬜ blocked — same reason |
+| S5 | Is global Moran's I on 2020s GN LST positive and significant? | ✅ **CLOSED in run 2.** GN 0.885 (z=33.5, p_sim 0.001); DS 0.671 (z=4.20). Positive and significant in **every** epoch at **both** levels, and rising |
+| S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | ⛔ **run 2's PASS was VACUOUS** — a shared-collection regression made both exports the same series. Reverted; re-check in run 3. Step 9 now refuses to score identical inputs |
+| S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | ⬜ Step 11 has not run yet — run 2 stopped at Step 10's `NameError` |
+| S8 | Do MGWR bandwidths differ per covariate? | ⬜ not reached |
+| S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | ⬜ not reached |
 | S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | ✅ **all of them, in every run.** `landsat_oli_dry`/GN 117 of 117 (median detectable Gi\* trend 0.185/bin); `terra_night`/GN 5 of 5 (0.074); `terra_night`/DS 6 of 6 (0.029). **Under D5 the "no pattern" class grows substantially, so re-read this in run 2** — it is the honest headline, not a disappointment |
 
 ### Caveats that travel into Phase 6+
