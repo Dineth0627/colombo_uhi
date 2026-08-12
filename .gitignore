@@ -21,6 +21,14 @@ data/raw/*
 data/interim/*.tif
 data/interim/*.tfw
 data/interim/*.tif.aux.xml
+
+# Phase 5 downloads the raw Earth Engine exports into data/interim/ too: the
+# zone-geometry GeoJSONs and the per-zone covariate CSVs. Both are staging
+# copies. The SIMPLIFIED geometry and the DERIVED tables are written to
+# data/outputs/ and committed; re-committing the raw exports beside them would
+# double the repo for no added reproducibility.
+data/interim/*.geojson
+data/interim/*.csv
 !data/interim/.gitkeep
 
 # OS junk

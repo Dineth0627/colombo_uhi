@@ -1535,3 +1535,732 @@ def plot_decadal_difference(
         ),
         out_path,
     )
+
+
+# =============================================================================
+# Phase 5 - spatial statistics figures
+# =============================================================================
+def spatial_palette(params: dict[str, Any], name: str) -> dict[str, str]:
+    """Return one of the Phase 5 categorical palettes, hex prefixed with ``#``.
+
+    Args:
+        params: Parsed params mapping.
+        name: Palette key under ``spatial_stats.palettes``.
+
+    Returns:
+        Mapping of class label to a matplotlib-ready colour string.
+
+    Raises:
+        KeyError: If the palette is not configured, or is a list rather than a
+            class mapping.
+    """
+    palettes = params["spatial_stats"]["palettes"]
+    if name not in palettes:
+        raise KeyError(
+            f"unknown palette '{name}'; spatial_stats.palettes defines "
+            f"{sorted(palettes)}"
+        )
+    entry = palettes[name]
+    if not isinstance(entry, dict):
+        raise KeyError(
+            f"palette '{name}' is a sequence, not a class mapping; use it directly"
+        )
+    return {str(key): f"#{value}" for key, value in entry.items()}
+
+
+def _zone_choropleth(
+    axes: Any,
+    frame: Any,
+    column: str,
+    colours: Mapping[str, str],
+    default: str = "#f0f0f0",
+    hatch_mask: Any = None,
+    hatch: str = "xxx",
+) -> None:
+    """Draw a categorical choropleth onto an axes.
+
+    Args:
+        axes: Target matplotlib axes.
+        frame: ``geopandas.GeoDataFrame`` carrying ``column``.
+        column: Categorical column to colour by.
+        colours: Class label to colour.
+        default: Colour for a class with no palette entry.
+        hatch_mask: Optional boolean series; ``True`` rows are hatched.
+        hatch: Hatch pattern.
+    """
+    face = [colours.get(str(value), default) for value in frame[column]]
+    frame.plot(ax=axes, color=face, edgecolor="#ffffff", linewidth=0.15)
+    if hatch_mask is not None and bool(hatch_mask.any()):
+        frame[hatch_mask.to_numpy(dtype=bool)].plot(
+            ax=axes,
+            facecolor="none",
+            edgecolor="#333333",
+            linewidth=0.25,
+            hatch=hatch,
+        )
+    axes.set_aspect("equal")
+    axes.set_xticks([])
+    axes.set_yticks([])
+    for spine in axes.spines.values():
+        spine.set_visible(False)
+
+
+def _category_legend(
+    axes: Any, colours: Mapping[str, str], order: Sequence[str]
+) -> None:
+    """Attach a categorical legend built from a palette.
+
+    Args:
+        axes: Target axes.
+        colours: Class label to colour.
+        order: Labels to show, in legend order.
+    """
+    from matplotlib.patches import Patch
+
+    handles = [
+        Patch(
+            facecolor=colours.get(str(label), "#f0f0f0"),
+            edgecolor="#666666",
+            label=str(label).replace("_", " "),
+        )
+        for label in order
+    ]
+    axes.legend(
+        handles=handles,
+        fontsize=7,
+        loc="lower left",
+        frameon=False,
+        ncol=2,
+        handlelength=1.2,
+    )
+
+
+def build_cluster_map_figure(
+    zones: Any,
+    lisa: "pd.DataFrame",
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Any:
+    """Build a Local Moran's I (LISA) cluster map.
+
+    .. note::
+        ``HL`` and ``LH`` are spatial **outliers**, not clusters: a hot division
+        surrounded by cool ones, or the reverse. The palette gives them pale
+        mid-tones on purpose so they cannot be read as an extension of the HH
+        core, which is the most common way a LISA map is misread.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` with ``zone_id`` and geometry.
+        lisa: Output of :func:`colombo_uhi.spatial_stats.local_morans`.
+        params: Parsed params mapping.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the join leaves no rows.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    merged = zones.merge(
+        lisa.assign(zone_id=lisa["zone_id"].astype(str)), on="zone_id", how="left"
+    )
+    if merged.empty:
+        raise ValueError(
+            "the LISA table and the zone geometry share no zone_id; both must "
+            "be keyed on the pcode"
+        )
+    merged["cluster"] = merged["cluster"].fillna("ns")
+
+    colours = spatial_palette(params, "lisa")
+    footer_inches = 1.15
+    height = 8.6 + footer_inches
+    figure = Figure(figsize=(8.0, height))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+
+    _zone_choropleth(axes, merged, "cluster", colours)
+    present = set(merged["cluster"])
+    _category_legend(
+        axes, colours, [label for label in ("HH", "LL", "HL", "LH", "ns") if label in present]
+    )
+    significant = int((merged["cluster"] != "ns").sum())
+    axes.set_title(
+        title
+        or (
+            f"Local Moran's I clusters - {significant} of {len(merged)} zones "
+            "significant after FDR"
+        ),
+        fontsize=12,
+    )
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(
+            params,
+            [
+                "lst_not_air_temp",
+                "within_epoch_only",
+                "zonal_not_pixel",
+                "fdr_dependence",
+            ],
+        )
+        + "\n- HL and LH are spatial OUTLIERS, not clusters. Significance is the "
+        "Benjamini-Hochberg adjusted permutation p-value.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
+    return figure
+
+
+def plot_cluster_map(
+    zones: Any,
+    lisa: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Path:
+    """Write the LISA cluster map. See :func:`build_cluster_map_figure`."""
+    return _save_figure(
+        build_cluster_map_figure(zones, lisa, params, title=title), out_path
+    )
+
+
+def build_hotspot_map_figure(
+    zones: Any,
+    hotspots: "pd.DataFrame",
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Any:
+    """Build a Getis-Ord Gi* hot- and cold-spot map.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` with ``zone_id`` and geometry.
+        hotspots: Output of :func:`colombo_uhi.spatial_stats.gi_star`.
+        params: Parsed params mapping.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the join leaves no rows.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    merged = zones.merge(
+        hotspots.assign(zone_id=hotspots["zone_id"].astype(str)),
+        on="zone_id",
+        how="left",
+    )
+    if merged.empty:
+        raise ValueError("the Gi* table and the zone geometry share no zone_id")
+    merged["confidence_class"] = merged["confidence_class"].fillna("ns")
+
+    colours = spatial_palette(params, "gi_star")
+    order = ["hot_99", "hot_95", "hot_90", "ns", "cold_90", "cold_95", "cold_99"]
+
+    footer_inches = 1.05
+    height = 8.6 + footer_inches
+    figure = Figure(figsize=(8.0, height))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+
+    _zone_choropleth(axes, merged, "confidence_class", colours)
+    _category_legend(axes, colours, order)
+
+    hot = int(merged["confidence_class"].astype(str).str.startswith("hot").sum())
+    cold = int(merged["confidence_class"].astype(str).str.startswith("cold").sum())
+    axes.set_title(
+        title or f"Getis-Ord Gi* - {hot} hot and {cold} cold zones (FDR adjusted)",
+        fontsize=12,
+    )
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(
+            params, ["lst_not_air_temp", "within_epoch_only", "zonal_not_pixel"]
+        )
+        + "\n- Confidence classes are bins of the FDR-adjusted permutation "
+        "p-value, so the legend means what it says after multiple testing.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
+    return figure
+
+
+def plot_hotspot_map(
+    zones: Any,
+    hotspots: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Path:
+    """Write the Gi* hot-spot map. See :func:`build_hotspot_map_figure`."""
+    return _save_figure(
+        build_hotspot_map_figure(zones, hotspots, params, title=title), out_path
+    )
+
+
+def build_ehsa_map_figure(
+    zones: Any,
+    ehsa: "pd.DataFrame",
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Any:
+    """Build the emerging-hot-spot map.
+
+    .. warning::
+        Zones whose series **could not have resolved** a trend are hatched. Over
+        a 12-bin Landsat panel that will be most of the "no pattern" area, and
+        without the hatch the map reads as a finding of spatial stability when
+        it is really a statement about series length.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` with ``zone_id`` and geometry.
+        ehsa: Output of
+            :func:`colombo_uhi.spatial_stats.classify_emerging_hotspots`.
+        params: Parsed params mapping.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the join leaves no rows.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    merged = zones.merge(
+        ehsa.assign(zone_id=ehsa["zone_id"].astype(str)), on="zone_id", how="left"
+    )
+    if merged.empty:
+        raise ValueError("the EHSA table and the zone geometry share no zone_id")
+    merged["category"] = merged["category"].fillna("no_pattern")
+    merged["underpowered"] = merged["underpowered"].fillna(False).astype(bool)
+
+    colours = spatial_palette(params, "ehsa")
+    present = [name for name in colours if name in set(merged["category"])]
+
+    footer_inches = 1.35
+    height = 8.6 + footer_inches
+    figure = Figure(figsize=(8.6, height))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+
+    _zone_choropleth(
+        axes,
+        merged,
+        "category",
+        colours,
+        hatch_mask=merged["underpowered"],
+        hatch=str(params["spatial_stats"]["palettes"]["underpowered_hatch"]),
+    )
+    _category_legend(axes, colours, present)
+
+    under = int(merged["underpowered"].sum())
+    axes.set_title(
+        title or f"Emerging hot spots - {under} zone(s) hatched as underpowered",
+        fontsize=12,
+    )
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(
+            params, ["lst_not_air_temp", "zonal_not_pixel", "sensitivity_reporting"]
+        )
+        + "\n- HATCHED zones are those whose series could not have detected a "
+        "trend of the size sought. For them 'no pattern' means UNRESOLVABLE,\n"
+        "  not stable. Gi* is standardised within each time bin, so a "
+        "common-mode shift between bins cancels and only pattern change remains.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
+    return figure
+
+
+def plot_ehsa_map(
+    zones: Any,
+    ehsa: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Path:
+    """Write the emerging-hot-spot map. See :func:`build_ehsa_map_figure`."""
+    return _save_figure(
+        build_ehsa_map_figure(zones, ehsa, params, title=title), out_path
+    )
+
+
+def build_gwr_coefficient_figure(
+    zones: Any,
+    local_coefficients: "pd.DataFrame",
+    params: dict[str, Any],
+    terms: Sequence[str] | None = None,
+    title: str | None = None,
+) -> Any:
+    """Build small multiples of GWR/MGWR local coefficients, one panel per term.
+
+    .. warning::
+        Zones where the local coefficient is not significant at the
+        **multiple-testing-adjusted** critical t are hatched. A GWR fits one
+        regression per zone, so an unadjusted local t-map overstates
+        significance exactly the way an uncorrected pixel-wise p-map does.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` with ``zone_id`` and geometry.
+        local_coefficients: The ``local_coefficients`` frame from
+            :func:`colombo_uhi.spatial_stats.gwr_model`.
+        params: Parsed params mapping.
+        terms: Terms to draw; defaults to every ``beta_*`` column except the
+            intercept.
+        title: Figure suptitle.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If no plottable term is found.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+    from matplotlib.figure import Figure
+
+    if terms is None:
+        terms = [
+            column[len("beta_") :]
+            for column in local_coefficients.columns
+            if column.startswith("beta_") and column != "beta_intercept"
+        ]
+    terms = list(terms)
+    if not terms:
+        raise ValueError(
+            "no local coefficient columns found; expected columns named "
+            f"beta_<term>, got {sorted(local_coefficients.columns)}"
+        )
+
+    merged = zones.merge(
+        local_coefficients.assign(
+            zone_id=local_coefficients["zone_id"].astype(str)
+        ),
+        on="zone_id",
+        how="left",
+    )
+    palette = [
+        f"#{value}" for value in params["spatial_stats"]["palettes"]["gwr_diverging"]
+    ]
+    cmap = LinearSegmentedColormap.from_list("gwr", palette)
+
+    columns = min(3, len(terms))
+    rows = int(np.ceil(len(terms) / columns))
+    footer_inches = 1.0
+    height = 4.2 * rows + footer_inches
+    figure = Figure(figsize=(4.0 * columns, height))
+    FigureCanvasAgg(figure)
+    axes_grid = figure.subplots(rows, columns, squeeze=False)
+
+    for index, term in enumerate(terms):
+        axes = axes_grid[index // columns][index % columns]
+        values = merged[f"beta_{term}"].astype("float64").to_numpy()
+        limit = float(np.nanmax(np.abs(values))) or 1.0
+        merged.plot(
+            ax=axes,
+            column=f"beta_{term}",
+            cmap=cmap,
+            norm=TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit),
+            edgecolor="#ffffff",
+            linewidth=0.1,
+            legend=True,
+            legend_kwds={"shrink": 0.6},
+            missing_kwds={"color": "#dddddd"},
+        )
+        flag = f"sig_{term}"
+        if flag in merged.columns:
+            insignificant = ~merged[flag].fillna(False).astype(bool)
+            if bool(insignificant.any()):
+                merged[insignificant.to_numpy()].plot(
+                    ax=axes,
+                    facecolor="none",
+                    edgecolor="#555555",
+                    linewidth=0.2,
+                    hatch="////",
+                )
+        axes.set_title(f"beta({term})", fontsize=10)
+        axes.set_aspect("equal")
+        axes.set_xticks([])
+        axes.set_yticks([])
+        for spine in axes.spines.values():
+            spine.set_visible(False)
+
+    for index in range(len(terms), rows * columns):
+        axes_grid[index // columns][index % columns].axis("off")
+
+    figure.suptitle(title or "GWR local coefficients", fontsize=13)
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(params, ["lst_not_air_temp", "zonal_not_pixel"])
+        + "\n- HATCHED zones are NOT significant at the multiple-testing "
+        "adjusted critical t. Predictors are standardised, so coefficients are\n"
+        "  comparable across panels but are per standard deviation, not per "
+        "native unit.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 0.97))
+    return figure
+
+
+def plot_gwr_coefficients(
+    zones: Any,
+    local_coefficients: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    terms: Sequence[str] | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the GWR coefficient panels. See :func:`build_gwr_coefficient_figure`."""
+    return _save_figure(
+        build_gwr_coefficient_figure(
+            zones, local_coefficients, params, terms=terms, title=title
+        ),
+        out_path,
+    )
+
+
+def build_maup_table_figure(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Any:
+    """Render the MAUP comparison as a figure-ready table.
+
+    Rows that could not be estimated are shaded and keep their reason, because
+    "this statistic stops existing at 13 units" is the finding, not a gap.
+
+    Args:
+        frame: Output of :func:`colombo_uhi.spatial_stats.maup_comparison`.
+        params: Parsed params mapping.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if frame.empty:
+        raise ValueError("the MAUP frame is empty; there is nothing to render")
+
+    def _text(value: Any) -> str:
+        if value is None or value != value:
+            return ""
+        return f"{value:.4g}" if isinstance(value, float) else str(value)
+
+    display = frame.copy()
+    display["value"] = [_text(value) for value in display["value"]]
+    display["n_units"] = [_text(value) for value in display["n_units"]]
+    # A refused statistic has no detail but does have a reason, and the reason is
+    # the entire point of the row. Merge them into one column and wrap it, rather
+    # than printing an empty cell beside a NaN.
+    merged_detail = [
+        _text(detail) if str(status) == "ok" else _text(reason)
+        for status, detail, reason in zip(
+            display["status"], display["detail"], display.get("reason", display["detail"])
+        )
+    ]
+    display["detail"] = ["\n".join(textwrap.wrap(text, 62)) for text in merged_detail]
+    wanted = ["statistic", "level", "n_units", "status", "value", "detail"]
+    display = display[[column for column in wanted if column in display.columns]]
+
+    # Row height must follow the WRAPPED detail, or a long refusal reason
+    # overflows its cell and covers the row beneath it.
+    line_counts = [max(1, text.count("\n") + 1) for text in display["detail"]]
+    total_lines = sum(line_counts) + 1
+    footer_inches = 1.05
+    table_inches = 0.19 * total_lines + 0.35
+    height = table_inches + 0.5 + footer_inches
+    figure = Figure(figsize=(11.5, height))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+    axes.axis("off")
+
+    table = axes.table(
+        cellText=display.astype(str).values,
+        colLabels=[column.replace("_", " ") for column in display.columns],
+        cellLoc="left",
+        # bbox pins the table to the axes, so the figure height set above is the
+        # height it actually occupies instead of leaving a blank lower half.
+        bbox=[0.0, 0.0, 1.0, 1.0],
+        colWidths=[0.16, 0.06, 0.07, 0.11, 0.09, 0.51],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+
+    status_index = list(display.columns).index("status")
+    for row in range(len(display)):
+        shaded = str(display.iloc[row, status_index]) != "ok"
+        for column in range(len(display.columns)):
+            cell = table[row + 1, column]
+            cell.set_edgecolor("#cccccc")
+            cell.set_height(line_counts[row] / total_lines)
+            if shaded:
+                cell.set_facecolor("#f2e6e6")
+    for column in range(len(display.columns)):
+        table[0, column].set_height(1.0 / total_lines)
+
+    axes.set_title(
+        title or "Aggregation-unit (MAUP) sensitivity", fontsize=12, pad=14
+    )
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(params, ["sensitivity_reporting", "zonal_not_pixel"])
+        + "\n- Shaded rows are statistics that are NOT ESTIMABLE at that "
+        "aggregation level. That is a reported result, not a missing value.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 1))
+    return figure
+
+
+def plot_maup_table(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str | None = None,
+) -> Path:
+    """Write the MAUP comparison table. See :func:`build_maup_table_figure`."""
+    return _save_figure(build_maup_table_figure(frame, params, title=title), out_path)
+
+
+def build_landscape_change_figure(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    metrics: Sequence[str] | None = None,
+    title: str | None = None,
+) -> Any:
+    """Build the green-space fragmentation comparison across dates and schemes.
+
+    Args:
+        frame: Output of
+            :func:`colombo_uhi.spatial_stats.build_landscape_frame`, one row per
+            scheme and date.
+        params: Parsed params mapping.
+        metrics: Metric columns to draw; defaults to the four CLAUDE.md names
+            plus the aggregation index.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty or a requested metric is absent.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if frame.empty:
+        raise ValueError("the landscape frame is empty; there is nothing to plot")
+    chosen = list(
+        metrics
+        or (
+            "class_area_ha",
+            "patch_density_per_100ha",
+            "edge_density_m_per_ha",
+            "mean_patch_area_ha",
+            "aggregation_index_pct",
+        )
+    )
+    missing = [name for name in chosen if name not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"landscape frame is missing metric(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+
+    work = frame.copy()
+    work["label"] = [
+        f"{scheme}\n{'' if year is None or year != year else int(year)}"
+        for scheme, year in zip(work["scheme"], work["year"])
+    ]
+
+    footer_inches = 1.0
+    columns = min(3, len(chosen))
+    rows = int(np.ceil(len(chosen) / columns))
+    height = 3.1 * rows + footer_inches
+    figure = Figure(figsize=(4.2 * columns, height))
+    FigureCanvasAgg(figure)
+    axes_grid = figure.subplots(rows, columns, squeeze=False)
+
+    for index, metric in enumerate(chosen):
+        axes = axes_grid[index // columns][index % columns]
+        values = work[metric].astype("float64").to_numpy()
+        positions = np.arange(len(values))
+        axes.bar(positions, values, color="#4d9221")
+        axes.set_xticks(positions)
+        axes.set_xticklabels(list(work["label"]), fontsize=7)
+        axes.set_title(metric.replace("_", " "), fontsize=9)
+        axes.grid(True, axis="y", alpha=0.3)
+
+    for index in range(len(chosen), rows * columns):
+        axes_grid[index // columns][index % columns].axis("off")
+
+    scale = (
+        float(frame["cell_size_m"].iloc[0])
+        if "cell_size_m" in frame.columns
+        else float(params["spatial_stats"]["landscape"]["raster_scale_m"])
+    )
+    figure.suptitle(title or "Green-space landscape metrics", fontsize=13)
+    figure.text(
+        0.01,
+        0.01,
+        caveat_footer(params, ["sensitivity_reporting"])
+        + f"\n- EVERY metric here is scale dependent and was computed at "
+        f"{scale:g} m. The same city at 30 m gives different patch counts, edge "
+        "density and\n  aggregation index, so the grid size must be quoted with "
+        "any figure. Cross-scheme differences are partly classifier differences.",
+        fontsize=7,
+        va="bottom",
+        ha="left",
+        color="#444444",
+    )
+    figure.tight_layout(rect=(0, footer_inches / height, 1, 0.95))
+    return figure
+
+
+def plot_landscape_change(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    metrics: Sequence[str] | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the landscape-metrics figure. See :func:`build_landscape_change_figure`."""
+    return _save_figure(
+        build_landscape_change_figure(frame, params, metrics=metrics, title=title),
+        out_path,
+    )

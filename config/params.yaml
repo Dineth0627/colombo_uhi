@@ -1240,11 +1240,270 @@ trends:
 spatial_stats:
   hotspot_methods: ["getis_ord_gi_star", "local_morans_i"]   # [CLAUDE.md] esda/libpysal on exported zonal stats
   emerging_hotspot: "mann_kendall_on_gi_star_space_time_bins" # [CLAUDE.md] EHSA
+  levels: ["gn", "ds"]                # [CLAUDE.md] the MAUP pair. 557 GN / 13 DS. Every
+                                      # product is attempted at BOTH; what survives the
+                                      # coarsening is itself the reported result. See
+                                      # `regression.min_obs_per_predictor` — at n=13 the
+                                      # local models are NOT estimable and are recorded as
+                                      # such rather than fitted and caveated.
+  epochs_source: "landsat_dry"        # *** [DECISION 2026-08-11] READ THE CAVEAT. ***
+                                      # The POOLED L5+L7+L8+L9 series, deliberately, even
+                                      # though Phase 4 forbids fitting a TREND across it
+                                      # (L5-L7 = +1.78 degC, L7-L8 = -2.48 degC).
+                                      #
+                                      # Moran's I, LISA and Gi* are WITHIN-EPOCH spatial
+                                      # statistics computed on deviations from that epoch's
+                                      # own mean, so a spatially uniform sensor step cancels
+                                      # exactly the way it cancels in SUHII. What does NOT
+                                      # cancel is any epoch-to-epoch MAGNITUDE, so none may
+                                      # be quoted: see caveats.within_epoch_only. Using the
+                                      # pooled series buys the three-epoch cluster sequence
+                                      # (2000s/2010s/2020s) that landsat_oli_dry cannot give.
+  epoch_sensitivity_source: "landsat_oli_dry"   # [DECISION 2026-08-11] the 2020s epoch is
+                                      # re-run on the single-sensor series. If the cluster
+                                      # geography is unchanged, the pooled-series choice
+                                      # above is empirically justified rather than merely
+                                      # argued. If it CHANGES, stop and report that instead.
+  epoch_scale_m: 100                  # [DEFAULT — Phase 5] matches trends.fit_scale_m, so the
+                                      # zonal means here are comparable with Phase 4's.
+  response_band: "LST_C"              # the band every spatial statistic is computed on.
+                                      # LOAD-BEARING for Gi*: see `gi_star` below.
+  permutations: 999                   # [DEFAULT — Phase 5] esda conditional-randomisation
+                                      # draws. The finest p_sim resolvable is 1/(n+1), so 999
+                                      # gives p_sim >= 0.001 — enough for a 0.01 break but NOT
+                                      # for a Bonferroni-style threshold on 557 tests. That is
+                                      # why FDR (below) is applied to p_sim rather than a
+                                      # smaller alpha.
+  random_seed: 42                     # [DEFAULT] same seed as uhi.drivers.sample_seed and
+                                      # prediction.rf.random_seed. Without it the permutation
+                                      # p-values differ between runs and a "significant"
+                                      # cluster can vanish on re-run with no code change.
+  geometry:
+    simplify_m: 10                    # [DEFAULT — Phase 5] matches aoi._MAX_ERROR_M. COD-AB
+                                      # polygons carry far more vertices than 100 m analysis
+                                      # needs; simplifying keeps the committed GeoJSON small.
+                                      # Contiguity is robust to this, centroids more so.
+    export_properties:                # properties carried onto the exported geometry. The
+                                      # PCODE IS FIRST and is the only legitimate join key —
+                                      # GN names are NOT unique within Colombo District.
+      gn: ["adm4_pcode", "adm4_name", "adm3_pcode", "adm3_name", "area_sqkm"]
+      ds: ["adm3_pcode", "adm3_name", "adm2_name", "area_sqkm"]
+    max_geojson_mb: 8                 # [DEFAULT — Phase 5] refuse to commit a bigger file.
+                                      # data/outputs is committed (CLAUDE.md), so a
+                                      # 100 MB unsimplified export would poison the repo.
   weights:
     scheme: "queen"                   # [DEFAULT — Phase 5] contiguity weights for GN/DS polygons
     knn_k: 8                          # [DEFAULT — Phase 5] KNN fallback for centroid-based runs
+    transform: "r"                    # [DEFAULT — Phase 5] row-standardised. Required for
+                                      # Moran's I to be interpretable as a correlation with
+                                      # the spatial lag; Gi* uses the same W for consistency.
+    island_policy: "attach_knn1"      # [DEFAULT — Phase 5] one of attach_knn1 | error | allow.
+                                      # *** THIS IS NOT COSMETIC. *** Colombo's coastline is
+                                      # ragged and COD-AB encloses the port outer harbour, so
+                                      # some GN polygons can end up with ZERO queen
+                                      # neighbours. esda does not raise on an island: it
+                                      # returns a statistic computed from an empty
+                                      # neighbourhood, which lands on the map as an ordinary
+                                      # value. attach_knn1 gives every island its single
+                                      # nearest neighbour; the count is ALWAYS reported.
+  lisa:                               # Local Moran's I
+    alpha: 0.05
+    fdr_method: "benjamini_hochberg"  # [CLAUDE.md] 557 simultaneous local tests at alpha 0.05
+                                      # produce ~28 false clusters by construction. Report the
+                                      # raw and FDR-adjusted counts as a PAIR, exactly as
+                                      # Phase 4 reports pixel-wise beside per-GN.
+  gi_star:                            # Getis-Ord Gi*
+    alpha: 0.05
+    fdr_method: "benjamini_hochberg"
+    confidence_breaks: [0.01, 0.05, 0.10]   # [DEFAULT — Phase 5] 99/95/90% bins, the
+                                      # conventional hot/cold-spot legend. Strictly
+                                      # increasing; test_params pins that.
+    weights_binary: true              # [DEFAULT — Phase 5] Gi* uses BINARY weights with the
+                                      # focal unit included (the "star"), which is the
+                                      # Getis-Ord (1992) / ArcGIS convention. Row-standardising
+                                      # would force sum(w_ij) = 1 for every i and collapse the
+                                      # variance term that makes a large, well-connected
+                                      # neighbourhood count for more than a small one.
+                                      # Moran's I keeps `weights.transform: r` — the two
+                                      # statistics genuinely want different weights.
+    require_non_negative: true        # *** MEASURED PROPERTY OF THE STATISTIC, not a style
+                                      # choice. *** Gi* is a ratio of a neighbourhood sum to
+                                      # the global sum; it is only defined for non-negative
+                                      # attributes. Feeding it LST_z or an anomaly returns
+                                      # finite, plausible-looking numbers that mean nothing.
+                                      # Always pass raw LST in degC (response_band).
+  ehsa:                               # Emerging Hot Spot Analysis — implemented in Python,
+                                      # NOT ArcGIS (CLAUDE.md).
+    bin_years: 1                      # [DEFAULT — Phase 5] one space-time bin per year, which
+                                      # is the natural bin because the input IS the annual
+                                      # composite series.
+    sources: ["landsat_oli_dry", "terra_night"]   # [DECISION 2026-08-11] BOTH, reported as a
+                                      # pair. landsat_oli_dry: 12 bins at 100 m, real
+                                      # intra-urban detail, single sensor family, but short.
+                                      # terra_night: 26 bins, single sensor, the ONLY series
+                                      # Phase 4 found significant — but 1 km pixels against a
+                                      # ~1.25 km2 median GN division. Neither is sufficient
+                                      # alone and neither may be quoted alone.
+    hot_z: 1.96                       # [DEFAULT — Phase 5] |z| for a bin to count as hot/cold
+    cold_z: -1.96                     # (two-sided 0.05 on the Gi* z-score).
+    new_tail_bins: 1                  # a "New" hot spot is hot in the final `new_tail_bins`
+                                      # bins and never before.
+    consecutive_min_run: 2            # "Consecutive" needs a final run of at least this many
+                                      # bins, and that run must be the only hot bins.
+    persistent_share: 0.90            # "Persistent" = hot in >= this share of bins with NO
+                                      # significant Mann-Kendall trend in the Gi* series.
+    sporadic_max_share: 0.90          # "Sporadic" = on-and-off hot, never cold, below this
+                                      # share. Above it and the zone is Persistent.
+    historical_recent_bins: 1         # "Historical" = hot in >= `persistent_share` of bins
+                                      # but NOT in the last `historical_recent_bins`.
+                                      # *** KEEP THIS SMALL. *** With persistent_share 0.90
+                                      # a 10-bin series can afford only ONE non-hot bin, so
+                                      # demanding three consecutive quiet bins makes the
+                                      # category unreachable by arithmetic rather than by
+                                      # evidence — no zone could ever satisfy both halves.
+    mk_alpha: 0.05                    # significance level of the Mann-Kendall test on each
+                                      # zone's Gi* z-series (Intensifying / Diminishing).
+    power_check: true                 # *** REQUIRED BY THE PHASE 4 SIGN-OFF. *** Run
+                                      # trends.minimum_detectable_slope on every zone's Gi*
+                                      # series and flag the underpowered ones. With 12 bins
+                                      # most zones will classify as "No pattern"; this flag is
+                                      # what separates "stable" from "the series cannot
+                                      # resolve it", which is the same distinction that made
+                                      # Phase 4's Landsat zero reportable.
+  regression:                         # the CLAUDE.md driver-attribution ladder, done properly.
+                                      # Phase 3's version sampled 5000 spatially autocorrelated
+                                      # PIXELS and its p-values are anti-conservative by
+                                      # construction (see uhi.drivers). This section replaces
+                                      # it with zonal units and an explicit spatial model.
+    response: "LST_C"
+    predictors: ["NDVI", "NDBI", "built_fraction", "pop_density",
+                 "elevation_m", "dist_coast_km"]   # [CLAUDE.md] the six named drivers
+    standardise: true                 # z-score predictors so GWR/MGWR bandwidth selection and
+                                      # coefficient magnitudes are comparable across variables.
+    min_obs_per_predictor: 10         # *** THE n=13 GATE. *** 6 predictors x 10 = 60
+                                      # observations minimum. GN (557) passes; DS (13) FAILS,
+                                      # and spatial_stats.require_estimable records
+                                      # "not_estimable" with the reason instead of fitting a
+                                      # GWR to 13 points and 6 covariates, which returns
+                                      # local coefficients that are pure noise.
+    lm_alpha: 0.05                    # significance level of the Lagrange Multiplier tests
+    lag_estimator: "ml"               # [DEFAULT — Phase 5] ml | gm. Maximum likelihood is
+                                      # tractable at n=557; GM is the fallback if spreg's ML
+                                      # path is unavailable or fails to converge.
+    vif_warn: 5.0                     # [DEFAULT — Phase 5] warn above this. NDVI/NDBI
+                                      # collinearity in a dense city is a KNOWN finding
+                                      # (PROGRESS.md, Phase 3): NDVI's partial coefficient
+                                      # flipped sign in 5 of 26 years while its bivariate
+                                      # correlation stayed a clean -0.51. Expect this to fire.
+    gwr:
+      kernel: "bisquare"              # [DEFAULT — Phase 5] adaptive bisquare, the mgwr default
+      fixed: false                    # adaptive (k nearest) rather than a fixed metric radius.
+                                      # GN divisions vary from ~0.1 to ~15 km2, so a fixed
+                                      # bandwidth would give the large rural units almost no
+                                      # neighbours and the dense core hundreds.
+      criterion: "AICc"               # bandwidth search criterion
+      adjust_alpha: true              # *** NOT OPTIONAL. *** A GWR fits one model per zone, so
+                                      # the local t-tests are 557 simultaneous tests. mgwr's
+                                      # adj_alpha / critical_tval implements the
+                                      # da Silva & Fotheringham (2016) correction; without it
+                                      # the "significant" local coefficients are inflated the
+                                      # same way an uncorrected pixel-wise p-map is.
+      mgwr_bw_min: 2                  # floor for the multiscale bandwidth search
+  covariates:                         # the non-Landsat predictors, and what each really is
+    population:
+      source: "worldpop"
+      year: 2020                      # *** WorldPop ENDS 2020 (datasets.worldpop.availability),
+                                      # so the 2020s-epoch population is the 2020 layer, not a
+                                      # 2025 one. *** The actual year travels in the column
+                                      # name and the table provenance; do not relabel it.
+      density_unit: "people_per_km2"
+    elevation:
+      source: "srtm"                  # datasets.srtm, band `elevation`, metres
+    built_fraction:
+      source: "ghsl"                  # via uhi_metrics.built_up_fraction, which SNAPS the
+                                      # requested year DOWN to a 5-year GHSL epoch. A "2025"
+                                      # built fraction is really the 2025 epoch layer; the
+                                      # chosen epoch travels as a property.
+    dist_coast:
+      min_ocean_pixels: 1024          # [DEFAULT — Phase 5] connected-component floor that
+                                      # separates the OCEAN from inland water. Beira Lake
+                                      # (~0.65 km2) and Diyawanna (~0.4 km2) are far below
+                                      # 1024 cells at 100 m; the Indian Ocean is effectively
+                                      # unbounded. Without this, "distance to coast" would
+                                      # really be "distance to the nearest puddle".
+      scale_m: 100                    # distance-transform grid. fastDistanceTransform returns
+                                      # SQUARED distance in PIXELS - sqrt then multiply by this.
+      units: "km"
+  landscape:                          # [CLAUDE.md] landscape metrics on the green/wetland class
+    schemes: ["dynamic_world", "worldcover"]
+    dynamic_world_years: [2016, 2024]  # [DECISION 2026-08-11] two dates, so the deliverable is
+                                      # fragmentation CHANGE and not a single snapshot.
+                                      # Dynamic World starts 2015-06-27, so 2016 is the first
+                                      # complete year.
+    worldcover_asset: "worldcover_2021"   # single-date cross-source check on a different sensor
+                                      # and legend. If the two disagree wildly, the metric is
+                                      # measuring the classifier, not the city.
+    green_classes:                    # class CODES, per the landcover: legends below. NOT
+                                      # indices - WorldCover codes are non-contiguous.
+      dynamic_world: [1, 2, 3, 5]     # trees, grass, flooded vegetation, shrub and scrub.
+                                      # Crops (4) EXCLUDED: agricultural land is not urban
+                                      # green space for a greening-priority purpose.
+      worldcover: [10, 20, 30, 90, 95]  # tree cover, shrubland, grassland, herbaceous
+                                      # wetland, mangroves. Cropland (40) excluded to match.
+    raster_scale_m: 10                # native Dynamic World / WorldCover resolution. Patch
+                                      # metrics are SCALE-DEPENDENT - a 30 m grid gives
+                                      # different patch counts on the same city - so this is
+                                      # quoted with every metric.
+    connectivity: 8                   # 8-neighbour patch definition (the landscapemetrics and
+                                      # FRAGSTATS default). 4 gives systematically more,
+                                      # smaller patches on the same raster.
+    boundary_as_edge: false           # [DEFAULT — Phase 5] the landscape boundary does NOT
+                                      # count as class edge. FRAGSTATS calls this the
+                                      # "no boundary" convention; it keeps edge density from
+                                      # scaling with the arbitrary shape of the study-area clip.
+    min_patch_cells: 1                # no minimum-mapping-unit filter by default
+    per_zone: true                    # also compute the metrics per GN division, so Phase 7's
+                                      # greening priority has a fragmentation criterion
   driver_attribution:                 # [CLAUDE.md] escalation path
     workflow: ["ols", "residual_morans_i", "spatial_lag_or_error", "gwr_mgwr"]
+  palettes:                           # [DEFAULT — Phase 5] one hex colour per class. Lives
+                                      # here so no notebook or figure hardcodes a colour.
+    lisa:                             # ColorBrewer RdBu. HH/LL are CLUSTERS and take the
+      HH: "b2182b"                    # saturated ends; HL/LH are spatial OUTLIERS and take
+      LL: "2166ac"                    # the pale mid-tones DELIBERATELY — an outlier read as
+      HL: "ef8a62"                    # a cluster is the single most common misreading of a
+      LH: "67a9cf"                    # LISA map, so they must not compete visually.
+      ns: "f0f0f0"
+    gi_star:                          # diverging, symmetric about "not significant"
+      hot_99: "b2182b"
+      hot_95: "ef8a62"
+      hot_90: "fddbc7"
+      ns: "f7f7f7"
+      cold_90: "d1e5f0"
+      cold_95: "67a9cf"
+      cold_99: "2166ac"
+    ehsa:                             # hot forms warm, cold forms cool, null grey. Intensity
+      new_hot_spot: "fdae61"          # rises with how established the pattern is.
+      consecutive_hot_spot: "f46d43"
+      intensifying_hot_spot: "a50026"
+      persistent_hot_spot: "d73027"
+      diminishing_hot_spot: "fee090"
+      sporadic_hot_spot: "fdd0a2"
+      oscillating_hot_spot: "fddbc7"
+      historical_hot_spot: "e0c2c2"
+      new_cold_spot: "abd9e9"
+      consecutive_cold_spot: "74add1"
+      intensifying_cold_spot: "313695"
+      persistent_cold_spot: "4575b4"
+      diminishing_cold_spot: "e0f3f8"
+      sporadic_cold_spot: "c6dbef"
+      oscillating_cold_spot: "d1e5f0"
+      historical_cold_spot: "c2ccdd"
+      no_pattern: "f0f0f0"
+    gwr_diverging: ["2166ac", "67a9cf", "d1e5f0", "f7f7f7", "fddbc7", "ef8a62", "b2182b"]
+    underpowered_hatch: "xxx"         # zones the series could not have resolved are HATCHED,
+                                      # not recoloured — the category is still what it is, the
+                                      # hatch says "and we could not have seen otherwise".
 
 prediction:
   framing: "conditional_scenario_projection_NOT_forecast"    # [CLAUDE.md caveat 3]
@@ -1362,3 +1621,16 @@ caveats:
     spatially autocorrelated, so the realised false-discovery proportion varies
     far more than its controlled expectation; significant-area figures are a
     screening result, reported alongside Benjamini-Yekutieli.
+  within_epoch_only: >-
+    Epoch cluster maps are computed on the POOLED Landsat series, whose
+    inter-sensor offsets over Colombo are material (L5-L7 +1.78 degC, L7-L8
+    -2.48 degC). Moran's I, LISA and Gi* are within-epoch statistics, so a
+    spatially uniform sensor step cancels and the cluster GEOGRAPHY is valid.
+    No epoch-to-epoch temperature magnitude may be read off these maps; the
+    Phase 4 Mann-Kendall and Sen's slope products are what measure change.
+  zonal_not_pixel: >-
+    These statistics describe administrative POLYGONS, not pixels and not
+    people. A coefficient fitted across 557 GN divisions is a property of that
+    aggregation; reading it as an individual-level or pixel-level relationship
+    is the ecological fallacy. The same analysis at DS level gives different
+    numbers by construction, which is why both are reported.

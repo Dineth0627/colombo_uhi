@@ -646,3 +646,251 @@ def test_ghsl_cell_area_matches_its_resolution(params: dict[str, Any]) -> None:
     assert ghsl["epoch_interval_years"] == 5
     # The Phase 1 urban-extent threshold is expressed in the same units.
     assert params["aoi"]["urban_extent"]["built_surface_threshold_m2"] < ghsl["cell_area_m2"]
+
+
+# --- Phase 5: spatial statistics ---------------------------------------------
+def test_phase5_sections_present(params: dict[str, Any]) -> None:
+    spatial = params["spatial_stats"]
+    for key in (
+        "levels", "epochs_source", "response_band", "permutations", "random_seed",
+        "geometry", "weights", "lisa", "gi_star", "ehsa", "regression",
+        "covariates", "landscape", "palettes",
+    ):
+        assert key in spatial, f"spatial_stats.{key} missing"
+
+
+def test_spatial_levels_are_the_two_aggregation_units(params: dict[str, Any]) -> None:
+    # The MAUP pair CLAUDE.md requires. Both must be levels aoi.py can load.
+    assert params["spatial_stats"]["levels"] == ["gn", "ds"]
+    assert params["aoi"]["expected_counts"]["gn_divisions"] == 557
+    assert params["aoi"]["expected_counts"]["ds_divisions"] == 13
+
+
+def test_spatial_epoch_sources_exist_in_the_suhii_sources(
+    params: dict[str, Any],
+) -> None:
+    keys = {source["key"] for source in params["uhi"]["suhii"]["sources"]}
+    spatial = params["spatial_stats"]
+    assert spatial["epochs_source"] in keys
+    assert spatial["epoch_sensitivity_source"] in keys
+    # The sensitivity source must be a DIFFERENT series, or the check is vacuous.
+    assert spatial["epochs_source"] != spatial["epoch_sensitivity_source"]
+
+
+def test_spatial_response_band_is_the_celsius_lst_band(params: dict[str, Any]) -> None:
+    # Gi* is undefined for negative values, so the response must be the degC
+    # band and never a z-score or an anomaly.
+    assert params["spatial_stats"]["response_band"] == params["landsat_c2l2"]["lst_band_name"]
+    assert params["spatial_stats"]["regression"]["response"] == params["spatial_stats"]["response_band"]
+
+
+def test_permutation_count_can_reach_the_finest_confidence_break(
+    params: dict[str, Any],
+) -> None:
+    # The smallest obtainable pseudo p is 1/(permutations + 1). If that exceeds
+    # the tightest confidence break, the 99% class is unreachable no matter how
+    # extreme a zone is - and nobody would notice.
+    spatial = params["spatial_stats"]
+    finest = min(spatial["gi_star"]["confidence_breaks"])
+    assert 1.0 / (spatial["permutations"] + 1) <= finest
+
+
+def test_spatial_seed_matches_the_other_reproducibility_seeds(
+    params: dict[str, Any],
+) -> None:
+    assert params["spatial_stats"]["random_seed"] == params["uhi"]["drivers"]["sample_seed"]
+    assert params["spatial_stats"]["random_seed"] == params["prediction"]["rf"]["random_seed"]
+
+
+def test_confidence_breaks_are_strictly_increasing(params: dict[str, Any]) -> None:
+    breaks = params["spatial_stats"]["gi_star"]["confidence_breaks"]
+    assert all(low < high for low, high in zip(breaks, breaks[1:]))
+
+
+def test_moran_and_gi_star_use_different_weight_transforms(
+    params: dict[str, Any],
+) -> None:
+    # Row-standardising Gi* forces every neighbourhood sum to 1 and collapses
+    # the variance term that lets a large neighbourhood outweigh a small one.
+    spatial = params["spatial_stats"]
+    assert spatial["weights"]["transform"] == "r"
+    assert spatial["gi_star"]["weights_binary"] is True
+
+
+def test_island_policy_is_one_the_code_implements(params: dict[str, Any]) -> None:
+    from colombo_uhi.spatial_stats import ISLAND_POLICIES, WEIGHTS_SCHEMES
+
+    weights = params["spatial_stats"]["weights"]
+    assert weights["island_policy"] in ISLAND_POLICIES
+    assert weights["scheme"] in WEIGHTS_SCHEMES
+
+
+def test_geometry_export_leads_with_the_pcode_at_both_levels(
+    params: dict[str, Any],
+) -> None:
+    # The pcode is the ONLY legitimate join key: GN names repeat across
+    # Dehiwala, Moratuwa and Kolonnawa.
+    properties = params["spatial_stats"]["geometry"]["export_properties"]
+    assert properties["gn"][0] == "adm4_pcode"
+    assert properties["ds"][0] == "adm3_pcode"
+
+
+def test_ehsa_thresholds_are_coherent(params: dict[str, Any]) -> None:
+    ehsa = params["spatial_stats"]["ehsa"]
+    assert ehsa["hot_z"] > 0 > ehsa["cold_z"]
+    assert 0.0 < ehsa["persistent_share"] <= 1.0
+    assert ehsa["sporadic_max_share"] <= ehsa["persistent_share"]
+    assert ehsa["consecutive_min_run"] > ehsa["new_tail_bins"] >= 1
+    assert ehsa["bin_years"] >= 1
+
+
+def test_ehsa_historical_category_is_arithmetically_reachable(
+    params: dict[str, Any],
+) -> None:
+    # "Historical" needs >= persistent_share of bins hot AND the last
+    # historical_recent_bins quiet. With share 0.90 and a 10-bin series only one
+    # bin may be quiet, so demanding three quiet bins makes the category
+    # impossible to reach - a rule that can never fire is a silent bug.
+    ehsa = params["spatial_stats"]["ehsa"]
+    shortest_series = 10
+    max_quiet = shortest_series * (1.0 - ehsa["persistent_share"])
+    assert ehsa["historical_recent_bins"] <= max_quiet + 1e-9
+
+
+def test_ehsa_sources_are_single_sensor_series(params: dict[str, Any]) -> None:
+    # Phase 4 established that a trend fitted across a Landsat changeover
+    # measures the sensor step. EHSA runs Mann-Kendall over time, so its sources
+    # must not be the pooled series.
+    sources = {source["key"]: source for source in params["uhi"]["suhii"]["sources"]}
+    for key in params["spatial_stats"]["ehsa"]["sources"]:
+        assert key in sources, f"ehsa source {key} is not a configured LST source"
+        source = sources[key]
+        if source["kind"] == "landsat":
+            assert "sensors" in source, (
+                f"ehsa source {key} pools Landsat sensors; Phase 4 measured "
+                "offsets of up to 2.48 degC across changeovers"
+            )
+
+
+def test_ehsa_power_check_is_on(params: dict[str, Any]) -> None:
+    # Required by the Phase 4 sign-off: over a short panel "no pattern" must be
+    # separable from "the series could not have resolved it".
+    assert params["spatial_stats"]["ehsa"]["power_check"] is True
+
+
+def test_regression_predictors_are_the_six_claude_md_drivers(
+    params: dict[str, Any],
+) -> None:
+    predictors = params["spatial_stats"]["regression"]["predictors"]
+    assert set(predictors) == {
+        "NDVI", "NDBI", "built_fraction", "pop_density", "elevation_m",
+        "dist_coast_km",
+    }
+    assert params["spatial_stats"]["regression"]["response"] not in predictors
+
+
+def test_ds_level_fails_the_estimability_gate_by_design(
+    params: dict[str, Any],
+) -> None:
+    # This is the mechanism behind the Phase 5 decision to record GWR/MGWR as
+    # not estimable at DS rather than fitting them to 13 points.
+    regression = params["spatial_stats"]["regression"]
+    required = regression["min_obs_per_predictor"] * len(regression["predictors"])
+    assert params["aoi"]["expected_counts"]["ds_divisions"] < required
+    assert params["aoi"]["expected_counts"]["gn_divisions"] >= required
+
+
+def test_gwr_corrects_its_local_multiple_testing(params: dict[str, Any]) -> None:
+    # A GWR fits one model per zone; without the adjustment the local
+    # significance map is inflated exactly like an uncorrected p-raster.
+    assert params["spatial_stats"]["regression"]["gwr"]["adjust_alpha"] is True
+
+
+def test_population_year_is_inside_worldpop_coverage(params: dict[str, Any]) -> None:
+    # WorldPop ends in 2020. A 2025 population layer does not exist, and
+    # silently substituting one would mislabel the column.
+    year = params["spatial_stats"]["covariates"]["population"]["year"]
+    first, last = params["datasets"]["worldpop"]["availability"]
+    assert int(str(first)[:4]) <= year <= int(str(last)[:4])
+
+
+def test_distance_to_coast_floor_excludes_the_inland_lakes(
+    params: dict[str, Any],
+) -> None:
+    # Beira Lake (~0.65 km2) and Diyawanna (~0.4 km2) must fall BELOW the
+    # connected-component floor, or "distance to coast" becomes "distance to the
+    # nearest water of any kind" and every division around Beira reads coastal.
+    coast = params["spatial_stats"]["covariates"]["dist_coast"]
+    cell_area_km2 = (coast["scale_m"] / 1000.0) ** 2
+    floor_km2 = coast["min_ocean_pixels"] * cell_area_km2
+    assert floor_km2 > 4.0, "the floor must exceed Bolgoda Lake's ~3.7 km2"
+
+
+def test_landscape_green_classes_exist_in_their_legends(
+    params: dict[str, Any],
+) -> None:
+    # A class code outside the legend matches no pixels, so every metric would
+    # come back zero with no error anywhere.
+    landscape = params["spatial_stats"]["landscape"]
+    for scheme, codes in landscape["green_classes"].items():
+        legend = params["landcover"][scheme]["classes"]
+        assert codes, f"green_classes.{scheme} is empty"
+        for code in codes:
+            assert code in legend, f"{scheme} has no class {code}"
+
+
+def test_landscape_green_classes_exclude_cropland(params: dict[str, Any]) -> None:
+    # Agricultural land is not urban green space for a greening-priority
+    # purpose, and including it would inflate every fragmentation metric.
+    green = params["spatial_stats"]["landscape"]["green_classes"]
+    assert 40 not in green["worldcover"]  # WorldCover cropland
+    assert 4 not in green["dynamic_world"]  # Dynamic World crops
+
+
+def test_landscape_dates_are_within_dynamic_world_coverage(
+    params: dict[str, Any],
+) -> None:
+    landscape = params["spatial_stats"]["landscape"]
+    first = int(str(params["datasets"]["dynamic_world"]["availability"][0])[:4])
+    for year in landscape["dynamic_world_years"]:
+        # Strictly AFTER the launch year: Dynamic World opens 2015-06-27, so
+        # 2015 is a half year and not comparable with a full one.
+        assert year > first
+    assert len(set(landscape["dynamic_world_years"])) >= 2, (
+        "two dates are needed for a fragmentation CHANGE result"
+    )
+
+
+def test_landscape_connectivity_is_a_real_rule(params: dict[str, Any]) -> None:
+    assert params["spatial_stats"]["landscape"]["connectivity"] in (4, 8)
+    assert params["spatial_stats"]["landscape"]["raster_scale_m"] > 0
+
+
+def test_spatial_palettes_cover_every_class_the_code_can_emit(
+    params: dict[str, Any],
+) -> None:
+    from colombo_uhi.spatial_stats import EHSA_CATEGORIES, LISA_QUADRANTS, NOT_SIGNIFICANT
+
+    palettes = params["spatial_stats"]["palettes"]
+    for label in (*LISA_QUADRANTS.values(), NOT_SIGNIFICANT):
+        assert label in palettes["lisa"], f"no LISA colour for {label}"
+    for category in EHSA_CATEGORIES:
+        assert category in palettes["ehsa"], f"no EHSA colour for {category}"
+    for side in ("hot", "cold"):
+        for level in (99, 95, 90):
+            assert f"{side}_{level}" in palettes["gi_star"]
+    assert NOT_SIGNIFICANT in palettes["gi_star"]
+
+
+def test_gwr_palette_is_diverging_and_zero_centred(params: dict[str, Any]) -> None:
+    # Local coefficients cross zero, so the ramp must have an odd number of
+    # stops with a neutral middle; a sequential ramp would hide the sign change.
+    palette = params["spatial_stats"]["palettes"]["gwr_diverging"]
+    assert len(palette) % 2 == 1
+    assert len(palette) >= 5
+
+
+def test_phase5_caveats_present(params: dict[str, Any]) -> None:
+    for key in ("within_epoch_only", "zonal_not_pixel"):
+        assert key in params["caveats"], f"caveats.{key} missing"
+        assert params["caveats"][key].strip()

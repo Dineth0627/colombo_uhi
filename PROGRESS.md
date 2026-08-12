@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run of notebook 04**)_
+_Last updated: 2026-08-12 (Phase 5 code written; **awaiting the first Colab run of notebook 05**)_
 
 ## Status snapshot
 
@@ -11,10 +11,170 @@ _Last updated: 2026-08-09 (Phase 4 code written; **awaiting the first Colab run 
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
-| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ⬜ |
+| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **code written 2026-08-12, NOT YET RUN.** 736 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+## PHASE 5 — implementation record (2026-08-12, NOT YET RUN)
+
+**Nothing below has been executed against Earth Engine.** Claude Code has no EE
+credentials. Every server-side function is unverified until notebook 05 runs.
+
+**736 tests pass locally, 8 skip** (was 594 passing at the end of Phase 4). The
+skips are the 5 `rasterio` raster round-trip tests from Phase 4 plus **3 new
+cross-validation tests** that need `esda`, `libpysal` and `spreg` — absent from
+the local dev environment, present in Colab. Those three are the whole safety
+argument for the design decision below, so **run `pytest tests/ -q` in Colab and
+confirm 736 passing before signing Phase 5 off.**
+
+### New / changed files
+
+| File | What |
+|---|---|
+| `src/colombo_uhi/spatial_stats.py` | stub → full module (~2 600 lines): weights, Moran/LISA/Gi*, EHSA, the regression ladder, MAUP, landscape metrics, zone geometry + covariate exports |
+| `config/params.yaml` | `spatial_stats` 8 lines → ~170; 2 new caveats (`within_epoch_only`, `zonal_not_pixel`) |
+| `src/colombo_uhi/viz.py` | **additive only**: `spatial_palette`, LISA/Gi*/EHSA maps, GWR coefficient small multiples, MAUP table, landscape change |
+| `tests/test_spatial_stats.py` | **new**, 115 tests |
+| `tests/test_params.py` | + 24 structural tests for the new keys |
+| `notebooks/05_spatial_statistics.ipynb` | stub → 43 cells |
+| `.gitignore` | `data/interim/*.geojson`, `*.csv` — staging copies of the raw exports |
+
+**No `requirements.txt` change.** `libpysal`, `esda`, `spreg`, `mgwr`,
+`geopandas`, `rasterio` and `scipy` were already declared in Phase 0.
+
+### The central design decision: the statistics are implemented, not imported
+
+Moran's I (global and local), Gi\*, the OLS diagnostics and the Lagrange
+Multiplier tests are computed **analytically in numpy** rather than delegated to
+`esda`/`spreg`. Four reasons, in order of weight:
+
+1. **Testability.** The local dev environment has no PySAL, so a module built on
+   `esda` would have had **zero** local test coverage of its numerical core —
+   against a project rule that pure-Python logic must be pytest-covered.
+2. **Reproducibility.** The permutation p-values are driven by
+   `spatial_stats.random_seed`, so a "significant" cluster cannot vanish on a
+   re-run.
+3. **API risk.** `Queen.from_dataframe`'s `use_index`, `Moran_Local`'s `seed` and
+   `island_weight`, `G_Local`'s `star` — all have moved between releases. The
+   plan flagged these as the phase's main uncertainty; implementing the
+   statistics removes the uncertainty instead of guessing at it.
+4. **Islands.** See below — the library behaviour here is silently wrong for
+   this study area, and it had to be intercepted anyway.
+
+**This is only safe because it is checked.** `esda_cross_check` and
+`spreg_cross_check` run the reference implementations on the same inputs and
+report the differences; notebook 05 **Step 1** prints both tables, and
+`test_our_statistics_match_esda` / `test_our_ols_and_lm_tests_match_spreg`
+assert agreement to 1e-9 and 1e-6 via `importorskip`. **Read the Step 1 output
+before trusting any map in the notebook.**
+
+`spreg` and `mgwr` ARE used for what they uniquely provide: ML spatial
+lag/error estimation, and GWR/MGWR bandwidth search.
+
+**One convention difference, found while writing the cross-check and worth
+knowing before Step 1 prints it.** Local Moran's I has two published
+normalisations: Anselin (1995) divides by the population second moment, GeoDa
+and `esda` by `(n-1)`. They differ by a single constant identical for every
+zone, which cannot change a quadrant, a permutation p-value or a cluster map —
+only the printed magnitude of `local_i`. `esda_cross_check` therefore compares
+that row **after rescaling**, prints the ratio, and adds a separate row
+asserting the **quadrant labels agree exactly**. Global Moran's I and Gi\* have
+one convention each and are compared directly. Had this been left as a naive
+equality test it would have failed in Colab at ~3 % and looked like a bug in the
+statistic.
+
+### Five things that would have produced wrong maps silently
+
+1. **An island is not a zero.** A GN division with no queen neighbour gets a
+   local statistic over an *empty* neighbourhood — and with the standard
+   pseudo-p formula it receives `1/(permutations+1)`, the **smallest achievable
+   p-value**. The island would render as the single most significant cluster on
+   the map. Colombo's coast is ragged and COD-AB encloses the port outer
+   harbour, so this is live here, not theoretical. `build_weights` counts
+   islands, repairs them (`island_policy: attach_knn1`) and reports the count;
+   the statistics emit NaN for any that remain. Two tests pin it.
+2. **Gi\* is undefined for negative values** — it is a ratio of a neighbourhood
+   sum to the global sum. On `LST_z` or an anomaly it returns finite, plausible
+   numbers that mean nothing. Guarded, and the error names the fix.
+3. **Moran's I and Gi\* need *different* weights.** Row-standardising Gi\* forces
+   every neighbourhood sum to 1 and collapses the variance term that lets a
+   large neighbourhood outweigh a small one. `build_weights` returns the binary
+   matrix alongside the row-standardised one so the two can never be confused.
+4. **557 local tests are 557 tests.** Uncorrected at α=0.05 they manufacture ~28
+   clusters from noise. Every local statistic carries a BH-adjusted p, and both
+   counts are reported — the Phase 4 pixel-vs-GN discipline, applied locally.
+5. **A GWR at n=13 still returns numbers.** `require_estimable` refuses, and the
+   refusal (with its reason) becomes a row in the MAUP table.
+
+### The EHSA classifier: three ordering bugs found and fixed before it ran
+
+Written, then tested against all 13 categories, which is how these surfaced:
+
+* An **all-hot** series is trivially "one unbroken final run", so `consecutive`
+  swallowed `persistent`, `intensifying` and `diminishing` entirely. Fixed by
+  gating `consecutive` on `share < persistent_share`.
+* `historical` was **arithmetically unreachable**: with `persistent_share` 0.90
+  a 10-bin series can afford one quiet bin, but the rule demanded three.
+  `historical_recent_bins` 3 → 1, and `test_params` now pins the reachability
+  relation so the combination cannot be reintroduced.
+* The hot/cold **side was chosen by majority**, so a zone that was a cold spot
+  for a decade and is a hot spot now was filed as a *cold* spot. The final bin
+  now decides, and `oscillating` is tested before `new` — otherwise the flip,
+  the most informative thing about such a zone, is lost.
+
+### Decisions taken with the user (2026-08-12)
+
+| # | Decision | Reasoning |
+|---|---|---|
+| D1 | EHSA on **both** `landsat_oli_dry` (12 bins, 100 m, GN) and `terra_night` (26 bins, 1 km, GN+DS) | Neither suffices: one has intra-urban detail, the other temporal power. `test_params` pins that neither is a **pooled** Landsat series — a Mann-Kendall across a changeover would measure the sensor step (Phase 4, run 16) |
+| D2 | Epoch LISA/Gi\* on the **pooled** `landsat_dry`, three epochs | These are *within-epoch* statistics on deviations from that epoch's own mean, so a spatially uniform sensor step cancels as it does in SUHII. **No epoch-to-epoch magnitude may be quoted** (`caveats.within_epoch_only`). Step 9 re-runs the 2020s on `landsat_oli_dry` and compares cluster geography — so the argument is *tested*, not just asserted |
+| D3 | GN full ladder; **DS only what n=13 supports** | 13 units × 6 predictors leaves a GWR with effectively no degrees of freedom. `require_estimable` gates it and the refusal is a reported result |
+| D4 | Landscape metrics in **pure Python** (`scipy.ndimage`), Dynamic World 2016 vs 2024 + WorldCover 2021 | Keeps them pytest-covered like the rest of the pure-Python core, and two dates make the deliverable fragmentation *change*. Cropland is excluded from "green" in both schemes |
+
+### Two performance decisions that are not micro-optimisation
+
+* **Conditional randomisation reuses one index matrix.** Drawing a fresh
+  permutation per zone per replicate is O(permutations × n) *per zone*; drawing
+  one `(permutations, n−1)` matrix and re-mapping it around each zone is that
+  cost in total. At 557 zones × 26 bins that is the difference between an EHSA
+  panel taking seconds and taking a quarter of an hour.
+* **`unit_noise_detection_limit` is memoised on (n_bins, α).**
+  `trends.minimum_detectable_slope` bisects over a Monte Carlo power
+  simulation — thousands of MK evaluations per call. **Mann-Kendall is scale
+  invariant**, so detecting slope `s` in noise `σ` is detecting `s/σ` in unit
+  noise: the limit scales linearly and only the unit-noise value needs
+  simulating, once per series length.
+
+### Things Colab must settle (notebook 05) — record the answers here
+
+| # | Unknown | If it fails |
+|---|---|---|
+| S1 | **Do the analytic statistics match `esda`/`spreg`?** (Step 1 probe) | STOP. Nothing below Step 1 is trustworthy until explained |
+| S2 | Installed PySAL API signatures, and `esda`'s `.q` quadrant coding | documentation only — nothing depends on them, but a `.q` mismatch would invert a cluster legend |
+| S3 | How many GN divisions are **islands** under queen contiguity? | expected small and repairable; if large, revisit `weights.scheme` |
+| S4 | Does the GN GeoJSON fit under `geometry.max_geojson_mb` (8 MB)? | raise `geometry.simplify_m` and re-export rather than committing it |
+| S5 | Is global Moran's I on 2020s GN LST positive and significant? | if not, the covariate table and the weights are in different zone orders — far likelier than Colombo being unusual |
+| S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | if not, D2 is wrong: re-scope the epoch maps onto `landsat_oli_dry` and accept the shorter record |
+| S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | a non-significant residual Moran's I would mean the spatial models were unnecessary — itself reportable |
+| S8 | Do MGWR bandwidths differ per covariate? | identical bandwidths mean the multiscale search collapsed and the result is only GWR |
+| S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | switch `regression.lag_estimator` to `"gm"` |
+| S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | over the 12-bin Landsat panel a high fraction is **expected** and is the honest headline |
+
+### Caveats that travel into Phase 6+
+
+1. **Zonal ≠ pixel ≠ person.** A coefficient fitted across 557 polygons is a
+   property of that aggregation. Reading it as an individual-level relationship
+   is the ecological fallacy (`caveats.zonal_not_pixel`).
+2. **Epoch cluster maps carry no magnitude.** Only Phase 4's Sen's slope
+   measures change (`caveats.within_epoch_only`).
+3. **Population is the 2020 WorldPop layer** and built fraction is a 5-year GHSL
+   epoch, whatever epoch they sit beside. Both travel with their real year.
+4. **Landscape metrics are scale dependent.** Computed at 10 m; the same city at
+   30 m gives different patch counts, edge density and aggregation index. The
+   grid size is returned with the metrics and must be quoted.
+5. **Distance-to-coast excludes inland water** via a connected-component floor.
+   Without it, every division around Beira Lake would read as coastal.
 
 ## PHASE 4 — implementation record (2026-08-09, NOT YET RUN)
 

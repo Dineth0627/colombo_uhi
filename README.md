@@ -65,10 +65,11 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 │   ├── trends.py            # Phase 4 — Mann-Kendall, Sen's slope, BH-FDR, modified MK
 │   ├── landcover.py         # Phase 4 — WorldCover/LCZ/Dynamic World + stratified stats
 │   ├── exports.py           # Phase 4 — Export.image/table.toDrive + task status
-│   ├── spatial_stats.py     # stub — Phase 5
+│   ├── spatial_stats.py     # Phase 5 — Moran/LISA/Gi*, EHSA, OLS→lag/error→GWR/MGWR,
+│   │                        #           MAUP, landscape metrics
 │   ├── prediction.py        # stub — Phase 6
 │   └── greening.py          # stub — Phase 7
-├── notebooks/               # 00–04 written; 05–08 are stubs
+├── notebooks/               # 00–05 written; 06–08 are stubs
 ├── data/
 │   ├── raw/                 # git-ignored
 │   ├── interim/
@@ -86,7 +87,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 | 2 | `02_lst_pipeline` | Landsat/MODIS LST, composites + valid-obs counts | ✅ done + Colab-verified |
 | 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ✅ done + Colab-verified |
 | 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | ✅ done + Colab-verified |
-| 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR | ⬜ |
+| 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR, MAUP, landscape metrics | 🟡 code written, **not yet Colab-verified** |
 | 6 | `06_prediction` | RF + CA-Markov scenario projection | ⬜ |
 | 7 | `07_greening_priority` | MCDA/AHP overlay | ⬜ |
 | 8 | `08_figures_for_report` | final figures | ⬜ |
