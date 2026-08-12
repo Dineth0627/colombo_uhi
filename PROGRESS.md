@@ -16,6 +16,30 @@ _Last updated: 2026-08-12 (Phase 5 code written; **awaiting the first Colab run 
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
 
+### Colab run 1 (2026-08-12) — a Phase 4 bug, surfaced by the first Phase 5 export
+
+Notebook 05 Step 2 died on the very first export task:
+
+```
+ValueError: unsupported table format 'GeoJSON';
+            expected one of ['CSV', 'GeoJSON', 'KML', 'KMZ', 'SHP', 'TFRecord']
+```
+
+The message contradicts itself, which is the whole diagnosis.
+`exports.table_to_drive` did `fmt = str(file_format).upper()` and then tested
+membership against `TABLE_FORMATS` — in which **four of the six names are mixed
+case**. So `"GeoJSON"` became `"GEOJSON"`, matched nothing, and was rejected by a
+list that visibly contains it. **`CSV` was the only format that ever worked**,
+which is why Phase 4 never noticed: it exports nothing else.
+
+Fixed by a new pure helper, `exports.resolve_table_format`, which matches
+case-insensitively and returns the **canonical** spelling Earth Engine expects.
+`tests/test_exports.py` gains a parametrised guard asserting that *every*
+declared format resolves in lower, upper and canonical case — a format that is
+advertised but unusable is worse than one that is absent. **747 tests pass**
+(was 736). `resolve_table_format` is now named in notebook 05's staleness guard,
+so a checkout predating this fix fails loudly in Step 0 instead of at Step 2.
+
 ## PHASE 5 — implementation record (2026-08-12, NOT YET RUN)
 
 **Nothing below has been executed against Earth Engine.** Claude Code has no EE

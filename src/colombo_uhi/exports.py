@@ -74,13 +74,41 @@ TASK_COLUMNS: tuple[str, ...] = (
     "error",
 )
 
-#: Export file formats :func:`table_to_drive` knows how to request.
+#: Export file formats :func:`table_to_drive` knows how to request. The spelling
+#: here is the CANONICAL one Earth Engine expects; callers may use any case.
 TABLE_FORMATS: tuple[str, ...] = ("CSV", "GeoJSON", "KML", "KMZ", "SHP", "TFRecord")
 
 
 # =============================================================================
 # Pure helpers (no Earth Engine; unit-tested)
 # =============================================================================
+def resolve_table_format(file_format: str) -> str:
+    """Normalise a table export format to the spelling Earth Engine expects.
+
+    Matching is case-insensitive, but the CANONICAL spelling is returned. Four
+    of the six names in :data:`TABLE_FORMATS` are mixed case, so comparing an
+    upper-cased input against that tuple rejects every one of them - it accepts
+    only ``CSV``, and produces the self-contradicting message "unsupported table
+    format 'GeoJSON'; expected one of [... 'GeoJSON' ...]". That is exactly what
+    happened on the first Colab run of notebook 05.
+
+    Args:
+        file_format: Requested format, in any case.
+
+    Returns:
+        The canonical member of :data:`TABLE_FORMATS`.
+
+    Raises:
+        ValueError: If the format is not one of :data:`TABLE_FORMATS`.
+    """
+    canonical = {name.upper(): name for name in TABLE_FORMATS}
+    resolved = canonical.get(str(file_format).strip().upper())
+    if resolved is None:
+        raise ValueError(
+            f"unsupported table format {file_format!r}; expected one of "
+            f"{list(TABLE_FORMATS)} (case-insensitive)"
+        )
+    return resolved
 def sanitise_name_part(value: str, label: str) -> str:
     """Reduce one name component to characters Earth Engine accepts.
 
@@ -523,7 +551,7 @@ def table_to_drive(
         product: Product name for :func:`export_name`.
         aoi: Area name for :func:`export_name`.
         params: Parsed params mapping.
-        file_format: One of :data:`TABLE_FORMATS`.
+        file_format: One of :data:`TABLE_FORMATS`, in any case.
         selectors: Properties to keep, in order. ``None`` exports every property,
             whose column order Earth Engine does not guarantee.
         folder: Drive folder; defaults to ``exports.drive_folder``.
@@ -541,12 +569,7 @@ def table_to_drive(
     """
     import ee  # Deferred: see module docstring.
 
-    fmt = str(file_format).upper()
-    if fmt not in TABLE_FORMATS:
-        raise ValueError(
-            f"unsupported table format {file_format!r}; expected one of "
-            f"{list(TABLE_FORMATS)}"
-        )
+    fmt = resolve_table_format(file_format)
 
     settings = resolve_export_settings(params, folder=folder, scale_m=res_m)
     name = export_name(

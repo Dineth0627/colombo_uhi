@@ -103,6 +103,33 @@ def test_template_defaults_to_the_configured_one(params: dict[str, Any]) -> None
     )
 
 
+# --- table formats -----------------------------------------------------------
+@pytest.mark.parametrize("requested", ["GeoJSON", "geojson", "GEOJSON", " GeoJSON "])
+def test_table_format_accepts_any_case_and_returns_the_canonical_spelling(
+    requested: str,
+) -> None:
+    # THE Phase 5 blocker: table_to_drive upper-cased its input and then tested
+    # membership against a tuple in which four of six names are MIXED case, so
+    # every format except CSV was rejected - with the self-contradicting message
+    # "unsupported table format 'GeoJSON'; expected one of [... 'GeoJSON' ...]".
+    # The first Colab run of notebook 05 died on exactly this.
+    assert exports.resolve_table_format(requested) == "GeoJSON"
+
+
+@pytest.mark.parametrize("name", exports.TABLE_FORMATS)
+def test_every_declared_table_format_actually_resolves(name: str) -> None:
+    # The regression guard proper: a format that is advertised but unusable is
+    # worse than one that is absent.
+    assert exports.resolve_table_format(name) == name
+    assert exports.resolve_table_format(name.lower()) == name
+    assert exports.resolve_table_format(name.upper()) == name
+
+
+def test_table_format_rejects_an_unknown_format() -> None:
+    with pytest.raises(ValueError, match="unsupported table format"):
+        exports.resolve_table_format("parquet")
+
+
 # --- export settings ---------------------------------------------------------
 def test_settings_default_to_the_analysis_crs_and_grid(params: dict[str, Any]) -> None:
     settings = exports.resolve_export_settings(params)
