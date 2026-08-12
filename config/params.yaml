@@ -1447,14 +1447,39 @@ spatial_stats:
                                       # built fraction is really the 2025 epoch layer; the
                                       # chosen epoch travels as a property.
     dist_coast:
-      min_ocean_pixels: 1024          # [DEFAULT — Phase 5] connected-component floor that
-                                      # separates the OCEAN from inland water. Beira Lake
-                                      # (~0.65 km2) and Diyawanna (~0.4 km2) are far below
-                                      # 1024 cells at 100 m; the Indian Ocean is effectively
-                                      # unbounded. Without this, "distance to coast" would
-                                      # really be "distance to the nearest puddle".
-      scale_m: 100                    # distance-transform grid. fastDistanceTransform returns
-                                      # SQUARED distance in PIXELS - sqrt then multiply by this.
+      # *** ALL THREE VALUES BELOW ARE TIED TO THE SAME GRID. *** Colab run 1
+      # failed EVERY covariate export with "Object too large (~160 MB)" and the
+      # cause was here. fastDistanceTransform and connectedPixelCount run in the
+      # INPUT IMAGE'S projection unless one is pinned, and the input is JRC GSW
+      # at 30 m. So:
+      #   * the neighbourhood had to span 40 km at 30 m = 1333 px, hence the old
+      #     2048 — and 2048^2 = 4.2 million entries serialised to ~160 MB, many
+      #     times the Earth Engine request limit;
+      #   * the pixel->metre conversion multiplied by scale_m (100) while the
+      #     transform had produced 30 m pixels, so every distance was WRONG BY
+      #     3.3x;
+      #   * the component floor counted 30 m cells, making it 0.92 km2 rather
+      #     than the ~10 km2 the comment claimed — which would have let Bolgoda
+      #     Lake (3.7 km2) through as "ocean".
+      # distance_to_coast now reprojects the ocean mask to the analysis CRS at
+      # `scale_m` BEFORE both operations, so the grid is declared, not inherited.
+      scale_m: 500                    # [DEFAULT — Phase 5, revised after run 1] the grid BOTH
+                                      # the component count and the distance transform run on.
+                                      # Distance to the coast is a smooth field; 500 m is ample
+                                      # for a zonal mean and keeps the neighbourhood small.
+      max_distance_px: 128            # [DEFAULT — Phase 5, revised after run 1] neighbourhood
+                                      # of the distance transform, IN PIXELS OF `scale_m`.
+                                      # 128 x 500 m = 64 km of reach; the farthest point of
+                                      # Colombo District from the sea is ~40 km. Serialises to
+                                      # 128^2 = 16k entries instead of 4.2M. Distances beyond
+                                      # the reach saturate, so raise THIS rather than scale_m
+                                      # if the AOI ever widens.
+      min_ocean_pixels: 64            # [DEFAULT — Phase 5, revised after run 1] connected-
+                                      # component floor IN PIXELS OF `scale_m`. 64 x 0.25 km2
+                                      # = 16 km2, which sits above Bolgoda Lake (~3.7 km2),
+                                      # Beira (~0.65) and Diyawanna (~0.4) and far below the
+                                      # Indian Ocean. Without it, "distance to coast" is really
+                                      # "distance to the nearest puddle".
       units: "km"
   landscape:                          # [CLAUDE.md] landscape metrics on the green/wetland class
     schemes: ["dynamic_world", "worldcover"]

@@ -825,13 +825,31 @@ def test_population_year_is_inside_worldpop_coverage(params: dict[str, Any]) -> 
 def test_distance_to_coast_floor_excludes_the_inland_lakes(
     params: dict[str, Any],
 ) -> None:
-    # Beira Lake (~0.65 km2) and Diyawanna (~0.4 km2) must fall BELOW the
-    # connected-component floor, or "distance to coast" becomes "distance to the
-    # nearest water of any kind" and every division around Beira reads coastal.
+    # The floor is counted in pixels of dist_coast.scale_m, which
+    # distance_to_coast pins by reprojecting BEFORE connectedPixelCount. Beira
+    # (~0.65 km2), Diyawanna (~0.4) and Bolgoda (~3.7) must all fall below it,
+    # or "distance to coast" becomes "distance to the nearest water of any kind"
+    # and every division around Beira reads coastal.
     coast = params["spatial_stats"]["covariates"]["dist_coast"]
     cell_area_km2 = (coast["scale_m"] / 1000.0) ** 2
     floor_km2 = coast["min_ocean_pixels"] * cell_area_km2
     assert floor_km2 > 4.0, "the floor must exceed Bolgoda Lake's ~3.7 km2"
+
+
+def test_distance_transform_reach_covers_the_district_and_stays_sendable(
+    params: dict[str, Any],
+) -> None:
+    # THE run-1 export killer. fastDistanceTransform serialises on the order of
+    # neighbourhood^2, and at 2048 that was ~160 MB - every covariate export
+    # failed with "Object too large". The neighbourhood must still span the
+    # district: no point of Colombo District is more than ~40 km from the sea.
+    coast = params["spatial_stats"]["covariates"]["dist_coast"]
+    reach_km = coast["max_distance_px"] * coast["scale_m"] / 1000.0
+    assert reach_km >= 45.0, "the transform must reach the far edge of the district"
+    assert coast["max_distance_px"] ** 2 <= 300_000, (
+        "neighbourhood^2 drives the serialised request size; keep it small "
+        "enough to send"
+    )
 
 
 def test_landscape_green_classes_exist_in_their_legends(

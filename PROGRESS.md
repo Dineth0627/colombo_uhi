@@ -18,12 +18,16 @@ _Last updated: 2026-08-12 (Phase 5 **Colab run 1 analysed**; fixes applied, **aw
 
 ### Colab run 1 (2026-08-12) — Part 1 complete; most of Phase 5's own checks passed
 
-**Part 1 ran end to end.** All 12 tasks submitted. Part 2 ran as far as its
-inputs allowed — which was not far, because only the two GeoJSONs had been
-copied out of Drive when it was run. **That is the headline operational
-lesson**: the geometry exports finish in seconds while the six `zone_covariates`
-tables and the three 10 m green rasters take much longer, so copying early gets
-the geometry and nothing else, and every step from 7 onwards then has no input.
+**Part 1 submitted all 12 tasks, but only 2 succeeded.** The two geometry
+exports COMPLETED; **all seven `zone_covariates` exports FAILED** (see below);
+the three green rasters were still RUNNING/READY. Part 2 therefore had only the
+GeoJSONs to work with, and every step from 7 onwards had no input.
+
+The first pass through this run was read as "the covariate files just had not
+been copied out of Drive yet". Adding the task-state report disproved that: they
+were never going to appear. **The lesson is the diagnostic, not the patience** —
+a submission path that reports only "submitted" cannot distinguish a slow task
+from a dead one.
 
 Environment: libpysal 4.14.1, esda 2.9.0, spreg 1.9.0, mgwr 2.2.1.
 
@@ -66,6 +70,58 @@ diagonal is set. Gi\* itself is not implicated and remains unverified against
 
 Also corrected: the local-Moran note printed `expected n/(n-1)`; the measured
 constant is `35/36`, i.e. `(n-1)/n`. Ours divides by `n`, esda by `(n-1)`.
+
+#### The export killer: `distance_to_coast` inherited a 30 m grid
+
+**All seven `zone_covariates` tasks FAILED** with `Object too large
+(~160 MB)` — against a request limit of order 10 MB. The task-state report
+added after the first attempt is what surfaced this; before it, the run simply
+looked like "the files never appeared".
+
+The failure sizes localise the cause on their own:
+
+| Task | Serialised size |
+|---|---|
+| GN (557 features) | 159,861,536 B |
+| DS (**13** features) | 159,156,664 B |
+| single-sensor sensitivity | 157,854,592 B |
+
+557 features against 13 differ by **0.7 MB**, and halving the Landsat sensors
+saves **2 MB**. So ~157 MB sat in a part of the graph identical across all
+seven — neither the features nor the collection.
+
+It was `fastDistanceTransform(2048)`. The neighbourhood serialises on the order
+of its **square**: 2048² = 4.19 M entries ≈ 159 MB, matching the observed
+figures to better than 1 %.
+
+**Root cause, and it caused two more bugs.** `fastDistanceTransform` and
+`connectedPixelCount` run in the **input image's** projection unless one is
+pinned, and the input is JRC GSW at **30 m**. Nothing pinned it, so:
+
+1. the neighbourhood had to span 40 km at 30 m = 1333 px, hence 2048 — the
+   export killer;
+2. the pixel→metre conversion multiplied by `scale_m` (100) while the transform
+   had produced 30 m pixels, so **every distance was wrong by 3.3×**;
+3. the component floor counted 30 m cells, making it 0.92 km² rather than the
+   ~10 km² the comment claimed — which would have admitted **Bolgoda Lake
+   (3.7 km²) as "ocean"**.
+
+`distance_to_coast` now reprojects the ocean mask to `crs.analysis_epsg` at
+`dist_coast.scale_m` **before** either operation, so one pixel is exactly
+`scale_m` metres and all three agree by construction. At 500 m with a 128-pixel
+neighbourhood: **64 km of reach** (the district's farthest point from the sea is
+~40 km), **0.6 MB** serialised, and a 16 km² component floor that clears
+Bolgoda comfortably. `test_params` pins both the reach and the size budget.
+
+Also: `covariate_stack` was building the four-sensor harmonised collection
+**twice** per request — once in `epoch_composite`, once in `driver_stack`. It
+now builds one with reflectance and shares it.
+
+**New diagnostic.** `spatial_stats.serialised_size` /
+`graph_size_report` measure a graph client-side, contacting nothing, and
+notebook Step 3 now prints a per-component breakdown and **refuses to submit**
+above 10 MB. The run-1 error named only the total; a per-component table would
+have found this in seconds.
 
 #### Two crashes, both the same defect
 

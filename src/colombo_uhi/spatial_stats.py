@@ -3523,6 +3523,7 @@ def distance_to_coast(
     water_cfg = params["datasets"]["surface_water"]
     scale = int(cfg["scale_m"])
     floor = int(cfg["min_ocean_pixels"])
+    reach = int(cfg["max_distance_px"])
 
     water = (
         ee.Image(water_cfg["id"])
@@ -3530,14 +3531,24 @@ def distance_to_coast(
         .gte(int(water_cfg["occurrence_threshold_pct"]))
         .unmask(0)
     )
-    # connectedPixelCount saturates at maxSize, so "== floor" reads as "part of a
-    # component at least this large" - which is the ocean and nothing else here.
-    component = water.selfMask().connectedPixelCount(floor, True)
+    # *** PIN THE GRID BEFORE ANYTHING NEIGHBOURHOOD-BASED RUNS. ***
+    # connectedPixelCount and fastDistanceTransform both work in the input
+    # image's projection, and the input here is JRC GSW at 30 m. Leaving that
+    # implicit cost Colab run 1 every covariate export: the neighbourhood needed
+    # 1333 px to span 40 km at 30 m, and its square serialised to ~160 MB. It
+    # also silently made "pixels" mean 30 m while the conversion below assumed
+    # `scale`, and made the component floor count 30 m cells. Reprojecting first
+    # makes one pixel exactly `scale` metres, so all three agree by construction.
+    ocean_grid = water.reproject(crs=params["crs"]["analysis_epsg"], scale=scale)
+
+    # connectedPixelCount saturates at maxSize, so `gte(floor)` reads as "part of
+    # a component at least this large" - the ocean and nothing else here.
+    component = ocean_grid.selfMask().connectedPixelCount(floor, True)
     ocean = component.gte(floor).unmask(0)
 
-    # fastDistanceTransform returns SQUARED distance in PIXELS.
+    # fastDistanceTransform returns SQUARED distance in PIXELS of the pinned grid.
     distance = (
-        ocean.fastDistanceTransform(2048)
+        ocean.fastDistanceTransform(reach)
         .sqrt()
         .multiply(scale)
         .divide(1000.0)
@@ -3645,6 +3656,19 @@ def covariate_stack(
     cfg = params["spatial_stats"]
     key = str(cfg["epochs_source"] if source is None else source)
     start, _ = uhi_metrics.epoch_years(params, epoch)
+
+    # Build the harmonised Landsat collection ONCE and share it. Left to
+    # themselves, epoch_composite and driver_stack each construct their own -
+    # two full four-sensor graphs in one request, for the same scenes over the
+    # same region. driver_stack's needs surface reflectance and
+    # epoch_composite's does not, but a collection WITH reflectance serves both
+    # (epoch_composite selects the LST band out of it).
+    if collection is None:
+        from colombo_uhi import landsat
+
+        collection = landsat.harmonised_collection(
+            params, region=region, include_st_qa=False
+        )
 
     epoch_image = uhi_metrics.epoch_composite(
         key, params, epoch, collection=collection, region=region
@@ -3759,6 +3783,102 @@ def zone_covariate_table(
     result.attrs["level"] = resolved
     result.attrs["scale_m"] = scale
     return result.sort_values("zone_id").reset_index(drop=True)
+
+
+def serialised_size(obj: Any) -> int:
+    """Bytes an Earth Engine object occupies in the request that carries it.
+
+    Purely client-side - it serialises the computation graph exactly as
+    ``ee`` would and measures it, without contacting the server. That makes it
+    the cheapest possible check for the failure mode that killed every covariate
+    export in Colab run 1: ``Object too large (159861536 bytes)``, where the
+    payload was three orders of magnitude over the limit and nothing in the
+    submission path had measured it.
+
+    .. note::
+        Graph size is not compute cost. A cheap operation can serialise huge
+        (a large ``fastDistanceTransform`` neighbourhood is the example that bit
+        us) and an expensive one can serialise small. This measures only what
+        travels in the request.
+
+    Args:
+        obj: Any ``ee`` object with a computation graph.
+
+    Returns:
+        Length in bytes of the serialised graph.
+    """
+    import json
+
+    import ee  # Deferred: see module docstring.
+
+    return len(json.dumps(ee.serializer.encode(obj)))
+
+
+def graph_size_report(
+    params: dict[str, Any],
+    epoch: str,
+    region: "ee.Geometry",
+    source: str | None = None,
+) -> "pd.DataFrame":
+    """Serialised size of every band the covariate stack is built from.
+
+    Run this BEFORE submitting an export. One oversized component makes the
+    whole request unsendable, and the error names only the total, so without a
+    per-component breakdown the search is guesswork.
+
+    Args:
+        params: Parsed params mapping.
+        epoch: Epoch key from ``uhi.utfvi.epochs``.
+        region: Region the source collection is filtered to.
+        source: Override for ``spatial_stats.epochs_source``.
+
+    Returns:
+        ``pandas.DataFrame`` with ``component``, ``bytes`` and ``mb``, largest
+        first, plus a ``covariate_stack (all)`` row for the assembled image.
+    """
+    import pandas as pd  # Deferred: see module docstring.
+
+    from colombo_uhi import uhi_metrics
+
+    key = str(
+        params["spatial_stats"]["epochs_source"] if source is None else source
+    )
+    start, _ = uhi_metrics.epoch_years(params, epoch)
+
+    components: dict[str, Any] = {
+        "epoch_composite": uhi_metrics.epoch_composite(
+            key, params, epoch, region=region
+        ),
+        "driver_stack": uhi_metrics.driver_stack(
+            key, params, int(start), region
+        ),
+        "population_density": population_density(params),
+        "elevation": elevation_image(params),
+        "distance_to_coast": distance_to_coast(params),
+        "covariate_stack (all)": covariate_stack(
+            params, epoch, region, source=key
+        ),
+    }
+    rows = []
+    for name, obj in components.items():
+        try:
+            size = serialised_size(obj)
+        except Exception as error:  # pragma: no cover - diagnostic only
+            rows.append({"component": name, "bytes": None, "mb": None,
+                         "note": f"could not serialise: {error}"})
+            continue
+        rows.append(
+            {
+                "component": name,
+                "bytes": size,
+                "mb": round(size / 1_048_576, 3),
+                "note": "",
+            }
+        )
+    frame = pd.DataFrame(rows)
+    return frame.sort_values("bytes", ascending=False, na_position="last").reset_index(
+        drop=True
+    )
 
 
 def zone_covariate_bands(params: dict[str, Any]) -> list[str]:
