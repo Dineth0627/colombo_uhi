@@ -223,6 +223,10 @@ LANDSCAPE_COLUMNS: tuple[str, ...] = (
     # sparser satellite coverage looks like a date with less green space - which
     # is exactly what Dynamic World 2016 did in Colab run 3.
     "observed_fraction",
+    # True when observed_fraction is below landscape.min_observed_fraction.
+    # Phase 7 must not rank a division as "low green" when the classifier simply
+    # never saw it: run 4 measured a MEDIAN per-zone coverage of 0.7% for 2016.
+    "below_coverage_floor",
 )
 
 #: Column order of the MAUP comparison table.
@@ -2774,6 +2778,7 @@ def landscape_metrics_by_zone(
             f"class raster {classes.shape} and zone raster {zones.shape} must "
             "have the same shape; they must be exported on the same grid"
         )
+    floor = float(params["spatial_stats"]["landscape"]["min_observed_fraction"])
     observed = (
         np.ones_like(zones, dtype=bool) if valid is None
         else np.asarray(valid, dtype=bool)
@@ -2791,14 +2796,16 @@ def landscape_metrics_by_zone(
         analysable = inside & observed
         metrics = landscape_metrics(green, cell_size_m, params, valid=analysable)
         cells = int(inside.sum())
+        coverage = float(analysable.sum()) / cells if cells else float("nan")
         metrics.update(
             {
                 "scheme": scheme,
                 "year": year,
                 "zone_id": (zone_labels or {}).get(code, code),
-                "observed_fraction": (
-                    float(analysable.sum()) / cells if cells else float("nan")
-                ),
+                "observed_fraction": coverage,
+                "below_coverage_floor": bool(coverage < floor)
+                if coverage == coverage
+                else True,
             }
         )
         records.append(metrics)
@@ -4213,3 +4220,72 @@ def green_class_image(
 #: Band order :func:`green_class_image` produces, and the order the exported
 #: GeoTIFF must be read back in.
 GREEN_BANDS: tuple[str, ...] = ("green", "observed")
+
+
+def dynamic_world_coverage(
+    params: dict[str, Any],
+    region: "ee.Geometry",
+    years: Sequence[int] | None = None,
+    scale_m: int | None = None,
+) -> "pd.DataFrame":
+    """Fraction of a region Dynamic World actually classified, per year.
+
+    Run this **before** choosing the dates for a fragmentation-change result.
+    Dynamic World opens 2015-06-27 and Sentinel-2B did not launch until
+    2017-03, so the early record is one satellite with a 10-day repeat under
+    tropical cloud. Colab run 4 measured the consequence: 2016 classified
+    **10.5 %** of the export against 54.5 % in 2024, and comparing the two
+    measured observations rather than vegetation - green area appeared to grow
+    5.4x while the green *fraction* of classified land moved 43.0 % to 44.6 %.
+
+    Args:
+        params: Parsed params mapping.
+        region: Region to measure over.
+        years: Candidate years; defaults to
+            ``spatial_stats.landscape.coverage_probe_years``.
+        scale_m: Reduction scale; defaults to a coarse multiple of the landscape
+            grid, because a coverage fraction does not need 10 m.
+
+    Returns:
+        ``pandas.DataFrame`` with ``year``, ``observed_fraction`` and
+        ``usable``, the last being coverage within 10 % of the best year seen.
+    """
+    import ee  # Deferred: see module docstring.
+    import pandas as pd  # Deferred: see module docstring.
+
+    from colombo_uhi import landcover
+
+    cfg = params["spatial_stats"]["landscape"]
+    candidates = [int(y) for y in (years or cfg["coverage_probe_years"])]
+    # 10x the analysis grid: this is a coverage FRACTION, not a map.
+    scale = int(scale_m or int(cfg["raster_scale_m"]) * 10)
+    comp = params["composites"]
+
+    rows: list[dict[str, Any]] = []
+    for year in candidates:
+        try:
+            classes = landcover.dynamic_world_mode(params, year, region=region)
+        except ValueError as error:  # before Dynamic World begins
+            rows.append({"year": year, "observed_fraction": float("nan"),
+                         "note": str(error)})
+            continue
+        observed = classes.mask().reduce("min").gt(0).rename("observed")
+        fraction = observed.unmask(0).reduceRegion(
+            reducer=ee.Reducer.mean(),
+            geometry=region,
+            scale=scale,
+            maxPixels=comp["reduce_max_pixels"],
+            tileScale=comp["tile_scale"],
+        ).get("observed")
+        rows.append(
+            {
+                "year": year,
+                "observed_fraction": float(ee.Number(fraction).getInfo() or 0.0),
+                "note": "",
+            }
+        )
+
+    frame = pd.DataFrame(rows)
+    best = float(frame["observed_fraction"].max())
+    frame["usable"] = frame["observed_fraction"] >= 0.9 * best if best > 0 else False
+    return frame.sort_values("year").reset_index(drop=True)

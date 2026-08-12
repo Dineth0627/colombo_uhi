@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-12 (Phase 5 **Colab run 3 analysed**; notebook ran end to end, S1/S3/S4/S5/S6/S7/S9/S10 closed, **awaiting run 4** for MGWR + landscape)_
+_Last updated: 2026-08-12 (Phase 5 **Colab run 4 analysed**; S1–S10 all closed, **awaiting run 5** for the fragmentation-change result on comparable dates)_
 
 ## Status snapshot
 
@@ -11,10 +11,71 @@ _Last updated: 2026-08-12 (Phase 5 **Colab run 3 analysed**; notebook ran end to
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
-| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟡 **run 3 ran END TO END. 8 of 11 checks closed.** Spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Open: MGWR bandwidths (S8) and the landscape metrics (S11), both fixed and awaiting run 4. 768 tests pass locally |
+| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟢 **run 4: S1–S10 ALL CLOSED.** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Only the fragmentation-CHANGE result outstanding — needs one re-export on comparable Dynamic World dates. 770 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 4 (2026-08-12) — S8 closed; the landscape fix vindicated
+
+Both run-3 fixes worked, and the second one proved the diagnosis outright.
+
+#### S8 — CLOSED. The multiscale search did NOT collapse
+
+MGWR now survives (874 s at n=557), and its **bandwidths differ by more than an
+order of magnitude across covariates** — which is the entire reason to run MGWR:
+
+| term | bandwidth | reading |
+|---|---|---|
+| intercept | 556 (≈ n) | global |
+| `pop_density` | 452 | near-global |
+| `built_fraction` | 426 | near-global |
+| `NDVI` | 295 | regional |
+| `dist_coast_km` | 71 | local |
+| `elevation_m` | 28 | **local** |
+| **`NDBI`** | **19** | **very local** |
+
+So the built-up *fraction* acts on Colombo at essentially the district scale
+while the built-up *index* acts within a ~19-neighbour window. Those are two
+different processes that a single GWR bandwidth cannot separate, and it is the
+sort of statement Phase 5 exists to produce.
+
+**But GWR fits better**: AICc **−390.3** against MGWR's **−356.2** (both
+R²=0.982). Quote GWR as the better-fitting local model and MGWR as the
+**diagnostic** that says which relationships are local. The notebook now prints
+this comparison rather than leaving two numbers in separate cells.
+
+#### The landscape fix worked, and confirmed the artefact exactly
+
+| | classified | green area | **green fraction** |
+|---|---|---|---|
+| DW 2016 | **10.5 %** | 5,669 ha | **43.0 %** |
+| DW 2024 | 54.5 % | 30,423 ha | **44.6 %** |
+| WorldCover 2021 | 54.6 % | 48,669 ha | 71.2 % |
+
+The 5.4× "increase in green space" was **entirely coverage**: 10.5 % → 54.5 %
+classified, while the green fraction of classified land moved 43.0 % → 44.6 %.
+The guard fired and refused to describe it as change. `landscape_area_ha` is now
+68,281 ha against a district of ~69,900 — the bounding-box inflation is gone.
+
+Two consequences handled:
+
+* **2016 is unusable, not merely noisy.** Median per-zone coverage **0.7 %**.
+  `dynamic_world_years` moves to **[2018, 2024]** (Sentinel-2B launched
+  2017-03, so 2018 is the first year with both satellites), and Step 5 now
+  **probes** the coverage of six candidate years before exporting, so the date
+  choice is evidence rather than a guess about satellite history.
+* **Per-zone rows carry `below_coverage_floor`** against
+  `landscape.min_observed_fraction` (0.90). Phase 7 must not rank a division as
+  "low green" when the classifier never saw it.
+
+**A real finding, not a bug:** at matched coverage, WorldCover 2021 puts green
+at **71.2 %** of classified land against Dynamic World 2024's **44.6 %** — a
+27-point gap between two 10 m classifiers. Any absolute green-space figure is
+classifier-dependent; report the schemes as a pair and lead with within-scheme
+change.
+
+**770 tests pass, 8 skip.**
 
 ### Colab run 3 (2026-08-12) — the notebook ran end to end. S6, S7, S10 closed
 
@@ -530,10 +591,10 @@ Written, then tested against all 13 categories, which is how these surfaced:
 | S5 | Is global Moran's I on 2020s GN LST positive and significant? | ✅ **CLOSED in run 2.** GN 0.885 (z=33.5, p_sim 0.001); DS 0.671 (z=4.20). Positive and significant in **every** epoch at **both** levels, and rising |
 | S6 | **Does the 2020s cluster geography survive swapping to the single-sensor series?** (Step 9) | ✅ **CLOSED in run 3.** 557 of 557 zones differ; class agreement **93.7 %**, r=0.999. Run 2's "100 %" was a regression making both exports identical |
 | S7 | Which model does the LM rule select at GN, and is residual Moran's I significant? | ✅ **CLOSED in run 3.** GN: residual Moran's I **0.411** (p=8.2e-55) → rule 3 → **spatial ERROR model**, λ=0.711. DS: **−0.241 (p=0.38)** → rule 1 → **OLS stands**. The ladder terminates at a different rung purely because of the aggregation unit |
-| S8 | Do MGWR bandwidths differ per covariate? | ⬜ **still open.** MGWR fitted in run 3 but the result was discarded by an unguarded `NotImplementedError` from an `mgwr` diagnostic. Fixed with `_safe_attr`; re-check in run 4 |
+| S8 | Do MGWR bandwidths differ per covariate? | ✅ **CLOSED in run 4. Yes, by more than an order of magnitude** — NDBI 19, elevation 28, dist_coast 71, NDVI 295, built_fraction 426, pop_density 452, intercept 556. The search did not collapse. GWR still fits better by AICc (−390.3 vs −356.2), so quote GWR as the model and MGWR as the scale diagnostic |
 | S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | ✅ **yes** — `ML_Error` converged at GN, λ=0.711 (z=19.9), pseudo R² 0.954. No need for the `"gm"` fallback |
 | S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | ✅ **CLOSED. Essentially all of them, under D5.** `landsat_oli_dry`/GN **283 of 283** (median detectable Gi\* trend 0.185/bin); `terra_night`/GN **258 of 259** (0.074); `terra_night`/DS 9 of 9 (0.029). The short series resolves less than half what the long one does — which is why both are reported |
-| S11 | **New in run 3.** Are the landscape metrics computed over the district, and are the two Dynamic World dates comparably classified? | ⛔ **NO on both counts in run 3** — landscape area was the export bounding box (125,259 ha vs a 69,900 ha district) and DW 2016 coverage is far thinner than 2024, so a 5.4× "green increase" was mostly observations. `observed` band added; re-check in run 4 |
+| S11 | **New in run 3.** Are the landscape metrics computed over the district, and are the two Dynamic World dates comparably classified? | ✅/⛔ **run 4: the district question is FIXED** (68,281 ha vs ~69,900), and the coverage question is **answered and acted on** — DW 2016 classified 10.5 % against 2024's 54.5 %, so the 5.4× "gain" was observations. Dates moved to [2018, 2024] with a coverage probe; **re-run needed to obtain an actual fragmentation-change result** |
 
 ### Caveats that travel into Phase 6+
 

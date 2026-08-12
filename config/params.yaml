@@ -1483,10 +1483,34 @@ spatial_stats:
       units: "km"
   landscape:                          # [CLAUDE.md] landscape metrics on the green/wetland class
     schemes: ["dynamic_world", "worldcover"]
-    dynamic_world_years: [2016, 2024]  # [DECISION 2026-08-11] two dates, so the deliverable is
-                                      # fragmentation CHANGE and not a single snapshot.
-                                      # Dynamic World starts 2015-06-27, so 2016 is the first
-                                      # complete year.
+    dynamic_world_years: [2018, 2024]  # [DECISION 2026-08-11, REVISED after Colab run 4]
+                                      # Two dates, so the deliverable is fragmentation CHANGE
+                                      # and not a single snapshot.
+                                      #
+                                      # *** 2016 WAS UNUSABLE AND IS NOT A JUDGEMENT CALL. ***
+                                      # Run 4 measured it: Dynamic World classified only
+                                      # **10.5%** of the export in 2016 against 54.5% in 2024,
+                                      # and the MEDIAN GN division had **0.7%** of its pixels
+                                      # classified. Dynamic World opens 2015-06-27 and
+                                      # Sentinel-2B did not launch until 2017-03, so the early
+                                      # record is one satellite with a 10-day repeat under
+                                      # tropical cloud. Comparing 2016 with 2024 measured
+                                      # OBSERVATIONS, not vegetation: green area appeared to
+                                      # grow 5.4x while the green FRACTION of classified land
+                                      # moved only 43.0% -> 44.6%.
+                                      #
+                                      # 2018 is the first full year with both satellites.
+                                      # Notebook Step 5 PROBES the coverage of each candidate
+                                      # year before exporting, so this stays evidence-based:
+                                      # if 2018 still comes back thin, take the first year the
+                                      # probe shows comparable with 2024 and record it here.
+    coverage_probe_years: [2016, 2017, 2018, 2019, 2020, 2024]   # [Phase 5, run 4] years the
+                                      # notebook measures Dynamic World coverage for before
+                                      # exporting. Cheap: one reduceRegion per year.
+    min_observed_fraction: 0.90       # [DEFAULT — Phase 5, run 4] a zone whose classified
+                                      # share falls below this is FLAGGED in the per-zone
+                                      # landscape table. Phase 7 must not rank a division as
+                                      # "low green" when the classifier simply never saw it.
     worldcover_asset: "worldcover_2021"   # single-date cross-source check on a different sensor
                                       # and legend. If the two disagree wildly, the metric is
                                       # measuring the classifier, not the city.

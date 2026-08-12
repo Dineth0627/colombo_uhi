@@ -1278,6 +1278,38 @@ def test_landscape_metrics_by_zone_rejects_a_mismatched_valid_mask(
         )
 
 
+def test_low_coverage_zones_are_flagged_not_silently_used(
+    params: dict[str, Any],
+) -> None:
+    # Run 4 measured a MEDIAN per-zone coverage of 0.7% for Dynamic World 2016.
+    # Phase 7 must not rank a division as "low green" when the classifier simply
+    # never saw it, so the flag has to travel with the row.
+    classes = np.full((4, 4), 10, dtype=int)
+    zones = np.zeros((4, 4), dtype=int)
+    zones[:2, :] = 1     # well observed
+    zones[2:, :] = 2     # barely observed
+    observed = np.zeros((4, 4), dtype=bool)
+    observed[:2, :] = True
+    observed[2, 0] = True
+
+    frame = ss.landscape_metrics_by_zone(
+        classes, zones, params, 10.0, [10], valid=observed
+    ).set_index("zone_id")
+    assert frame.loc[1, "observed_fraction"] == pytest.approx(1.0)
+    assert bool(frame.loc[1, "below_coverage_floor"]) is False
+    assert frame.loc[2, "observed_fraction"] == pytest.approx(0.125)
+    assert bool(frame.loc[2, "below_coverage_floor"]) is True
+
+
+def test_coverage_floor_is_strict_enough_to_catch_the_2016_case(
+    params: dict[str, Any],
+) -> None:
+    # 2016's district-wide coverage was 0.105 and its median zone 0.007. A floor
+    # that would have passed either is not a floor.
+    floor = params["spatial_stats"]["landscape"]["min_observed_fraction"]
+    assert floor > 0.105
+
+
 def test_green_bands_are_declared_in_export_order() -> None:
     # The exported GeoTIFF is read back by band position, so this order is the
     # contract between green_class_image and the notebook.
