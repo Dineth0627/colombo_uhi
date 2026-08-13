@@ -376,6 +376,191 @@ def test_prediction_ships_validation_metrics(params: dict[str, Any]) -> None:
     assert set(metrics) == {"rmse", "r2", "kappa"}
 
 
+# --- prediction (Phase 6) ----------------------------------------------------
+
+
+def test_prediction_declares_every_section_phase_6_needs(
+    params: dict[str, Any],
+) -> None:
+    for key in (
+        "rf",
+        "split",
+        "ca_markov",
+        "scenarios",
+        "priority_zones",
+        "palettes",
+        "static_predictors",
+        "held_constant",
+    ):
+        assert key in params["prediction"], f"missing prediction.{key}"
+
+
+def test_prediction_framing_is_not_a_forecast(params: dict[str, Any]) -> None:
+    assert params["prediction"]["framing"] == (
+        "conditional_scenario_projection_NOT_forecast"
+    )
+
+
+def test_the_split_method_is_never_random(params: dict[str, Any]) -> None:
+    # A random split of a raster sample puts pixels 100 m apart into both train
+    # and test, so the reported R2 measures interpolation between neighbours.
+    assert params["prediction"]["split"]["method"] == "spatial_block"
+
+
+def test_the_split_block_is_larger_than_the_analysis_grid(
+    params: dict[str, Any],
+) -> None:
+    assert (
+        params["prediction"]["split"]["block_size_m"]
+        > params["prediction"]["rf"]["scale_m"]
+    )
+
+
+def test_the_rf_trains_on_a_single_sensor_family(params: dict[str, Any]) -> None:
+    # CLAUDE.md: the C2 inter-calibration was TESTED over Colombo and failed.
+    # Only a source that restricts its sensors may train the projection model.
+    key = params["prediction"]["rf"]["source"]
+    source = next(
+        entry for entry in params["uhi"]["suhii"]["sources"] if entry["key"] == key
+    )
+    assert source.get("sensors") == ["landsat8", "landsat9"]
+
+
+def test_the_rf_grid_matches_the_phase_4_and_5_grids(
+    params: dict[str, Any],
+) -> None:
+    scale = params["prediction"]["rf"]["scale_m"]
+    assert scale == params["trends"]["fit_scale_m"]
+    assert scale == params["spatial_stats"]["epoch_scale_m"]
+
+
+def test_the_rf_epoch_is_a_configured_epoch(params: dict[str, Any]) -> None:
+    assert params["prediction"]["rf"]["epoch"] in params["uhi"]["utfvi"]["epochs"]
+
+
+def test_the_ca_grid_matches_the_model_grid(params: dict[str, Any]) -> None:
+    # The projected land cover supplies the projected predictors, and those go
+    # into a forest fitted at prediction.rf.scale_m. A finer CA grid would mean
+    # applying the model at a scale it was never fitted at.
+    assert (
+        params["prediction"]["ca_markov"]["raster_scale_m"]
+        == params["prediction"]["rf"]["scale_m"]
+    )
+
+
+def test_the_ca_calibration_years_are_within_dynamic_world_coverage(
+    params: dict[str, Any],
+) -> None:
+    cfg = params["prediction"]["ca_markov"]
+    start = int(params["datasets"]["dynamic_world"]["availability"][0][:4])
+    years = [
+        *cfg["calibration_years"],
+        cfg["validation_year"],
+        *cfg["projection_base_years"],
+        *cfg["coverage_probe_years"],
+    ]
+    assert all(int(year) >= start for year in years)
+
+
+def test_the_ca_validation_year_is_after_the_calibration_pair(
+    params: dict[str, Any],
+) -> None:
+    cfg = params["prediction"]["ca_markov"]
+    assert cfg["validation_year"] > max(cfg["calibration_years"])
+
+
+def test_the_ca_classes_exclude_snow_at_seven_degrees_north(
+    params: dict[str, Any],
+) -> None:
+    # Class 8 is snow_and_ice. Retaining it over Colombo would give the Markov
+    # chain a row estimated from zero or a handful of misclassified pixels.
+    assert 8 not in params["prediction"]["ca_markov"]["classes"]
+
+
+def test_the_kappa_floor_is_read_beside_its_baseline(
+    params: dict[str, Any],
+) -> None:
+    # Kappa alone is inflated by persistence, so the config must demand the
+    # baseline and the figure of merit too.
+    validation = params["prediction"]["ca_markov"]["validation"]
+    assert validation["report_kappa"]
+    assert validation["report_persistence_baseline"]
+    assert validation["report_figure_of_merit"]
+
+
+def test_every_scenario_class_is_a_retained_ca_class(
+    params: dict[str, Any],
+) -> None:
+    codes = set(params["prediction"]["ca_markov"]["classes"])
+    for name, scenario in params["prediction"]["scenarios"].items():
+        for key in ("eligible_classes", "protect_classes"):
+            assert set(scenario.get(key, [])) <= codes, f"{name}.{key}"
+        if "target_class" in scenario:
+            assert scenario["target_class"] in codes, name
+
+
+def test_the_greening_scenario_never_demolishes_built_land(
+    params: dict[str, Any],
+) -> None:
+    # Converting built land to canopy is a demolition programme, not a greening
+    # programme; modelling it silently would overstate what is achievable.
+    greening = params["prediction"]["scenarios"]["greening"]
+    assert 6 in greening["protect_classes"]
+    assert 6 not in greening["eligible_classes"]
+
+
+def test_priority_zone_weights_match_the_criteria(params: dict[str, Any]) -> None:
+    cfg = params["prediction"]["priority_zones"]
+    assert len(cfg["weights"]) == len(cfg["rank_by"])
+    assert sum(cfg["weights"]) == pytest.approx(1.0)
+
+
+def test_priority_zones_are_flagged_as_an_interim_rule(
+    params: dict[str, Any],
+) -> None:
+    # Phase 7's MCDA/AHP replaces this. The marker is what makes the swap
+    # findable rather than a rule nobody remembers is provisional.
+    assert params["prediction"]["priority_zones"]["source"] == "phase5_interim"
+
+
+def test_priority_zone_level_is_a_configured_aggregation_level(
+    params: dict[str, Any],
+) -> None:
+    assert (
+        params["prediction"]["priority_zones"]["level"]
+        in params["spatial_stats"]["levels"]
+    )
+
+
+def test_population_is_declared_as_held_constant(params: dict[str, Any]) -> None:
+    # WorldPop tops out at 2020. Holding it constant is a stated assumption; a
+    # projected population would be a second unvalidated model on the first.
+    assert "pop_density" in params["prediction"]["held_constant"]
+    assert int(params["datasets"]["worldpop"]["availability"][1][:4]) == 2020
+
+
+def test_static_predictors_are_actually_predictors(params: dict[str, Any]) -> None:
+    predictors = set(params["prediction"]["rf"]["predictors"])
+    assert set(params["prediction"]["static_predictors"]) <= predictors
+    assert set(params["prediction"]["held_constant"]) <= predictors
+
+
+def test_the_ghsl_cross_check_year_is_within_ghsl_coverage(
+    params: dict[str, Any],
+) -> None:
+    year = params["prediction"]["ghsl_cross_check_year"]
+    availability = params["datasets"]["ghsl_built"]["availability"]
+    assert int(availability[0][:4]) <= year <= int(availability[1][:4])
+
+
+def test_the_dynamic_world_palette_covers_every_legend_class(
+    params: dict[str, Any],
+) -> None:
+    legend = set(params["landcover"]["dynamic_world"]["classes"])
+    palette = set(params["prediction"]["palettes"]["dynamic_world"])
+    assert legend == palette
+
+
 def test_export_naming_template(params: dict[str, Any]) -> None:
     template = params["exports"]["name_template"]
     assert template == "{product}_{aoi}_{startyear}_{endyear}_{res}m"

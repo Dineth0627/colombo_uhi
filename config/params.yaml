@@ -1576,13 +1576,208 @@ spatial_stats:
                                       # not recoloured — the category is still what it is, the
                                       # hatch says "and we could not have seen otherwise".
 
+# --- Conditional scenario projection (Phase 6) --------------------------------
+# NOTHING in this section produces a forecast. Every product is a CONDITIONAL
+# SCENARIO PROJECTION: "if the calibrated transition rates continued and the
+# fitted LST-driver relationship held, the surface would look like this". Two
+# assumptions are doing the heavy lifting and are stated in every docstring,
+# figure and printed verdict:
+#   * SPACE-FOR-TIME SUBSTITUTION. The random forest is fitted on ONE epoch's
+#     cross-section (where it is hot now, given the drivers now) and then fed
+#     projected drivers. It has never seen time.
+#   * NO EXTRAPOLATION. A random forest predicts the mean of the training rows
+#     in each leaf; it CANNOT return a value outside the training response
+#     range. Projected drivers outside the training envelope are counted and
+#     reported by prediction.extrapolation_flags, never silently accepted.
 prediction:
   framing: "conditional_scenario_projection_NOT_forecast"    # [CLAUDE.md caveat 3]
   methods: ["random_forest_regression", "ca_markov"]         # [CLAUDE.md]
   validation_metrics: ["rmse", "r2", "kappa"]                # [CLAUDE.md] must ship with every output
+
+  # ---- Track A: random forest LST regression --------------------------------
   rf:
     n_trees: 500                      # [DEFAULT — Phase 6]
-    random_seed: 42                   # [DEFAULT] reproducibility
+    random_seed: 42                   # [DEFAULT] reproducibility. Same seed as
+                                      # spatial_stats.random_seed and uhi.drivers.sample_seed;
+                                      # a test in tests/test_params.py asserts all three match.
+    variables_per_split: null         # [DEFAULT] null -> Earth Engine uses sqrt(n predictors)
+    min_leaf_population: 5            # [DEFAULT — Phase 6] deliberately > 1. Pixel samples 100 m
+                                      # apart are spatially autocorrelated, so single-row leaves
+                                      # memorise neighbours rather than learning a relationship.
+    bag_fraction: 0.5                 # [DEFAULT] Earth Engine default
+    max_nodes: null                   # [DEFAULT] null -> unlimited
+    response: "LST_C"                 # matches landsat_c2l2.lst_band_name
+    epoch: "2020s"                    # key from uhi.utfvi.epochs
+    source: "landsat_oli_dry"         # [CLAUDE.md] L8+L9 ONLY. NEVER a pooled-sensor source:
+                                      # the C2 inter-calibration was tested over Colombo and
+                                      # FAILED (L7-L8 = -2.48 degC, 3.4x the 26-year signal).
+                                      # A model trained on a pooled series would learn the
+                                      # sensor changeover as if it were geography.
+    scale_m: 100                      # [DEFAULT — Phase 6] matches trends.fit_scale_m and
+                                      # spatial_stats.epoch_scale_m, so the projection grid is
+                                      # the same grid every other Phase 4/5 product uses.
+    predictors: ["NDVI", "NDBI", "built_fraction", "elevation_m",
+                 "dist_coast_km", "pop_density", "lcz_class"]
+                                      # The first six come straight from
+                                      # spatial_stats.covariate_stack (Phase 5). lcz_class is the
+                                      # Phase 6 addition and is added in prediction.py, NOT in
+                                      # covariate_stack - changing that would alter
+                                      # spatial_stats.zone_covariate_bands and silently
+                                      # invalidate every committed Phase 5 export.
+    categorical: ["lcz_class"]        # must be a subset of predictors
+    lcz_encoding: "integer"           # [DEFAULT — Phase 6] LCZ enters BOTH models as its raw
+                                      # integer code so the Earth Engine and scikit-learn fits
+                                      # stay comparable. Tree ensembles can partition an
+                                      # integer-coded categorical, but the coding is arbitrary
+                                      # and impurity importance is NOT interpretable for it.
+                                      # Read permutation importance instead. Revisit in Phase 7.
+    sample_pixels: 20000              # [DEFAULT — Phase 6] exported, not .getInfo()'d
+    min_sample_rows: 500              # refuse to fit below this
+    extrapolation:
+      method: "per_predictor_range"   # flag rows outside the training min/max of ANY predictor
+      tolerance_fraction: 0.05        # [DEFAULT — Phase 6] > 5 % of projected pixels outside the
+                                      # training envelope fails require_validated. A forest
+                                      # cannot extrapolate, so those pixels are pinned to the
+                                      # edge of what it has seen - a systematic, directional
+                                      # error, not noise.
+
+  # ---- Train/test splitting -------------------------------------------------
+  split:
+    method: "spatial_block"           # [Phase 6] NEVER "random". A random split puts pixels
+                                      # 100 m apart in train AND test, so the test set is
+                                      # effectively in the training set and R2 is inflated.
+                                      # prediction.resolve_split REFUSES "random"; the notebook
+                                      # fits it anyway, once, purely to MEASURE the inflation.
+    block_size_m: 2000                # [DEFAULT — Phase 6] ~20x the 100 m grid, comfortably
+                                      # beyond the LST autocorrelation range implied by the
+                                      # Phase 5 MGWR bandwidths.
+    test_fraction: 0.25
+    n_folds: 5
+    seed: 42
+    min_blocks: 12                    # below this the block-level sample is too small for the
+                                      # fold-to-fold spread to mean anything
+
+  # ---- Track B: CA-Markov land-cover projection -----------------------------
+  ca_markov:
+    scheme: "dynamic_world"           # landcover.SCHEMES key
+    raster_scale_m: 100               # [DEFAULT — Phase 6] MUST equal prediction.rf.scale_m, and a
+                                      # test asserts it does. The projected land cover is what
+                                      # supplies the projected predictors, and those predictors go
+                                      # into a forest FITTED at 100 m. Running the CA at 30 m and
+                                      # then applying the 100 m model to it would be applying a
+                                      # model at a scale it was never fitted at - a MAUP error
+                                      # wearing the look of extra detail. One grid for everything.
+                                      # Dynamic World is 10 m; aggregating to 100 m by MODE gives
+                                      # the dominant cover of each cell and keeps the district CA
+                                      # at ~70 k cells, which numpy handles instantly.
+                                      # Quote this scale with any area figure - landscape and area
+                                      # metrics are scale dependent.
+    calibration_years: [2018, 2021]   # [Phase 6] calibrate the transition matrix on this pair
+    validation_year: 2024             # project forward from 2021 and score against OBSERVED 2024
+    projection_base_years: [2018, 2024]  # recalibrate on the full span for the real projection
+    projection_years: [2030, 2035]    # what the report ASKS for. One Markov step is the
+                                      # calibrated interval itself (here 2024-2018 = 6 years),
+                                      # so 2030 is exactly 1 step and 2035 is 1.83 steps.
+                                      # A fractional power of a transition matrix is not
+                                      # guaranteed to be a valid stochastic matrix, so
+                                      # prediction.resolve_projection_steps ROUNDS to the nearest
+                                      # whole step and returns the EFFECTIVE year (2036) beside
+                                      # the requested one. Every figure and table carries the
+                                      # effective year. Nothing is silently relabelled.
+    round_projection_steps: true      # false -> refuse a non-integer horizon instead of rounding
+    max_step_offset_years: 3          # refuse if rounding moves the horizon further than this
+    classes: [0, 1, 2, 4, 5, 6, 7]    # Dynamic World codes retained over Colombo. 3
+                                      # (flooded_vegetation) and 8 (snow_and_ice) are dropped:
+                                      # snow does not occur at 6.93 N, and flooded vegetation is
+                                      # a handful of unstable pixels whose transition row would
+                                      # be estimated from almost nothing.
+    immutable_classes: [0]            # water is held fixed. The CA is not a hydrological model
+                                      # and must not be allowed to "reclaim" the harbour.
+    neighbourhood_radius_cells: 2     # 5x5 kernel for the transition-potential filter
+    allocation_seed: 42
+    coverage_probe_years: [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
+    min_observed_fraction: 0.90       # [Phase 5 precedent] Dynamic World "green" appeared to grow
+                                      # 5.4x from 2016 to 2024 - almost all of it Sentinel-2
+                                      # coverage, not land cover. Probe coverage BEFORE choosing
+                                      # any year pair.
+    validation:
+      report_kappa: true              # [CLAUDE.md] required
+      report_persistence_baseline: true  # ...and required to be read NEXT TO the baseline. Over a
+                                      # 3-year step most cells do not change, so a null map that
+                                      # projects "nothing happens" scores a high Kappa. Kappa
+                                      # alone would flatter the model.
+      report_pontius: true            # quantity vs allocation disagreement (Pontius & Millones
+                                      # 2011), which decomposes the error Kappa only totals
+      report_figure_of_merit: true    # hits / (hits + misses + false alarms) on CHANGED cells
+                                      # only - the only metric here that a no-change projection
+                                      # cannot game
+      min_kappa: 0.60                 # [DEFAULT — Phase 6] floors, not targets. Failing one is a
+      min_figure_of_merit: 0.10       # result to report, never something to tune away.
+
+  # ---- Scenarios ------------------------------------------------------------
+  scenarios:
+    business_as_usual:
+      label: "Business as usual"
+      canopy_increase_fraction: 0.0   # the calibrated transition rates, unmodified
+    greening:
+      label: "Greening"
+      canopy_increase_fraction: 0.20  # convert this fraction of ELIGIBLE cells inside priority
+                                      # zones to the target class. Configurable: this is the
+                                      # scenario lever, and the report must state the value used.
+      eligible_classes: [2, 5, 7]     # grass, shrub_and_scrub, bare -> plantable
+      target_class: 1                 # trees
+      protect_classes: [0, 6]         # never converted. Water for the same reason it is
+                                      # immutable; BUILT because converting built land to canopy
+                                      # is a demolition programme, not a greening programme, and
+                                      # modelling it silently would overstate what is achievable.
+
+  # ---- Priority zones (INTERIM — Phase 7 replaces this) ---------------------
+  priority_zones:
+    source: "phase5_interim"          # [Phase 7] greening.py's MCDA/AHP output replaces this
+                                      # wholesale. prediction.apply_greening_scenario takes a
+                                      # plain zone list, so Phase 7 swaps the input and nothing
+                                      # in the scenario code changes.
+    level: "gn"
+    top_n: 60                         # of 557 GN divisions (~11 %)
+    rank_by: ["gi_star_hot", "lst_2020s", "ndvi_inverse"]
+    weights: [0.4, 0.4, 0.2]          # must be the same length as rank_by and sum to 1
+    epoch: "2020s"
+
+  # ---- What is and is not projected ----------------------------------------
+  # ---- Figure styling -------------------------------------------------------
+  palettes:
+    # The official Dynamic World legend colours (GEE catalog, verified
+    # 2026-08-13). Codes are the DW class values, so a projected map and an
+    # observed map are always the same colour for the same class - the only way
+    # a reader can compare two land-cover panels by eye.
+    dynamic_world:
+      0: "419bdf"                     # water
+      1: "397d49"                     # trees
+      2: "88b053"                     # grass
+      3: "7a87c6"                     # flooded vegetation
+      4: "e49635"                     # crops
+      5: "dfc35a"                     # shrub and scrub
+      6: "c4281b"                     # built
+      7: "a59b8f"                     # bare
+      8: "b39fe1"                     # snow and ice
+    scenario_difference: ["2166ac", "67a9cf", "d1e5f0", "f7f7f7",
+                          "fddbc7", "ef8a62", "b2182b"]
+                                      # same ramp as trends.slope_vis, so a
+                                      # cooling/warming map reads identically to
+                                      # the Phase 4 trend maps
+    scenario_difference_max_degc: 2.0  # symmetric colour limit
+
+  static_predictors: ["elevation_m", "dist_coast_km", "lcz_class"]
+                                      # genuinely static over a 10-year horizon (LCZ is not
+                                      # strictly static, but no free layer updates it, so it is
+                                      # held fixed AND flagged rather than invented)
+  held_constant: ["pop_density"]      # WorldPop tops out at 2020 (datasets.worldpop availability).
+                                      # Holding it constant is a stated assumption; a projected
+                                      # population would be a second unvalidated model stacked on
+                                      # the first.
+  ghsl_cross_check_year: 2030         # GHS_BUILT_S runs to 2030, so the CA's projected built
+                                      # area has an INDEPENDENT comparison for 2030. Reported as
+                                      # agreement, not used to correct the CA.
 
 greening:
   method: "mcda_weighted_overlay"     # [CLAUDE.md] MCDA / AHP weighted overlay

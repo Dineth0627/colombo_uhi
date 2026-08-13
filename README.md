@@ -67,9 +67,12 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 │   ├── exports.py           # Phase 4 — Export.image/table.toDrive + task status
 │   ├── spatial_stats.py     # Phase 5 — Moran/LISA/Gi*, EHSA, OLS→lag/error→GWR/MGWR,
 │   │                        #           MAUP, landscape metrics
-│   ├── prediction.py        # stub — Phase 6
+│   ├── prediction.py        # Phase 6 — RF regression, blocked splits, CA-Markov,
+│   │                        #           scenarios, and the validation export guard
 │   └── greening.py          # stub — Phase 7
-├── notebooks/               # 00–05 written + verified; 06–08 are stubs
+├── notebooks/               # 00–06 written; 00–05 Colab-verified; 07–08 are stubs
+├── docs/
+│   └── molusce_handoff.md   # Phase 6 — CA-Markov handoff to MOLUSCE in QGIS
 ├── data/
 │   ├── raw/                 # git-ignored
 │   ├── interim/
@@ -88,7 +91,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 | 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ✅ done + Colab-verified |
 | 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | ✅ done + Colab-verified |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR, MAUP, landscape metrics | ✅ done + Colab-verified |
-| 6 | `06_prediction` | RF + CA-Markov scenario projection | ⬜ |
+| 6 | `06_prediction` | RF + CA-Markov scenario projection, spatially blocked validation, MOLUSCE handoff | 🟡 written, awaiting Colab |
 | 7 | `07_greening_priority` | MCDA/AHP overlay | ⬜ |
 | 8 | `08_figures_for_report` | final figures | ⬜ |
 

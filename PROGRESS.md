@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-12 (Phase 5 **SIGNED OFF** — Colab run 5, all checks closed, 46 output files committed)_
+_Last updated: 2026-08-13 (Phase 6 **WRITTEN, NOT YET RUN** — 983 tests pass locally, awaiting Colab run 1)_
 
 ## Status snapshot
 
@@ -12,9 +12,179 @@ _Last updated: 2026-08-12 (Phase 5 **SIGNED OFF** — Colab run 5, all checks cl
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
-| 6 | Scenario projection (RF + CA-Markov) | ⬜ |
+| 6 | Scenario projection (RF + CA-Markov) | 🟡 **written, NOT YET RUN.** `prediction.py` (78 public names), `viz.py` +6 figure pairs, `notebooks/06_prediction.ipynb` (48 cells, 3 parts), `docs/molusce_handoff.md`. 983 tests pass locally, 10 skip. **Eight unknowns S1–S8 for Colab to settle** |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+## PHASE 6 — implementation record (conditional scenario projection, NOT YET RUN)
+
+_Written 2026-08-13. **983 tests pass locally, 10 skip** (up from 770/8: +213 tests,
+no pre-existing test changed). Nothing below has touched Earth Engine._
+
+### New / changed files
+
+| File | Change |
+|---|---|
+| `config/params.yaml` | `prediction:` expanded from 8 lines to ~190 — `rf`, `split`, `ca_markov`, `scenarios`, `priority_zones`, `palettes`, `static_predictors`, `held_constant`, `ghsl_cross_check_year` |
+| `src/colombo_uhi/prediction.py` | written from the 13-line stub; 78 public names |
+| `src/colombo_uhi/viz.py` | +6 `build_*`/`plot_*` pairs, `projection_caption`, `landcover_palette` |
+| `tests/test_prediction.py` | new, 157 tests (2 skip without `rasterio`) |
+| `tests/test_params.py` | +22 tests pinning the new `prediction.*` keys |
+| `tests/test_viz.py` | +33 tests for the Phase 6 figures |
+| `notebooks/06_prediction.ipynb` | replaced the one-cell stub; 48 cells, 3 parts |
+| `docs/molusce_handoff.md` | new — the QGIS handoff contract |
+
+**No `requirements.txt` change.** `scikit-learn>=1.5`, `rasterio>=1.4` and
+`geopandas>=1.0` were already declared.
+
+### The central design decision: the split is the science
+
+A random train/test split of a raster sample puts pixels 100 m apart into **both**
+train and test. In Colombo those two pixels are very nearly the same observation, so
+the model is scored on rows whose neighbours it has memorised, and the R² that comes
+out measures interpolation rather than prediction.
+
+So `prediction.resolve_split` **refuses `"random"` outright**, and the error message
+names the one door through which a random split can be fitted at all —
+`compare_split_strategies`, which exists to *measure* the inflation so the write-up can
+quote it. Everything reported comes from whole 2 km blocks assigned intact to a fold.
+
+A unit test pins the property directly: on a synthetic field where the predictors and
+the response are each smooth in space but *unrelated*, the random split scores higher
+than the blocked one. There is no signal to find; the only thing a model can do is
+recognise a near-duplicate neighbour, and the random split hands it that.
+
+### Six things that would have produced confident, wrong products silently
+
+1. **A predictive product with no validation metrics.** CLAUDE.md caveat 3 asks for
+   RMSE, R² and Kappa on every predictive output. `require_validated` is the mechanism:
+   it checks the report exists, carries every metric `REQUIRED_METRICS` demands for its
+   kind, that each is **finite**, that they were computed on **held-out** data, and that
+   the extrapolation fraction is within tolerance. `export_projection` and
+   `write_lulc_projection` call it **before** touching `ee.batch` or `rasterio`, and every
+   Phase 6 figure builder calls it before drawing. Tested without a network, so the guard
+   is proved to run first.
+2. **Kappa read alone.** Over a 3-year Dynamic World interval most cells do not change,
+   so a null projection that copies the initial map scores a high Kappa.
+   `persistence_baseline_kappa` computes exactly that null and `figure_of_merit` scores
+   only the cells that **changed** — a no-change projection scores exactly 0 there. A test
+   pins both halves of that: FoM 0.0 while the same null still scores Kappa > 0.7.
+3. **A transition row estimated from nothing.** `0/0` is `nan`, and one `nan` row poisons
+   every subsequent matrix power. `transition_probabilities` makes an unobserved row
+   explicitly identity and warns with the count.
+4. **A fractional Markov step.** 2035 is 1.83 steps of the calibrated 6-year interval from
+   2024. A fractional power of a transition matrix is not guaranteed to *be* a transition
+   matrix, so `resolve_projection_steps` rounds to a whole step and returns the
+   **effective** year (2036) beside the requested one, with `offset_years`. Every figure
+   and table quotes the effective year. Nothing is silently relabelled.
+5. **A random forest asked to extrapolate.** Each leaf returns the mean of its training
+   rows, so a projected pixel outside the training envelope is pinned to the edge of what
+   the model has seen — a systematic error in a known direction. `extrapolation_flags`
+   counts them per predictor and `require_validated` fails the product above
+   `prediction.rf.extrapolation.tolerance_fraction` (5 %).
+6. **A one-band land-cover GeoTIFF.** Masked pixels are written as 0, which is water. This
+   is the Phase 5 bug that made Dynamic World "green" appear to grow 5.4× from 2016 to
+   2024. `lulc_class_image` emits a second `observed` band, `read_lulc_raster` **raises**
+   on a single-band file, and Part 2 masks to cells classified in *every* year before
+   computing a single transition.
+
+### Decisions taken with the user
+
+| # | Decision | Choice, and why |
+|---|---|---|
+| 1 | RF unit of analysis | **Pixels at 100 m.** The deliverable is a projected *map*; 557 GN polygons cannot support a blocked split and would inherit `caveats.zonal_not_pixel`. 100 m is also `trends.fit_scale_m` and `spatial_stats.epoch_scale_m`. |
+| 2 | CA engine | **MOLUSCE handoff *and* a pure-numpy CA-Markov.** Not a fallback — a cross-check. Both are run and compared. |
+| 3 | Priority zones | **Phase-5 interim proxy** (Gi\* z, 2020s LST, inverted NDVI), flagged by `priority_zones.source: phase5_interim`. |
+| 4 | Dynamic World triplet | **2018 → 2021 calibrates, 2024 validates**; then 2018 → 2024 projects. |
+
+Two things changed after these were agreed, both correcting something I had told the user:
+
+* **MOLUSCE is not a QGIS 2.x-only plugin.** I said it was. It is actively maintained by
+  NextGIS: **5.3.0, released 2026-04-14, requiring QGIS ≥ 3.32**, installable from the
+  plugin manager. The Python CA is therefore a genuine cross-check, not a rescue. Decision
+  2 stands; the reason for it changed.
+* **The CA grid moved from 30 m to 100 m.** The projected land cover supplies the
+  projected predictors, and those go into a forest fitted at 100 m. Running the CA at 30 m
+  and then applying the 100 m model to it would apply a model at a scale it was never
+  fitted at — a MAUP error wearing the look of extra detail. `params.yaml` now requires
+  `ca_markov.raster_scale_m == rf.scale_m` and a test asserts it.
+
+### Interpretation of "validation_metrics: [rmse, r2, kappa]"
+
+Kappa is meaningless for a continuous surface and RMSE is meaningless for a categorical
+map, so `REQUIRED_METRICS` maps product kind to what it must carry:
+
+| kind | requires | reasoning |
+|---|---|---|
+| `lst_fit` | rmse, r2 | a present-day fitted surface; no CA involved, so no Kappa exists |
+| `lst_projection` | rmse, r2, **kappa** | a projected LST surface sits on top of a projected land cover and **inherits its Kappa** — it is not validated by its regression metrics alone |
+| `lulc_projection` | kappa | plus the FoM and Pontius split, reported beside it |
+
+That reading makes CLAUDE.md caveat 3 *stricter*, not looser: the headline product carries
+all three.
+
+### What is projected, and what is held
+
+| Predictor | Treatment |
+|---|---|
+| NDVI, NDBI, built_fraction | painted from the projected land cover via `class_conditional_predictors` — a **substitution, not a simulation**: it assumes "built" in 2030 looks like "built" today, so densification within a class is invisible |
+| elevation_m, dist_coast_km | genuinely static |
+| lcz_class | held fixed **and flagged** — not strictly static, but no free layer updates it, so it is held rather than invented |
+| pop_density | held constant at **WorldPop 2020**, where the dataset ends. A projected population would be a second unvalidated model stacked on the first |
+
+`lcz_class` enters both models as an **integer code** (`rf.lcz_encoding: integer`) so the
+Earth Engine and scikit-learn fits stay comparable. Tree ensembles can partition an
+integer-coded categorical, but the coding is arbitrary and impurity importance is not
+interpretable for it — which is why `permutation_importance_frame` (held-out blocks) is
+the headline and `explain()`'s importance is the cross-check.
+
+### Things Colab must settle (notebook 06) — record the answers here
+
+| # | Unknown | Where | Status |
+|---|---|---|---|
+| S1 | What `ee.Classifier.explain()` returns for a REGRESSION forest, and the `classify()` output band name | Step 1 probe | ⬜ |
+| S2 | Dynamic World observed fraction for **2021** — never probed; it is the middle of the calibration triplet | Step 2 | ⬜ |
+| S3 | Blocked held-out RMSE and R², and the **fold-to-fold spread** | Step 7 | ⬜ |
+| S4 | How much a random split inflates R² over the blocked one | Step 8 | ⬜ |
+| S5 | Kappa, the no-change-null Kappa, the Pontius split and the figure of merit against `min_kappa: 0.60` / `min_figure_of_merit: 0.10` | Step 9 | ⬜ |
+| S6 | Whether the CA's projected 2030 built area agrees with GHSL 2030 | Step 10 | ⬜ |
+| S7 | What fraction of projected pixels lie outside the training envelope, per scenario | Step 12 | ⬜ |
+| S8 | Whether MOLUSCE's transition matrix matches the Python one, and how much the two projections agree cell-by-cell | Part 3 | ⬜ |
+
+**S4 and S5 are the two that can invalidate the phase.** If the random split does *not*
+score higher, the blocked split is only a partial control (adjacent 2 km blocks are still
+neighbours in a 700 km² district) and a larger `block_size_m` must be run as a sensitivity.
+If Kappa sits at or below its persistence baseline, the CA has learned nothing beyond
+"most things stay the same", and the projection must be reported as such — **the floors are
+floors, not targets; a CA tuned until it clears its own validation set has no validation
+set.**
+
+### Caveats that travel into Phase 7
+
+1. **Nothing in Phase 6 is a forecast.** Every product is conditional on the calibrated
+   transition rates continuing and the fitted LST-driver relationship holding.
+2. **The forest has never seen time.** It is fitted on one epoch's cross-section and fed
+   projected drivers — a space-for-time substitution — and it cannot extrapolate.
+3. **Priority zones are an interim proxy ranked on outcome, not feasibility.** They say
+   nothing about land ownership, existing use, or whether anything can be planted.
+   `apply_greening_scenario` takes a plain zone list, so Phase 7's MCDA/AHP output
+   replaces `interim_priority_zones` without touching any scenario code. That is the
+   handover point.
+4. **The greening placement rule is an assumption, not a finding.** Converted cells are
+   chosen by neighbourhood canopy share, which favours contiguous planting.
+5. **Built land is protected from conversion.** Converting it to canopy is a demolition
+   programme, not a greening programme; modelling it silently would overstate what is
+   achievable. If Phase 7 wants a redevelopment scenario, it must be a *separate, named*
+   scenario.
+6. **A scenario difference carries both projections' uncertainty.** It is the least
+   certain product in this phase, not the most — it only looks clean because the two
+   surfaces share a model and so share its errors.
+7. **Land cover is Dynamic World at 100 m, aggregated by mode from 10 m.** Phase 5
+   measured that no absolute green figure is classifier-independent (WorldCover 2021 green
+   71.2 % vs Dynamic World 2024 44.6 %). Quote the classifier *and* the scale with every
+   area figure.
+
+---
 
 ### Colab run 5 (2026-08-12) — ✅ PHASE 5 COMPLETE. Outputs committed
 

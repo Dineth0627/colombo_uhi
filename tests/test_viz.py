@@ -894,3 +894,499 @@ def test_decadal_figure_writes_a_png(
         difference_key="diff_a_minus_b", se_key="diff_se_a_minus_b",
     )
     assert out.exists() and out.stat().st_size > 0
+
+
+# =============================================================================
+# Phase 6 - conditional scenario projection figures
+# =============================================================================
+# The load-bearing property of this whole section is that a predictive figure
+# CANNOT be built without its validation metrics. Every builder is tested for
+# that refusal, not just the wrappers, because the builders are what the rest of
+# the suite exercises and a guard that only lives in plot_* would be bypassed by
+# anyone calling build_* directly.
+
+
+@pytest.fixture(scope="module")
+def projection_report(params: dict[str, Any]) -> dict[str, Any]:
+    from colombo_uhi import prediction
+
+    return prediction.build_validation_report(
+        "lst_projection",
+        {
+            "rmse": 1.24,
+            "r2": 0.71,
+            "kappa": 0.68,
+            "persistence_kappa": 0.94,
+            "figure_of_merit": 0.21,
+        },
+        params,
+        held_out=True,
+        n_blocks=180,
+        block_size_m=2000,
+        extrapolation={
+            "fraction": 0.012,
+            "tolerance": 0.05,
+            "within_tolerance": True,
+        },
+    )
+
+
+@pytest.fixture(scope="module")
+def fit_report(params: dict[str, Any]) -> dict[str, Any]:
+    from colombo_uhi import prediction
+
+    return prediction.build_validation_report(
+        "lst_fit",
+        {"rmse": 1.24, "r2": 0.71},
+        params,
+        held_out=True,
+        n_blocks=180,
+        block_size_m=2000,
+    )
+
+
+@pytest.fixture(scope="module")
+def lulc_panels(params: dict[str, Any]) -> dict[str, Any]:
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    codes = prediction.resolve_ca_classes(params)
+    rng = np.random.default_rng(0)
+    initial = rng.choice(codes, size=(24, 40))
+    observed = initial.copy()
+    observed[rng.random(initial.shape) < 0.10] = 6
+    projected = initial.copy()
+    projected[rng.random(initial.shape) < 0.08] = 6
+    return {"initial": initial, "observed": observed, "projected": projected}
+
+
+def test_the_landcover_palette_covers_the_whole_legend(
+    params: dict[str, Any],
+) -> None:
+    palette = viz.landcover_palette(params, "dynamic_world")
+    assert set(palette) == set(params["landcover"]["dynamic_world"]["classes"])
+    assert all(colour.startswith("#") for colour in palette.values())
+
+
+def test_an_unknown_palette_names_the_ones_that_exist(
+    params: dict[str, Any],
+) -> None:
+    with pytest.raises(KeyError, match="dynamic_world"):
+        viz.landcover_palette(params, "worldcover")
+
+
+def test_the_projection_caption_carries_both_caveats_and_metrics(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    caption = " ".join(
+        viz.projection_caption(projection_report, params).split()
+    )
+    assert "NOT forecasts" in caption  # from caveats.scenario_not_forecast
+    assert "NOT A FORECAST" in caption  # from prediction.validation_caption
+    assert "RMSE=1.240" in caption
+
+
+def test_the_projection_caption_refuses_an_unvalidated_product(
+    params: dict[str, Any],
+) -> None:
+    from colombo_uhi import prediction
+
+    with pytest.raises(prediction.ValidationMissing):
+        viz.projection_caption(None, params)
+
+
+# --- observed vs predicted ---------------------------------------------------
+
+
+def test_the_scatter_draws_a_one_to_one_line_not_a_fit(
+    params: dict[str, Any], fit_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    observed = rng.normal(31.0, 2.0, 500)
+    figure = viz.build_observed_vs_predicted_figure(
+        observed, observed * 0.8 + 6.2, params, fit_report
+    )
+    axes = figure.axes[0]
+    assert axes.get_xlim() == axes.get_ylim()
+    line = axes.lines[0]
+    assert np.allclose(line.get_xdata(), line.get_ydata())
+
+
+def test_the_scatter_stamps_its_metrics_on_the_axes(
+    params: dict[str, Any], fit_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    figure = viz.build_observed_vs_predicted_figure(
+        np.linspace(28, 34, 200), np.linspace(28, 34, 200), params, fit_report
+    )
+    stamped = " ".join(text.get_text() for text in figure.axes[0].texts)
+    assert "RMSE = 1.240" in stamped
+    assert "R2 = 0.710" in stamped
+
+
+def test_the_scatter_thins_a_large_sample_reproducibly(
+    params: dict[str, Any], fit_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    values = np.linspace(28.0, 34.0, 20_000)
+    figure = viz.build_observed_vs_predicted_figure(
+        values, values, params, fit_report, max_points=500
+    )
+    assert figure.axes[0].collections[0].get_offsets().shape[0] == 500
+
+
+def test_the_scatter_refuses_an_unvalidated_product(params: dict[str, Any]) -> None:
+    from colombo_uhi import prediction
+
+    with pytest.raises(prediction.ValidationMissing):
+        viz.build_observed_vs_predicted_figure([1.0], [1.0], params, None)
+
+
+def test_the_scatter_rejects_mismatched_arrays(
+    params: dict[str, Any], fit_report: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="must match"):
+        viz.build_observed_vs_predicted_figure(
+            [1.0, 2.0], [1.0], params, fit_report
+        )
+
+
+def test_the_scatter_writes_a_png(
+    params: dict[str, Any], fit_report: dict[str, Any], tmp_path: Path
+) -> None:
+    import numpy as np
+
+    out = viz.plot_observed_vs_predicted(
+        np.linspace(28, 34, 100), np.linspace(28, 34, 100),
+        tmp_path / "scatter.png", params, fit_report,
+    )
+    assert out.exists() and out.stat().st_size > 0
+
+
+# --- feature importance ------------------------------------------------------
+
+
+def _importance_frame(params: dict[str, Any]) -> pd.DataFrame:
+    names = list(params["prediction"]["rf"]["predictors"])
+    return pd.DataFrame(
+        {
+            "predictor": names,
+            "importance_mean": [1.0 - 0.1 * i for i in range(len(names))],
+            "importance_std": [0.02] * len(names),
+            "rank": range(1, len(names) + 1),
+        }
+    )
+
+
+def test_the_importance_figure_says_it_is_permutation_importance(
+    params: dict[str, Any], fit_report: dict[str, Any]
+) -> None:
+    # Impurity importance favours high-cardinality predictors, and lcz_class is
+    # exactly that. The footer must not let a reader confuse the two.
+    figure = viz.build_feature_importance_figure(
+        _importance_frame(params), params, fit_report
+    )
+    footer = " ".join(text.get_text() for text in figure.texts)
+    assert "PERMUTATION importance" in footer
+    assert "not causation" in footer
+
+
+def test_the_importance_figure_draws_every_predictor(
+    params: dict[str, Any], fit_report: dict[str, Any]
+) -> None:
+    frame = _importance_frame(params)
+    figure = viz.build_feature_importance_figure(frame, params, fit_report)
+    labels = [tick.get_text() for tick in figure.axes[0].get_yticklabels()]
+    assert set(labels) == set(frame["predictor"])
+
+
+def test_the_importance_figure_rejects_a_missing_column(
+    params: dict[str, Any], fit_report: dict[str, Any]
+) -> None:
+    frame = _importance_frame(params).drop(columns=["importance_std"])
+    with pytest.raises(ValueError, match="importance_std"):
+        viz.build_feature_importance_figure(frame, params, fit_report)
+
+
+def test_the_importance_figure_refuses_an_unvalidated_product(
+    params: dict[str, Any]
+) -> None:
+    from colombo_uhi import prediction
+
+    with pytest.raises(prediction.ValidationMissing):
+        viz.build_feature_importance_figure(_importance_frame(params), params, None)
+
+
+def test_the_importance_figure_writes_a_png(
+    params: dict[str, Any], fit_report: dict[str, Any], tmp_path: Path
+) -> None:
+    out = viz.plot_feature_importance(
+        _importance_frame(params), tmp_path / "importance.png", params, fit_report
+    )
+    assert out.exists() and out.stat().st_size > 0
+
+
+# --- transition matrix -------------------------------------------------------
+
+
+def test_the_transition_figure_needs_no_validation_report(
+    params: dict[str, Any]
+) -> None:
+    # A transition matrix is an OBSERVATION of one interval, not a projection,
+    # so it is the one figure here that is not gated.
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    codes = prediction.resolve_ca_classes(params)
+    figure = viz.build_transition_matrix_figure(
+        np.eye(len(codes)), params, codes
+    )
+    assert figure.axes[0].get_images()
+
+
+def test_the_transition_figure_labels_rows_from_and_columns_to(
+    params: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    codes = prediction.resolve_ca_classes(params)
+    figure = viz.build_transition_matrix_figure(np.eye(len(codes)), params, codes)
+    axes = figure.axes[0]
+    assert axes.get_ylabel() == "from"
+    assert axes.get_xlabel() == "to"
+    footer = " ".join(text.get_text() for text in figure.texts)
+    assert "DIAGONAL is persistence" in footer
+
+
+def test_the_transition_figure_rejects_a_size_mismatch(
+    params: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    with pytest.raises(ValueError, match="class code"):
+        viz.build_transition_matrix_figure(np.eye(3), params, [0, 1])
+
+
+def test_the_transition_figure_writes_a_png(
+    params: dict[str, Any], tmp_path: Path
+) -> None:
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    codes = prediction.resolve_ca_classes(params)
+    out = viz.plot_transition_matrix(
+        np.eye(len(codes)), tmp_path / "transitions.png", params, codes
+    )
+    assert out.exists() and out.stat().st_size > 0
+
+
+# --- land-cover validation ---------------------------------------------------
+
+
+def test_the_lulc_figure_draws_three_panels(
+    params: dict[str, Any],
+    projection_report: dict[str, Any],
+    lulc_panels: dict[str, Any],
+) -> None:
+    figure = viz.build_lulc_validation_figure(
+        lulc_panels["initial"], lulc_panels["observed"], lulc_panels["projected"],
+        params, projection_report,
+    )
+    assert len([ax for ax in figure.axes if ax.get_images()]) == 3
+
+
+def test_the_lulc_figure_warns_that_kappa_needs_its_baseline(
+    params: dict[str, Any],
+    projection_report: dict[str, Any],
+    lulc_panels: dict[str, Any],
+) -> None:
+    figure = viz.build_lulc_validation_figure(
+        lulc_panels["initial"], lulc_panels["observed"], lulc_panels["projected"],
+        params, projection_report,
+    )
+    footer = " ".join(" ".join(text.get_text().split()) for text in figure.texts)
+    assert "Read Kappa against the no-change null" in footer
+    assert "cells that CHANGED" in footer
+
+
+def test_the_lulc_figure_rejects_panels_of_different_shapes(
+    params: dict[str, Any],
+    projection_report: dict[str, Any],
+    lulc_panels: dict[str, Any],
+) -> None:
+    import numpy as np
+
+    with pytest.raises(ValueError, match="share a shape"):
+        viz.build_lulc_validation_figure(
+            lulc_panels["initial"], lulc_panels["observed"],
+            np.zeros((2, 2), dtype=int), params, projection_report,
+        )
+
+
+def test_the_lulc_figure_refuses_an_unvalidated_product(
+    params: dict[str, Any], lulc_panels: dict[str, Any]
+) -> None:
+    from colombo_uhi import prediction
+
+    with pytest.raises(prediction.ValidationMissing):
+        viz.build_lulc_validation_figure(
+            lulc_panels["initial"], lulc_panels["observed"],
+            lulc_panels["projected"], params, None,
+        )
+
+
+def test_the_lulc_figure_writes_a_png(
+    params: dict[str, Any],
+    projection_report: dict[str, Any],
+    lulc_panels: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    out = viz.plot_lulc_validation(
+        lulc_panels["initial"], lulc_panels["observed"], lulc_panels["projected"],
+        tmp_path / "lulc.png", params, projection_report,
+    )
+    assert out.exists() and out.stat().st_size > 0
+
+
+# --- projected surfaces ------------------------------------------------------
+
+
+def _surfaces() -> dict[str, Any]:
+    import numpy as np
+
+    rng = np.random.default_rng(2)
+    baseline = rng.normal(32.0, 1.5, (24, 40))
+    return {
+        "Business as usual, 2030": baseline,
+        "Greening, 2030": baseline - rng.random((24, 40)) * 0.6,
+    }
+
+
+def test_both_scenario_panels_share_one_colour_scale(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    # Independent scales would make a 0.2 degC difference look like a 3 degC
+    # one, which is the single easiest way to overstate a greening result.
+    figure = viz.build_projected_lst_figure(_surfaces(), params, projection_report)
+    limits = {
+        image.get_clim()
+        for axes in figure.axes
+        for image in axes.get_images()
+    }
+    assert len(limits) == 1
+
+
+def test_the_scenario_figure_rejects_surfaces_of_different_shapes(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    surfaces = _surfaces()
+    surfaces["Greening, 2030"] = np.zeros((5, 5))
+    with pytest.raises(ValueError, match="share a shape"):
+        viz.build_projected_lst_figure(surfaces, params, projection_report)
+
+
+def test_the_scenario_figure_rejects_an_empty_mapping(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        viz.build_projected_lst_figure({}, params, projection_report)
+
+
+def test_the_scenario_figure_refuses_an_unvalidated_product(
+    params: dict[str, Any]
+) -> None:
+    from colombo_uhi import prediction
+
+    with pytest.raises(prediction.ValidationMissing):
+        viz.build_projected_lst_figure(_surfaces(), params, None)
+
+
+def test_the_scenario_figure_writes_a_png(
+    params: dict[str, Any], projection_report: dict[str, Any], tmp_path: Path
+) -> None:
+    out = viz.plot_projected_lst(
+        _surfaces(), tmp_path / "projected.png", params, projection_report
+    )
+    assert out.exists() and out.stat().st_size > 0
+
+
+# --- scenario difference -----------------------------------------------------
+
+
+def test_the_difference_map_is_centred_on_zero(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    figure = viz.build_scenario_difference_figure(
+        rng.normal(-0.3, 0.2, (24, 40)), params, projection_report
+    )
+    low, high = figure.axes[0].get_images()[0].get_clim()
+    assert low == pytest.approx(-high)
+
+
+def test_the_difference_map_warns_it_carries_both_uncertainties(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    figure = viz.build_scenario_difference_figure(
+        np.zeros((10, 10)), params, projection_report
+    )
+    footer = " ".join(" ".join(text.get_text().split()) for text in figure.texts)
+    assert "DIFFERENCE OF TWO PROJECTIONS" in footer
+    assert "not a measured cooling" in footer
+
+
+def test_the_difference_map_rejects_a_non_2d_array(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="2-D"):
+        viz.build_scenario_difference_figure(
+            [1.0, 2.0, 3.0], params, projection_report
+        )
+
+
+def test_the_difference_map_rejects_a_non_positive_limit(
+    params: dict[str, Any], projection_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    with pytest.raises(ValueError, match="positive"):
+        viz.build_scenario_difference_figure(
+            np.zeros((5, 5)), params, projection_report, max_degc=0
+        )
+
+
+def test_the_difference_map_refuses_an_unvalidated_product(
+    params: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    with pytest.raises(prediction.ValidationMissing):
+        viz.build_scenario_difference_figure(np.zeros((5, 5)), params, None)
+
+
+def test_the_difference_map_writes_a_png(
+    params: dict[str, Any], projection_report: dict[str, Any], tmp_path: Path
+) -> None:
+    import numpy as np
+
+    out = viz.plot_scenario_difference(
+        np.zeros((10, 10)), tmp_path / "difference.png", params, projection_report
+    )
+    assert out.exists() and out.stat().st_size > 0

@@ -2325,3 +2325,766 @@ def plot_landscape_change(
         build_landscape_change_figure(frame, params, metrics=metrics, title=title),
         out_path,
     )
+
+
+# =============================================================================
+# Phase 6 - conditional scenario projection figures
+# =============================================================================
+# Every predictive figure here takes a validation report and passes it through
+# colombo_uhi.prediction.require_validated BEFORE drawing anything. A predictive
+# figure without its metrics on it is not a figure this project ships, and
+# refusing at the top of the BUILDER is the only way to make that true of the
+# build_* functions the tests exercise as well as the plot_* wrappers.
+
+
+def projection_caption(
+    report: Mapping[str, Any] | None,
+    params: dict[str, Any],
+    keys: Sequence[str] = ("scenario_not_forecast", "lst_not_air_temp"),
+    extra: str = "",
+) -> str:
+    """Assemble the footer for a predictive figure.
+
+    Args:
+        report: Validation report from
+            :func:`colombo_uhi.prediction.build_validation_report`.
+        params: Parsed params mapping.
+        keys: Caveat keys from ``caveats``.
+        extra: Figure-specific lines appended below.
+
+    Returns:
+        The caveat footer, the validation caption and ``extra``, joined.
+
+    Raises:
+        colombo_uhi.prediction.ValidationMissing: If the report is absent or
+            incomplete.
+    """
+    from colombo_uhi import prediction
+
+    parts = [
+        caveat_footer(params, list(keys)),
+        prediction.validation_caption(report, params),
+    ]
+    if extra:
+        parts.append(extra.strip("\n"))
+    return "\n".join(part for part in parts if part)
+
+
+def landcover_palette(params: dict[str, Any], scheme: str) -> dict[int, str]:
+    """Class-code to colour mapping for a land-cover scheme.
+
+    Args:
+        params: Parsed params mapping.
+        scheme: Key under ``prediction.palettes``.
+
+    Returns:
+        Mapping of integer class code to ``#rrggbb``.
+
+    Raises:
+        KeyError: If the scheme has no palette, naming those that do.
+    """
+    palettes = params["prediction"]["palettes"]
+    entry = palettes.get(scheme)
+    if not isinstance(entry, Mapping):
+        raise KeyError(
+            f"no class palette for scheme {scheme!r}; prediction.palettes "
+            f"defines {sorted(k for k, v in palettes.items() if isinstance(v, Mapping))}"
+        )
+    return {
+        int(code): "#" + str(colour).lstrip("#") for code, colour in entry.items()
+    }
+
+
+def build_observed_vs_predicted_figure(
+    observed: Any,
+    predicted: Any,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+    max_points: int = 6000,
+) -> Any:
+    """Held-out observed against predicted LST, with the metrics on the axes.
+
+    The 1:1 line is drawn, not a fitted line. A regression line through this
+    cloud would make a compressed prediction range look like a good fit; the
+    1:1 line shows the compression, which a random forest does at both tails by
+    construction.
+
+    Args:
+        observed: Held-out measured values.
+        predicted: Model values for the same rows.
+        params: Parsed params mapping.
+        report: Validation report; stamped onto the figure.
+        title: Figure title.
+        max_points: Thinning cap for the scatter.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the arrays differ in length or are empty.
+        colombo_uhi.prediction.ValidationMissing: If the report is incomplete.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    footer = projection_caption(
+        report,
+        params,
+        keys=("scenario_not_forecast", "lst_not_air_temp"),
+        extra=(
+            "- The line is 1:1, NOT a fitted line. A random forest averages the "
+            "training rows in each leaf, so it compresses\n  both tails: the "
+            "coolest pixels come back too warm and the warmest too cool. That "
+            "compression is visible against\n  1:1 and would be hidden by a "
+            "regression line."
+        ),
+    )
+
+    truth = np.asarray(observed, dtype="float64").ravel()
+    guess = np.asarray(predicted, dtype="float64").ravel()
+    if truth.shape != guess.shape:
+        raise ValueError(
+            f"observed and predicted must match, got {truth.shape} and "
+            f"{guess.shape}"
+        )
+    if truth.size == 0:
+        raise ValueError("cannot plot an empty prediction")
+
+    keep = np.isfinite(truth) & np.isfinite(guess)
+    truth, guess = truth[keep], guess[keep]
+    if truth.size == 0:
+        raise ValueError("every observed/predicted pair is non-finite")
+    if truth.size > int(max_points):
+        rng = np.random.default_rng(int(params["prediction"]["rf"]["random_seed"]))
+        pick = rng.choice(truth.size, int(max_points), replace=False)
+        truth, guess = truth[pick], guess[pick]
+
+    reserved = footer_inches(footer)
+    height = 5.6 + reserved
+    figure = Figure(figsize=(6.4, height))
+    FigureCanvasAgg(figure)
+    axes = figure.add_axes((0.13, (reserved + 0.45) / height, 0.82, 4.9 / height))
+
+    axes.scatter(truth, guess, s=6, alpha=0.28, color="#b2182b", linewidths=0)
+    low = float(min(truth.min(), guess.min()))
+    high = float(max(truth.max(), guess.max()))
+    if high <= low:
+        high = low + 1.0
+    axes.plot([low, high], [low, high], color="#333333", linewidth=1.0, zorder=3)
+    axes.set_xlim(low, high)
+    axes.set_ylim(low, high)
+    axes.set_xlabel("Observed LST (degC), held-out blocks", fontsize=9)
+    axes.set_ylabel("Predicted LST (degC)", fontsize=9)
+    axes.tick_params(labelsize=8)
+    axes.grid(True, linewidth=0.3, color="#dddddd")
+    axes.set_axisbelow(True)
+
+    metrics = dict((report or {}).get("metrics") or {})
+    shown = [
+        f"{name.upper()} = {metrics[name]:.3f}"
+        for name in ("rmse", "r2")
+        if name in metrics
+    ]
+    axes.text(
+        0.03,
+        0.97,
+        "\n".join([*shown, f"n = {truth.size:,}"]),
+        transform=axes.transAxes,
+        fontsize=9,
+        va="top",
+        ha="left",
+        bbox={
+            "facecolor": "#ffffff",
+            "edgecolor": "#999999",
+            "alpha": 0.85,
+            "boxstyle": "round,pad=0.35",
+        },
+    )
+
+    figure.suptitle(
+        title or "Random forest LST fit, held-out spatial blocks", fontsize=12
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_observed_vs_predicted(
+    observed: Any,
+    predicted: Any,
+    out_path: str | Path,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+) -> Path:
+    """Write the held-out scatter. See :func:`build_observed_vs_predicted_figure`."""
+    return _save_figure(
+        build_observed_vs_predicted_figure(
+            observed, predicted, params, report, title=title
+        ),
+        out_path,
+    )
+
+
+def build_feature_importance_figure(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+) -> Any:
+    """Permutation importance on the held-out blocks, with its spread.
+
+    Args:
+        frame: Output of
+            :func:`colombo_uhi.prediction.permutation_importance_frame`.
+        params: Parsed params mapping.
+        report: Validation report; stamped onto the figure.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If a required column is absent or the table is empty.
+        colombo_uhi.prediction.ValidationMissing: If the report is incomplete.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    required = ["predictor", "importance_mean", "importance_std"]
+    missing = [name for name in required if name not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"the importance table is missing {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+    if len(frame) == 0:
+        raise ValueError("cannot plot an empty importance table")
+
+    categorical = list(params["prediction"]["rf"]["categorical"])
+    footer = projection_caption(
+        report,
+        params,
+        keys=("scenario_not_forecast", "trend_not_causal"),
+        extra=(
+            "- PERMUTATION importance on held-out blocks, not impurity "
+            "importance. Impurity importance favours predictors\n  with many "
+            f"distinct values, which would flatter {categorical} regardless of "
+            "what it contributes.\n"
+            "- Importance is not causation. A predictor can rank high because "
+            "it stands in for something unmeasured."
+        ),
+    )
+
+    ordered = frame.sort_values("importance_mean")
+    reserved = footer_inches(footer)
+    panel = max(2.6, 0.34 * len(ordered) + 0.9)
+    height = panel + reserved + 0.55
+    figure = Figure(figsize=(8.4, height))
+    FigureCanvasAgg(figure)
+    axes = figure.add_axes(
+        (0.20, (reserved + 0.35) / height, 0.76, panel / height)
+    )
+
+    colours = [
+        "#67a9cf" if str(name) in categorical else "#2166ac"
+        for name in ordered["predictor"]
+    ]
+    axes.barh(
+        [str(name) for name in ordered["predictor"]],
+        ordered["importance_mean"].to_numpy(dtype="float64"),
+        xerr=ordered["importance_std"].to_numpy(dtype="float64"),
+        color=colours,
+        error_kw={"ecolor": "#555555", "elinewidth": 0.8, "capsize": 2},
+    )
+    axes.axvline(0.0, color="#333333", linewidth=0.8)
+    axes.set_xlabel(
+        "Increase in held-out error when the predictor is shuffled", fontsize=9
+    )
+    axes.tick_params(labelsize=8)
+    axes.grid(True, axis="x", linewidth=0.3, color="#dddddd")
+    axes.set_axisbelow(True)
+
+    figure.suptitle(title or "Predictor importance", fontsize=12)
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_feature_importance(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+) -> Path:
+    """Write the importance figure. See :func:`build_feature_importance_figure`."""
+    return _save_figure(
+        build_feature_importance_figure(frame, params, report, title=title),
+        out_path,
+    )
+
+
+def build_transition_matrix_figure(
+    probabilities: Any,
+    params: dict[str, Any],
+    classes: Sequence[int],
+    title: str | None = None,
+) -> Any:
+    """Heatmap of the calibrated one-step transition probabilities.
+
+    The diagonal is persistence, and it is normally the overwhelming majority of
+    every row. That is exactly why a bare Kappa on a short interval flatters a
+    projection, and reading this matrix is how it becomes obvious.
+
+    .. note::
+        No validation report is required here. A transition matrix is an
+        OBSERVATION of what happened between two dates, not a projection.
+
+    Args:
+        probabilities: Row-stochastic matrix from
+            :func:`colombo_uhi.prediction.transition_probabilities`.
+        params: Parsed params mapping.
+        classes: Class codes, in the matrix's row and column order.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the matrix is not square or does not match ``classes``.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    table = np.asarray(probabilities, dtype="float64")
+    codes = [int(code) for code in classes]
+    if table.ndim != 2 or table.shape[0] != table.shape[1]:
+        raise ValueError(f"probabilities must be square, got {table.shape}")
+    if table.shape[0] != len(codes):
+        raise ValueError(
+            f"probabilities is {table.shape[0]}x{table.shape[0]} but "
+            f"{len(codes)} class code(s) were given"
+        )
+
+    scheme = str(params["prediction"]["ca_markov"]["scheme"])
+    names = params["landcover"][scheme]["classes"]
+    labels = [str(names.get(code, code)) for code in codes]
+
+    footer = caveat_footer(params, ["scenario_not_forecast"]) + (
+        "\n- Rows are the earlier date, columns the later one; each row sums to "
+        "1. The DIAGONAL is persistence.\n- This is an observation of ONE "
+        "interval, not a law. Projecting it forward assumes the rates that "
+        "produced it continue."
+    )
+    reserved = footer_inches(footer)
+    panel = 0.55 * len(codes) + 2.0
+    height = panel + reserved + 0.6
+    figure = Figure(figsize=(max(7.0, panel + 2.0), height))
+    FigureCanvasAgg(figure)
+    axes = figure.add_axes(
+        (0.22, (reserved + 0.35) / height, 0.62, panel / height)
+    )
+
+    image = axes.imshow(table, cmap="Blues", vmin=0.0, vmax=1.0)
+    axes.set_xticks(range(len(codes)))
+    axes.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    axes.set_yticks(range(len(codes)))
+    axes.set_yticklabels(labels, fontsize=8)
+    axes.set_xlabel("to", fontsize=9)
+    axes.set_ylabel("from", fontsize=9)
+    for row in range(len(codes)):
+        for column in range(len(codes)):
+            value = float(table[row, column])
+            axes.text(
+                column,
+                row,
+                f"{value:.2f}",
+                ha="center",
+                va="center",
+                fontsize=7,
+                color="#ffffff" if value > 0.55 else "#333333",
+            )
+    bar = figure.colorbar(image, ax=axes, fraction=0.04, pad=0.03)
+    bar.set_label("transition probability", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    figure.suptitle(title or "One-step land-cover transition matrix", fontsize=12)
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_transition_matrix(
+    probabilities: Any,
+    out_path: str | Path,
+    params: dict[str, Any],
+    classes: Sequence[int],
+    title: str | None = None,
+) -> Path:
+    """Write the transition heatmap. See :func:`build_transition_matrix_figure`."""
+    return _save_figure(
+        build_transition_matrix_figure(probabilities, params, classes, title=title),
+        out_path,
+    )
+
+
+def build_lulc_validation_figure(
+    initial: Any,
+    observed: Any,
+    projected: Any,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+) -> Any:
+    """Three land-cover panels - start, observed, projected - and the metrics.
+
+    Args:
+        initial: Class-code array at the start of the validated interval.
+        observed: Observed class codes at the end of it.
+        projected: Projected class codes for the same date.
+        params: Parsed params mapping.
+        report: Validation report; stamped onto the figure.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the three arrays do not share a shape.
+        colombo_uhi.prediction.ValidationMissing: If the report is incomplete.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+    from matplotlib.figure import Figure
+    from matplotlib.patches import Patch
+
+    panels = {
+        "Start of interval": np.asarray(initial),
+        "Observed": np.asarray(observed),
+        "Projected": np.asarray(projected),
+    }
+    shapes = {name: array.shape for name, array in panels.items()}
+    if len(set(shapes.values())) != 1:
+        raise ValueError(f"the three panels must share a shape, got {shapes}")
+
+    scheme = str(params["prediction"]["ca_markov"]["scheme"])
+    palette = landcover_palette(params, scheme)
+    names = params["landcover"][scheme]["classes"]
+    codes = sorted(palette)
+    cmap = ListedColormap([palette[code] for code in codes])
+    norm = BoundaryNorm([*codes, codes[-1] + 1], cmap.N)
+
+    footer = projection_caption(
+        report,
+        params,
+        keys=("scenario_not_forecast", "sensitivity_reporting"),
+        extra=(
+            "- Read Kappa against the no-change null, NOT on its own. Over a "
+            "short interval most cells persist, so a\n  projection that changes "
+            "nothing already scores highly. The figure of merit scores only the "
+            "cells that CHANGED,\n  which is the number that says whether the "
+            "model located change or merely copied the map."
+        ),
+    )
+    reserved = footer_inches(footer)
+    rows, columns = panels["Observed"].shape
+    aspect = min(max(rows / max(columns, 1), 0.25), 3.0)
+    panel_width = 3.5
+    panel_height = panel_width * aspect
+    height = panel_height + reserved + 1.4
+    figure = Figure(figsize=(panel_width * 3 + 0.6, height))
+    FigureCanvasAgg(figure)
+    axes_list = figure.subplots(1, 3, squeeze=False)[0]
+    figure.subplots_adjust(
+        left=0.02,
+        right=0.98,
+        top=1.0 - 0.45 / height,
+        bottom=(reserved + 0.85) / height,
+        wspace=0.05,
+    )
+
+    for axes, (label, array) in zip(axes_list, panels.items()):
+        axes.imshow(array, cmap=cmap, norm=norm, interpolation="nearest")
+        axes.set_title(label, fontsize=10)
+        axes.set_xticks([])
+        axes.set_yticks([])
+
+    present = sorted(set(np.unique(panels["Observed"]).tolist()) & set(codes))
+    figure.legend(
+        handles=[
+            Patch(
+                facecolor=palette[code],
+                edgecolor="#666666",
+                label=str(names.get(code, code)),
+            )
+            for code in present
+        ],
+        loc="lower center",
+        bbox_to_anchor=(0.5, (reserved + 0.05) / height),
+        ncol=min(max(len(present), 1), 5),
+        fontsize=7.5,
+        frameon=False,
+        handlelength=1.3,
+    )
+    figure.suptitle(
+        title or "Land-cover projection against the held-out year", fontsize=12
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_lulc_validation(
+    initial: Any,
+    observed: Any,
+    projected: Any,
+    out_path: str | Path,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+) -> Path:
+    """Write the land-cover validation panels. See :func:`build_lulc_validation_figure`."""
+    return _save_figure(
+        build_lulc_validation_figure(
+            initial, observed, projected, params, report, title=title
+        ),
+        out_path,
+    )
+
+
+def build_projected_lst_figure(
+    surfaces: Mapping[str, Any],
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+) -> Any:
+    """Projected LST under each scenario, on one shared colour scale.
+
+    The shared scale is not cosmetic: two panels with independent scales can
+    make a 0.2 degC difference look like a 3 degC one.
+
+    Args:
+        surfaces: Mapping of scenario label to 2-D projected LST array.
+        params: Parsed params mapping.
+        report: Validation report; stamped onto the figure.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If no surfaces are given, they differ in shape, or every
+            value is non-finite.
+        colombo_uhi.prediction.ValidationMissing: If the report is incomplete.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if not surfaces:
+        raise ValueError("at least one scenario surface is required")
+    arrays = {
+        str(label): np.asarray(array, dtype="float64")
+        for label, array in surfaces.items()
+    }
+    shapes = {label: array.shape for label, array in arrays.items()}
+    if len(set(shapes.values())) != 1:
+        raise ValueError(f"scenario surfaces must share a shape, got {shapes}")
+
+    footer = projection_caption(
+        report,
+        params,
+        keys=("scenario_not_forecast", "lst_not_air_temp", "single_overpass"),
+        extra=(
+            "- Panels share ONE colour scale. Independent scales would make a "
+            "0.2 degC difference look like a 3 degC one.\n"
+            "- These are dry-season, ~10:30 local overpass surfaces. They say "
+            "nothing about night-time conditions."
+        ),
+    )
+    stacked = np.stack(list(arrays.values()))
+    finite = stacked[np.isfinite(stacked)]
+    if finite.size == 0:
+        raise ValueError("every scenario surface is entirely non-finite")
+    low = float(np.percentile(finite, 2))
+    high = float(np.percentile(finite, 98))
+    if high <= low:
+        high = low + 1.0
+
+    reserved = footer_inches(footer)
+    rows, columns = next(iter(arrays.values())).shape
+    aspect = min(max(rows / max(columns, 1), 0.25), 3.0)
+    panel_width = 4.4
+    height = panel_width * aspect + reserved + 1.0
+    figure = Figure(figsize=(panel_width * len(arrays) + 0.9, height))
+    FigureCanvasAgg(figure)
+    axes_list = figure.subplots(1, len(arrays), squeeze=False)[0]
+    figure.subplots_adjust(
+        left=0.02,
+        right=0.90,
+        top=1.0 - 0.45 / height,
+        bottom=(reserved + 0.25) / height,
+        wspace=0.06,
+    )
+
+    image = None
+    for axes, (label, array) in zip(axes_list, arrays.items()):
+        image = axes.imshow(
+            np.ma.masked_invalid(array),
+            cmap="inferno",
+            vmin=low,
+            vmax=high,
+            interpolation="nearest",
+        )
+        axes.set_title(label, fontsize=10)
+        axes.set_xticks([])
+        axes.set_yticks([])
+    bar = figure.colorbar(image, ax=list(axes_list), fraction=0.03, pad=0.02)
+    bar.set_label("Projected LST (degC)", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    figure.suptitle(title or "Projected land surface temperature", fontsize=12)
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_projected_lst(
+    surfaces: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    title: str | None = None,
+) -> Path:
+    """Write the scenario surfaces. See :func:`build_projected_lst_figure`."""
+    return _save_figure(
+        build_projected_lst_figure(surfaces, params, report, title=title),
+        out_path,
+    )
+
+
+def build_scenario_difference_figure(
+    difference: Any,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    max_degc: float | None = None,
+    title: str | None = None,
+) -> Any:
+    """Greening minus business as usual, on a symmetric diverging ramp.
+
+    .. warning::
+        The difference of two projections carries BOTH projections'
+        uncertainty. It is the least certain product in this phase, not the
+        most. It only looks clean because the two surfaces share a model and so
+        share its errors, which partly cancel - and that cancellation is a
+        property of the method, not evidence that the difference is precise.
+
+    Args:
+        difference: 2-D array of scenario minus baseline, in degC.
+        params: Parsed params mapping.
+        report: Validation report; stamped onto the figure.
+        max_degc: Symmetric colour limit; defaults to
+            ``prediction.palettes.scenario_difference_max_degc``.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the array is not 2-D or the limit is non-positive.
+        colombo_uhi.prediction.ValidationMissing: If the report is incomplete.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+    from matplotlib.figure import Figure
+
+    array = np.asarray(difference, dtype="float64")
+    if array.ndim != 2:
+        raise ValueError(f"difference must be 2-D, got shape {array.shape}")
+    palettes = params["prediction"]["palettes"]
+    limit = float(
+        palettes["scenario_difference_max_degc"] if max_degc is None else max_degc
+    )
+    if limit <= 0:
+        raise ValueError(f"max_degc must be positive, got {limit}")
+
+    footer = projection_caption(
+        report,
+        params,
+        keys=("scenario_not_forecast", "lst_not_air_temp"),
+        extra=(
+            "- A DIFFERENCE OF TWO PROJECTIONS carries both projections' "
+            "uncertainty. It looks clean because the two surfaces\n  share a "
+            "model and so share its errors, which partly cancel - a property of "
+            "the method, not evidence of precision.\n"
+            "- Blue is cooler under the greening scenario. The magnitude is what "
+            "the fitted LST-driver relationship implies for\n  the converted "
+            "pixels; it is not a measured cooling."
+        ),
+    )
+    colours = [
+        "#" + str(colour).lstrip("#")
+        for colour in palettes["scenario_difference"]
+    ]
+    cmap = LinearSegmentedColormap.from_list("scenario_difference", colours)
+    cmap = cmap.with_extremes(bad="#dcdcdc")
+
+    reserved = footer_inches(footer)
+    rows, columns = array.shape
+    aspect = min(max(rows / max(columns, 1), 0.25), 3.0)
+    width = 6.4
+    map_inches = width * aspect
+    height = map_inches + reserved + 0.9
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    axes = figure.add_axes(
+        (0.02, (reserved + 0.20) / height, 0.84, map_inches / height)
+    )
+
+    image = axes.imshow(
+        np.ma.masked_invalid(array),
+        cmap=cmap,
+        norm=TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit),
+        interpolation="nearest",
+    )
+    axes.set_xticks([])
+    axes.set_yticks([])
+    bar = figure.colorbar(image, ax=axes, fraction=0.035, pad=0.02)
+    bar.set_label("Scenario minus baseline (degC)", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    figure.suptitle(
+        title or "Greening scenario minus business as usual", fontsize=12
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_scenario_difference(
+    difference: Any,
+    out_path: str | Path,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    max_degc: float | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the scenario difference map. See :func:`build_scenario_difference_figure`."""
+    return _save_figure(
+        build_scenario_difference_figure(
+            difference, params, report, max_degc=max_degc, title=title
+        ),
+        out_path,
+    )
