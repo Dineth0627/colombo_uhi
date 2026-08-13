@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-12 (Phase 5 **Colab run 4 analysed**; S1–S10 all closed, **awaiting run 5** for the fragmentation-change result on comparable dates)_
+_Last updated: 2026-08-12 (Phase 5 **SIGNED OFF** — Colab run 5, all checks closed, 46 output files committed)_
 
 ## Status snapshot
 
@@ -11,10 +11,76 @@ _Last updated: 2026-08-12 (Phase 5 **Colab run 4 analysed**; S1–S10 all closed
 | 2 | LST pipeline (Landsat + MODIS) | ✅ **done + Colab-verified** (run 6, 6 iterations) |
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
-| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | 🟢 **run 4: S1–S10 ALL CLOSED.** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Only the fragmentation-CHANGE result outstanding — needs one re-export on comparable Dynamic World dates. 770 tests pass locally |
+| 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ⬜ |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 5 (2026-08-12) — ✅ PHASE 5 COMPLETE. Outputs committed
+
+Ran end to end with no errors. **Every open check is now closed**, and the last
+missing deliverable — the fragmentation-change result — exists.
+
+#### The coverage probe settled the date choice with measurement
+
+| year | classified | usable |
+|---|---|---|
+| 2016 | **21.6 %** | ✗ |
+| 2017 | 99.97 % | ✓ |
+| 2018 | **100.0 %** | ✓ |
+| 2019–2020 | 100.0 % | ✓ |
+| 2024 | 99.96 % | ✓ |
+
+2016 was genuinely unusable and 2017 onward is complete, so `[2018, 2024]` was
+the right call — and it is now on record as a measurement rather than an
+inference from Sentinel-2B's launch date.
+
+#### S11 — CLOSED. Colombo's green space is FRAGMENTING
+
+Dynamic World 2018 → 2024, at matched coverage (54.6 % → 54.5 % of the export,
+100.0 % of the district both times):
+
+| metric | 2018 | 2024 | change |
+|---|---|---|---|
+| green area | 30,123 ha | 30,423 ha | **+1.0 %** |
+| green fraction of classified land | 44.1 % | 44.6 % | +0.5 pp |
+| **patch density** | 3.41 | 4.12 per 100 ha | **+20.8 %** |
+| **mean patch size** | 12.91 ha | 10.80 ha | **−16.3 %** |
+| edge density | 47.7 | 53.8 m/ha | +12.8 % |
+| aggregation index | 97.27 % | 96.95 % | −0.32 pp |
+
+**The district did not lose green space — it lost *contiguous* green space.**
+Essentially the same total area (+1.0 %) is now broken into a fifth more
+patches, each a sixth smaller, with an eighth more edge. That is the textbook
+fragmentation signature, and it is the form that matters for cooling: shade and
+evapotranspiration depend on patch size and interior area, not on a district-wide
+percentage. It also connects directly to Phase 7 — `landscape_metrics_green_by_gn.csv`
+carries these metrics per division, with 21–22 of 557 zones flagged
+`below_coverage_floor`.
+
+The notebook now states this verdict rather than printing five percentages and
+leaving them to be combined by eye.
+
+**Classifier caveat, and it is large.** At matched coverage WorldCover 2021 puts
+green at **71.2 %** of classified land against Dynamic World 2024's **44.6 %** —
+a 27-point gap between two 10 m products. **No absolute green-space figure from
+this project is classifier-independent.** Lead with within-scheme *change*, which
+is what the two Dynamic World dates provide.
+
+#### Two loose ends tightened after this run
+
+* `observed_fraction` meant different things in different rows — share of the
+  *export bounding box* at landscape level (0.546) but share of the *zone* per
+  zone. It is now the share of the **district** in both, so the column has one
+  meaning. The committed `landscape_metrics_green.csv` still carries the
+  bounding-box value (0.546); the district figure is **97.8 %**.
+* `below_coverage_floor` was blank on the landscape-level rows and is now set.
+
+#### Committed
+
+**46 new files** — every Phase 5 table and figure. Notably **no pre-existing
+tracked file changed**, so the Phase 4 outputs reproduced byte-identically: an
+unplanned but welcome end-to-end consistency check across two phases.
 
 ### Colab run 4 (2026-08-12) — S8 closed; the landscape fix vindicated
 
@@ -594,7 +660,7 @@ Written, then tested against all 13 categories, which is how these surfaced:
 | S8 | Do MGWR bandwidths differ per covariate? | ✅ **CLOSED in run 4. Yes, by more than an order of magnitude** — NDBI 19, elevation 28, dist_coast 71, NDVI 295, built_fraction 426, pop_density 452, intercept 556. The search did not collapse. GWR still fits better by AICc (−390.3 vs −356.2), so quote GWR as the model and MGWR as the scale diagnostic |
 | S9 | Does `spreg.ML_Lag`/`ML_Error` converge at n≈557? | ✅ **yes** — `ML_Error` converged at GN, λ=0.711 (z=19.9), pseudo R² 0.954. No need for the `"gm"` fallback |
 | S10 | What fraction of EHSA "no pattern" zones are `underpowered`, per series? | ✅ **CLOSED. Essentially all of them, under D5.** `landsat_oli_dry`/GN **283 of 283** (median detectable Gi\* trend 0.185/bin); `terra_night`/GN **258 of 259** (0.074); `terra_night`/DS 9 of 9 (0.029). The short series resolves less than half what the long one does — which is why both are reported |
-| S11 | **New in run 3.** Are the landscape metrics computed over the district, and are the two Dynamic World dates comparably classified? | ✅/⛔ **run 4: the district question is FIXED** (68,281 ha vs ~69,900), and the coverage question is **answered and acted on** — DW 2016 classified 10.5 % against 2024's 54.5 %, so the 5.4× "gain" was observations. Dates moved to [2018, 2024] with a coverage probe; **re-run needed to obtain an actual fragmentation-change result** |
+| S11 | **New in run 3.** Are the landscape metrics computed over the district, and are the two Dynamic World dates comparably classified? | ✅ **CLOSED in run 5.** District area correct (68,336 ha of ~69,900); probe measured 2016 at 21.6% and 2017+ at ~100%, so [2018, 2024] are matched at 100% district coverage. Result: **fragmentation** — +1.0% area, +20.8% patch density, −16.3% mean patch size |
 
 ### Caveats that travel into Phase 6+
 

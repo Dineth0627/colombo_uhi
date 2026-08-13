@@ -1,0 +1,13 @@
+statistic,level,n_units,status,value,detail,reason
+gi_star_significant_zones,ds,13,ok,3.0,"23.1% of zones, FDR adjusted",
+gi_star_significant_zones,gn,557,ok,301.0,"54.0% of zones, FDR adjusted",
+global_morans_i,ds,13,ok,0.6707153957186804,"p_sim=0.002, z_norm=4.20",
+global_morans_i,gn,557,ok,0.885232168862638,"p_sim=0.001, z_norm=33.51",
+gwr,ds,13,not_estimable,,,the local models needs at least 60 observations for 6 predictors (10 per predictor) and this level has 13. Fitting it would return coefficients indistinguishable from noise.
+gwr,gn,557,ok,0.9815667848604331,bandwidth 76.0,
+lisa_significant_zones,ds,13,not_estimable,,,"a local statistic over 13 units rests on 2-5 neighbours per zone; the conditional-randomisation reference set is smaller than the permutation count, so the pseudo p-value is not a test but a lookup"
+lisa_significant_zones,gn,557,ok,247.0,raw 293 before FDR,
+mgwr,ds,13,not_estimable,,,the local models needs at least 60 observations for 6 predictors (10 per predictor) and this level has 13. Fitting it would return coefficients indistinguishable from noise.
+mgwr,gn,557,ok,0.9823276436648226,"bandwidths {'intercept': 556.0, 'NDVI': 295.0, 'NDBI': 19.0, 'built_fraction': 426.0, 'pop_density': 452.0, 'elevation_m': 28.0, 'dist_coast_km': 71.0}",
+ols_r_squared,ds,13,ok,0.9936115937914693,residual Moran's I -0.241 (p=0.38); LM points to OLS,
+ols_r_squared,gn,557,ok,0.955825921650766,residual Moran's I 0.411 (p=8.18e-55); LM points to ERROR,
