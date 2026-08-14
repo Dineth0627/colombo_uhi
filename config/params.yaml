@@ -1681,6 +1681,17 @@ prediction:
                                       # metrics are scale dependent.
     calibration_years: [2018, 2021]   # [Phase 6] calibrate the transition matrix on this pair
     validation_year: 2024             # project forward from 2021 and score against OBSERVED 2024
+    validation_intervals:             # [Phase 6, run 2] [calibrate_from, calibrate_to, validate_at]
+      - [2018, 2021, 2024]            # 3-year step - the primary
+      - [2017, 2021, 2025]            # 4-year step. Run 2 showed the CA reproducing the
+                                      # QUANTITY of change well (disagreement 0.011) while
+                                      # failing to place it (allocation 0.069, figure of merit
+                                      # 0.03), and grouping the churning vegetation classes
+                                      # barely moved it (0.028 -> 0.032). A longer step lets
+                                      # real change accumulate against a roughly fixed level of
+                                      # classifier noise, so this is a direct test of whether
+                                      # churn is the cause. Both ends measured >99.8 % Dynamic
+                                      # World coverage in run 2's Step 2 probe.
     projection_base_years: [2018, 2024]  # recalibrate on the full span for the real projection
     projection_years: [2030, 2035]    # what the report ASKS for. One Markov step is the
                                       # calibrated interval itself (here 2024-2018 = 6 years),
@@ -1753,6 +1764,16 @@ prediction:
                                       # cannot game
       min_kappa: 0.60                 # [DEFAULT — Phase 6] floors, not targets. Failing one is a
       min_figure_of_merit: 0.10       # result to report, never something to tune away.
+      min_kappa_above_null: 0.0       # [Phase 6, run 2] Kappa MINUS the no-change baseline. Run 2
+                                      # produced Kappa 0.854 - which is finite, so the export
+                                      # guard passed it - against a persistence null of 0.861.
+                                      # A projection 0.007 BELOW the null has demonstrated no
+                                      # skill at locating change, and a projected LST surface
+                                      # built on it is not a validated product however good its
+                                      # own RMSE is. require_validated now refuses it.
+                                      # Raising this above 0 demands the model beat the null by
+                                      # a margin; lowering it below 0 is disabling the check and
+                                      # must be argued for in writing.
       exclude_immutable: true         # [Phase 6, run 1] score only cells that COULD have changed.
                                       # Water is immutable, so the CA is definitionally correct on
                                       # every water cell; including them is not validation, it is

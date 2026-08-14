@@ -671,6 +671,56 @@ def resolve_scenario(
     return resolved
 
 
+def resolve_validation_intervals(
+    params: dict[str, Any]
+) -> list[tuple[int, int, int]]:
+    """Calibration/validation year triplets to score the CA on.
+
+    Run 2 showed the automaton reproducing the *quantity* of land-cover change
+    well (disagreement 0.011) while failing to *place* it (allocation 0.069,
+    figure of merit 0.03), and grouping the churning vegetation classes barely
+    moved it. A longer interval lets real change accumulate against a roughly
+    fixed level of classifier noise, so running more than one is a direct test
+    of whether churn is the cause rather than an assertion that it is.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        List of ``(calibrate_from, calibrate_to, validate_at)``. Falls back to
+        the single ``calibration_years`` + ``validation_year`` triplet when
+        ``validation_intervals`` is absent.
+
+    Raises:
+        ValueError: If a triplet is not strictly increasing, or the validation
+            gap is not a whole number of calibration steps - which would mean
+            scoring a projection at a date the chain cannot reach.
+    """
+    cfg = params["prediction"]["ca_markov"]
+    raw = cfg.get("validation_intervals")
+    if not raw:
+        start, end = (int(y) for y in cfg["calibration_years"])
+        raw = [[start, end, int(cfg["validation_year"])]]
+
+    intervals: list[tuple[int, int, int]] = []
+    for entry in raw:
+        early, late, target = (int(year) for year in entry)
+        if not early < late < target:
+            raise ValueError(
+                f"validation interval {entry} must strictly increase "
+                "(calibrate_from < calibrate_to < validate_at)"
+            )
+        span = late - early
+        if (target - late) % span:
+            raise ValueError(
+                f"validation interval {entry}: the {target - late}-year gap to "
+                f"{target} is not a whole number of {span}-year steps, so the "
+                "chain cannot reach the validation date"
+            )
+        intervals.append((early, late, target))
+    return intervals
+
+
 def resolve_projection_steps(params: dict[str, Any]) -> "pd.DataFrame":
     """Whole Markov steps to each requested horizon, and the year they land on.
 
@@ -1357,6 +1407,66 @@ def scoring_mask(
         "immutable_classes": immutable,
         "exclude_immutable": enabled,
     }
+
+
+def require_expected_area(
+    n_cells: int,
+    params: dict[str, Any],
+    scale_m: float | None = None,
+    tolerance: float = 0.20,
+    label: str = "analysis grid",
+) -> dict[str, Any]:
+    """Refuse an analysis grid that is not the size Colombo District is.
+
+    The companion to notebook Step 0's region check, for the **raster** side.
+    ``Export.image.toDrive`` writes the region's *bounding box*, so an unclipped
+    export hands Part 2 a rectangle rather than a district. Colab run 2 was
+    handed 1,256 km² of which 46 % lay outside Colombo District, and every
+    Track B number was computed over it - the region guard in Step 0 could not
+    see this, because the region it measured was correct.
+
+    Args:
+        n_cells: Cells taking part in the analysis.
+        params: Parsed params mapping.
+        scale_m: Cell size; defaults to ``prediction.ca_markov.raster_scale_m``.
+        tolerance: Allowed fractional departure from the expected area.
+        label: What is being checked, for the message.
+
+    Returns:
+        Mapping with ``n_cells``, ``area_km2``, ``expected_km2`` and
+        ``departure``.
+
+    Raises:
+        ValueError: If the area departs from
+            ``aoi.expected_areas_km2.district`` by more than ``tolerance``.
+    """
+    scale = float(
+        params["prediction"]["ca_markov"]["raster_scale_m"]
+        if scale_m is None else scale_m
+    )
+    area = int(n_cells) * scale * scale / 1e6
+    expected = float(params["aoi"]["expected_areas_km2"]["district"])
+    departure = (area - expected) / expected
+
+    report = {
+        "n_cells": int(n_cells),
+        "area_km2": area,
+        "expected_km2": expected,
+        "departure": departure,
+    }
+    if abs(departure) > float(tolerance):
+        raise ValueError(
+            f"the {label} covers {area:,.0f} km2, but Colombo District is "
+            f"~{expected:,.0f} km2 ({departure:+.0%}).\n"
+            "MOST LIKELY: the exported rasters were not clipped to the region. "
+            "Export.image.toDrive writes the BOUNDING BOX, and the source "
+            "collections have data well beyond the district. Colab run 2 ran "
+            "the whole cellular automaton over 1,256 km2 for exactly this "
+            "reason.\n"
+            "prediction_stack() and lulc_class_image() now clip; if this still "
+            "fires, re-export from Part 1 rather than trimming here."
+        )
+    return report
 
 
 def validate_projection(
@@ -2447,6 +2557,30 @@ def require_validated(
             "blocked_split() or blocked_kfold() and re-score."
         )
 
+    # A Kappa that does not beat its own no-change baseline is not evidence of
+    # skill, however finite it is. Colab run 2 produced Kappa 0.854 against a
+    # persistence null of 0.861 and the guard let it through, because the only
+    # test was "is it a number". A projected LST surface resting on a land-cover
+    # projection with no demonstrated ability to locate change is not validated,
+    # whatever its own RMSE says.
+    if "kappa" in metrics and "persistence_kappa" in metrics:
+        floor = float(
+            params["prediction"]["ca_markov"]["validation"]["min_kappa_above_null"]
+        )
+        margin = float(metrics["kappa"]) - float(metrics["persistence_kappa"])
+        if margin <= floor:
+            raise ValidationMissing(
+                f"a {kind!r} product's Kappa is {metrics['kappa']:.3f} against a "
+                f"no-change baseline of {metrics['persistence_kappa']:.3f} - a "
+                f"margin of {margin:+.3f}, at or below "
+                f"prediction.ca_markov.validation.min_kappa_above_null "
+                f"({floor:+.3f}).\n"
+                "A projection that a 'nothing changes' map matches has "
+                "demonstrated no skill at locating change, so anything built on "
+                "it is not a validated product. Report the negative result; do "
+                "not tune the automaton until it clears its own validation set."
+            )
+
     extrapolation = report.get("extrapolation")
     if extrapolation and not extrapolation.get("within_tolerance", True):
         raise ValidationMissing(
@@ -2711,6 +2845,7 @@ def compare_split_strategies(
     block_column: str = "block_id",
     predictors: Sequence[str] | None = None,
     response: str | None = None,
+    n_repeats: int = 5,
 ) -> "pd.DataFrame":
     """Measure how much a random split inflates R2 against a blocked one.
 
@@ -2719,53 +2854,79 @@ def compare_split_strategies(
     the number the write-up should quote when it explains why every reported
     metric in this phase comes from blocked held-out data.
 
+    .. warning::
+        **Compare the distributions, not one split against another.** Colab
+        run 2 fitted one of each and got a *negative* gap of −0.037 — the
+        blocked split scoring higher — while the blocked cross-validation's own
+        fold-to-fold R2 ranged 0.761 to 0.887. A single pair of splits cannot
+        resolve a difference several times smaller than the spread it is drawn
+        from. ``n_repeats`` reruns both over consecutive seeds so the comparison
+        carries a standard deviation and the reader can see whether the gap is
+        distinguishable from noise at all.
+
     Args:
         frame: Training sample carrying a block-id column.
         params: Parsed params mapping.
         block_column: Column holding the spatial block id.
         predictors: Override for ``prediction.rf.predictors``.
         response: Override for ``prediction.rf.response``.
+        n_repeats: Splits per strategy, each on a different seed.
 
     Returns:
         ``pandas.DataFrame`` with one row per strategy: ``method``,
-        ``n_train``, ``n_test``, ``rmse``, ``r2`` and ``reportable``. Only the
-        blocked row has ``reportable`` true.
+        ``n_repeats``, ``rmse_mean``, ``rmse_sd``, ``r2_mean``, ``r2_sd``,
+        ``r2_min``, ``r2_max`` and ``reportable``. Only the blocked row has
+        ``reportable`` true.
 
     Raises:
-        ValueError: If the block column is absent.
+        ValueError: If the block column is absent or ``n_repeats`` is below 1.
     """
-    import pandas as pd  # Deferred: see module docstring.
+    import numpy as np  # Deferred: see module docstring.
+    import pandas as pd
 
     if block_column not in frame.columns:
         raise ValueError(
             f"frame has no {block_column!r} column; add one with "
             "spatial_block_ids()"
         )
+    repeats = int(n_repeats)
+    if repeats < 1:
+        raise ValueError(f"n_repeats must be at least 1, got {repeats}")
+
     settings = resolve_split(params)
     blocks = frame[block_column].to_numpy()
 
-    splits = {
-        "spatial_block": blocked_split(
-            blocks, settings["test_fraction"], settings["seed"]
-        ),
-        RANDOM_SPLIT: random_row_split(
-            len(frame), settings["test_fraction"], settings["seed"]
-        ),
-    }
     rows: list[dict[str, Any]] = []
-    for method, (train_mask, test_mask) in splits.items():
-        fitted = fit_sklearn_rf(
-            frame, params, train_mask=train_mask,
-            predictors=predictors, response=response,
-        )
-        scored = score_rows(fitted, frame, test_mask)
+    for method in ("spatial_block", RANDOM_SPLIT):
+        scores: list[dict[str, float]] = []
+        for offset in range(repeats):
+            seed = settings["seed"] + offset
+            if method == "spatial_block":
+                train_mask, test_mask = blocked_split(
+                    blocks, settings["test_fraction"], seed
+                )
+            else:
+                train_mask, test_mask = random_row_split(
+                    len(frame), settings["test_fraction"], seed
+                )
+            fitted = fit_sklearn_rf(
+                frame, params, train_mask=train_mask,
+                predictors=predictors, response=response,
+            )
+            scores.append(score_rows(fitted, frame, test_mask))
+
+        r2 = np.array([s["r2"] for s in scores], dtype=float)
+        rmse = np.array([s["rmse"] for s in scores], dtype=float)
         rows.append(
             {
                 "method": method,
-                "n_train": fitted["n_train"],
-                "n_test": scored["n"],
-                "rmse": scored["rmse"],
-                "r2": scored["r2"],
+                "n_repeats": repeats,
+                "rmse_mean": float(rmse.mean()),
+                "rmse_sd": float(rmse.std(ddof=1)) if repeats > 1 else float("nan"),
+                "r2_mean": float(r2.mean()),
+                "r2_sd": float(r2.std(ddof=1)) if repeats > 1 else float("nan"),
+                "r2_min": float(r2.min()),
+                "r2_max": float(r2.max()),
                 "reportable": method != RANDOM_SPLIT,
             }
         )
@@ -2985,7 +3146,13 @@ def prediction_stack(
             landcover.lcz_class_image(params).rename(["lcz_class"]).toFloat()
         )
     keep = [settings["response"], *settings["predictors"]]
-    stack = stack.select(keep).toFloat()
+    # CLIP. Export.image.toDrive writes the region's BOUNDING BOX, and the source
+    # collections have data well beyond Colombo District, so an unclipped export
+    # hands Part 2 a rectangle. Colab run 2 measured the cost: a 1,256 km2
+    # raster of which 46 % lay outside the district, and every Track B number -
+    # transition matrix, class areas, Kappa, the GHSL comparison - was computed
+    # over that. Track A escaped only because .sample() clips to the geometry.
+    stack = stack.select(keep).toFloat().clip(region_geom)
 
     if settings["mask_water"]:
         # LST over open water is not driven by NDVI, NDBI or built fraction at
@@ -3605,7 +3772,12 @@ def lulc_class_image(
         .rename(["observed"])
         .toInt16()
     )
-    return aggregated.addBands(coverage).set(
+    # CLIP - see prediction_stack. Without this the export is the bounding box,
+    # and run 2's cellular automaton ran over 1,256 km2 instead of 699.
+    # Clipping also makes the `observed` band do double duty: cells outside the
+    # district come back masked, so they read as unobserved and drop out of
+    # every downstream mask without needing a separate test.
+    return aggregated.addBands(coverage).clip(region_geom).set(
         {"year": int(year), "scheme": scheme, "scale_m": target}
     )
 

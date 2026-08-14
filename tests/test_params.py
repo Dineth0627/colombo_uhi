@@ -1168,3 +1168,37 @@ def test_phase5_caveats_present(params: dict[str, Any]) -> None:
     for key in ("within_epoch_only", "zonal_not_pixel"):
         assert key in params["caveats"], f"caveats.{key} missing"
         assert params["caveats"][key].strip()
+
+
+def test_the_kappa_null_margin_floor_is_configured(params: dict[str, Any]) -> None:
+    # Run 2 produced Kappa 0.854 - finite, so the export guard passed it -
+    # against a persistence null of 0.861. A projection a no-change map matches
+    # has demonstrated no skill, and anything built on it is not validated.
+    validation = params["prediction"]["ca_markov"]["validation"]
+    assert "min_kappa_above_null" in validation
+    assert validation["min_kappa_above_null"] >= 0.0
+
+
+def test_more_than_one_validation_interval_is_configured(
+    params: dict[str, Any],
+) -> None:
+    # One interval cannot separate classifier churn from a structural failure
+    # of net-demand allocation. A second, longer one is the test.
+    intervals = params["prediction"]["ca_markov"]["validation_intervals"]
+    assert len(intervals) >= 2
+    steps = {late - early for early, late, _ in intervals}
+    assert len(steps) > 1, f"every interval uses the same step: {steps}"
+
+
+def test_every_validation_interval_is_reachable(params: dict[str, Any]) -> None:
+    for early, late, target in params["prediction"]["ca_markov"]["validation_intervals"]:
+        assert early < late < target
+        assert (target - late) % (late - early) == 0
+
+
+def test_validation_interval_years_are_within_dynamic_world_coverage(
+    params: dict[str, Any],
+) -> None:
+    start = int(params["datasets"]["dynamic_world"]["availability"][0][:4])
+    for triplet in params["prediction"]["ca_markov"]["validation_intervals"]:
+        assert all(int(year) > start for year in triplet), triplet

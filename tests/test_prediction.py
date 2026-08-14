@@ -1166,12 +1166,14 @@ def test_the_caption_carries_every_computed_metric(params: dict[str, Any]) -> No
         params,
         "lst_projection",
         metrics={
-            "rmse": 1.2, "r2": 0.7, "kappa": 0.65,
-            "persistence_kappa": 0.94, "figure_of_merit": 0.21,
+            # Kappa must beat its own no-change baseline, or require_validated
+            # refuses the product and the caption is never built.
+            "rmse": 1.2, "r2": 0.7, "kappa": 0.94,
+            "persistence_kappa": 0.65, "figure_of_merit": 0.21,
         },
     )
     caption = prediction.validation_caption(report, params)
-    for expected in ("RMSE=1.200", "R2=0.700", "Kappa=0.650", "0.940", "0.210"):
+    for expected in ("RMSE=1.200", "R2=0.700", "Kappa=0.940", "0.650", "0.210"):
         assert expected in caption
 
 
@@ -1229,11 +1231,13 @@ def test_a_random_split_reports_a_better_score_than_a_blocked_one(
     params_copy["prediction"]["split"]["block_size_m"] = 4000
 
     frame = _autocorrelated_sample(params_copy)
-    comparison = prediction.compare_split_strategies(frame, params_copy).set_index(
-        "method"
-    )
-    assert comparison.loc[prediction.RANDOM_SPLIT, "r2"] > comparison.loc[
-        "spatial_block", "r2"
+    comparison = prediction.compare_split_strategies(
+        frame, params_copy, n_repeats=3
+    ).set_index("method")
+    # Compared as MEANS over repeated splits. Run 2 showed a single pair of
+    # splits cannot resolve a gap smaller than the fold-to-fold spread.
+    assert comparison.loc[prediction.RANDOM_SPLIT, "r2_mean"] > comparison.loc[
+        "spatial_block", "r2_mean"
     ]
     assert not bool(comparison.loc[prediction.RANDOM_SPLIT, "reportable"])
     assert bool(comparison.loc["spatial_block", "reportable"])
@@ -2007,3 +2011,223 @@ def test_the_scheme_resolver_returns_matching_codes_and_labels(
     for grouped in (False, True):
         codes, labels = prediction.resolve_scheme(params, grouped)
         assert set(codes) <= set(labels), grouped
+
+
+# =============================================================================
+# Colab run 2 regressions
+# =============================================================================
+# Run 2 fixed the region and produced a genuine urban-heat model - NDBI, built
+# fraction and LCZ at the top of the importance list, elevation down from first
+# to fifth. It then failed for four new reasons, all pinned below.
+
+
+# --- the analysis grid is the district, not its bounding box -----------------
+
+
+def test_the_image_builders_clip_to_the_region() -> None:
+    # Export.image.toDrive writes the region's BOUNDING BOX. Run 2 was handed a
+    # 1,256 km2 raster of which 46 % lay outside Colombo District, and every
+    # Track B number was computed over it. Track A escaped only because
+    # .sample() clips to the geometry.
+    import ast
+    import inspect
+
+    source = inspect.getsource(prediction)
+    tree = ast.parse(source)
+    clipping = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "clip"
+            for inner in ast.walk(node)
+        )
+    }
+    for name in ("prediction_stack", "lulc_class_image"):
+        assert name in clipping, (
+            f"{name} does not clip to its region; an unclipped export hands "
+            "Part 2 a rectangle rather than a district"
+        )
+
+
+def test_the_area_check_accepts_the_district(params: dict[str, Any]) -> None:
+    scale = float(params["prediction"]["ca_markov"]["raster_scale_m"])
+    cells = int(params["aoi"]["expected_areas_km2"]["district"] * 1e6 / scale ** 2)
+    report = prediction.require_expected_area(cells, params)
+    assert abs(report["departure"]) < 0.01
+
+
+def test_the_area_check_refuses_run_2s_bounding_box(
+    params: dict[str, Any]
+) -> None:
+    # 297 x 423 cells at 100 m - the exact raster run 2 analysed.
+    with pytest.raises(ValueError, match="1,256 km2"):
+        prediction.require_expected_area(297 * 423, params)
+
+
+def test_the_area_check_names_clipping_as_the_likely_cause(
+    params: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="not clipped"):
+        prediction.require_expected_area(297 * 423, params)
+
+
+# --- a Kappa below its own baseline is not evidence --------------------------
+
+
+def test_a_kappa_below_the_persistence_null_is_refused(
+    params: dict[str, Any]
+) -> None:
+    # Run 2's actual numbers. Kappa 0.854 is finite, so the old guard passed it;
+    # the no-change baseline was 0.861, so the projection had demonstrated no
+    # skill at locating change, and the LST surface resting on it was not a
+    # validated product however good its own RMSE was.
+    report = prediction.build_validation_report(
+        "lst_projection",
+        {"rmse": 1.13, "r2": 0.894, "kappa": 0.8537, "persistence_kappa": 0.8609},
+        params, held_out=True,
+    )
+    with pytest.raises(prediction.ValidationMissing, match="no-change baseline"):
+        prediction.require_validated(report, params)
+
+
+def test_a_kappa_above_the_null_still_passes(params: dict[str, Any]) -> None:
+    report = prediction.build_validation_report(
+        "lst_projection",
+        {"rmse": 1.13, "r2": 0.894, "kappa": 0.90, "persistence_kappa": 0.80},
+        params, held_out=True,
+    )
+    assert prediction.require_validated(report, params)["kind"] == "lst_projection"
+
+
+def test_the_null_check_is_skipped_when_no_baseline_was_computed(
+    params: dict[str, Any]
+) -> None:
+    # A present-day fitted surface involves no CA, so it carries neither Kappa
+    # nor a baseline and must not be caught by this check.
+    report = prediction.build_validation_report(
+        "lst_fit", {"rmse": 1.13, "r2": 0.894}, params, held_out=True
+    )
+    assert prediction.require_validated(report, params)
+
+
+def test_the_null_margin_floor_is_configurable(
+    params_copy: dict[str, Any]
+) -> None:
+    # Demanding the model beat the null by a margin, rather than merely tie it.
+    params_copy["prediction"]["ca_markov"]["validation"][
+        "min_kappa_above_null"
+    ] = 0.10
+    report = prediction.build_validation_report(
+        "lulc_projection", {"kappa": 0.85, "persistence_kappa": 0.80},
+        params_copy, held_out=True,
+    )
+    with pytest.raises(prediction.ValidationMissing, match="margin"):
+        prediction.require_validated(report, params_copy)
+
+
+# --- more than one validation interval ---------------------------------------
+
+
+def test_the_validation_intervals_resolve(params: dict[str, Any]) -> None:
+    intervals = prediction.resolve_validation_intervals(params)
+    assert len(intervals) >= 2, (
+        "run 2 showed one interval cannot separate classifier churn from a "
+        "structural failure of net-demand allocation; a second is the test"
+    )
+    for early, late, target in intervals:
+        assert early < late < target
+
+
+def test_every_validation_gap_is_a_whole_number_of_steps(
+    params: dict[str, Any]
+) -> None:
+    for early, late, target in prediction.resolve_validation_intervals(params):
+        assert (target - late) % (late - early) == 0
+
+
+def test_a_second_interval_is_longer_than_the_first(
+    params: dict[str, Any]
+) -> None:
+    # The point of the second interval: a longer step lets real change
+    # accumulate against a roughly fixed level of classifier noise.
+    intervals = prediction.resolve_validation_intervals(params)
+    steps = [late - early for early, late, _ in intervals]
+    assert len(set(steps)) > 1, f"all intervals use the same step: {steps}"
+
+
+def test_intervals_reject_a_non_increasing_triplet(
+    params_copy: dict[str, Any]
+) -> None:
+    params_copy["prediction"]["ca_markov"]["validation_intervals"] = [
+        [2021, 2018, 2024]
+    ]
+    with pytest.raises(ValueError, match="strictly increase"):
+        prediction.resolve_validation_intervals(params_copy)
+
+
+def test_intervals_reject_a_gap_the_chain_cannot_reach(
+    params_copy: dict[str, Any]
+) -> None:
+    # A 3-year step cannot land on a date 4 years away.
+    params_copy["prediction"]["ca_markov"]["validation_intervals"] = [
+        [2018, 2021, 2025]
+    ]
+    with pytest.raises(ValueError, match="whole number"):
+        prediction.resolve_validation_intervals(params_copy)
+
+
+def test_intervals_fall_back_to_the_single_configured_triplet(
+    params_copy: dict[str, Any]
+) -> None:
+    params_copy["prediction"]["ca_markov"].pop("validation_intervals")
+    assert prediction.resolve_validation_intervals(params_copy) == [
+        (2018, 2021, 2024)
+    ]
+
+
+# --- the split comparison must compare distributions -------------------------
+
+
+def test_the_split_comparison_reports_a_spread(params_copy: dict[str, Any]) -> None:
+    # Run 2 fitted one split of each and got a NEGATIVE gap of -0.037 - the
+    # blocked split scoring higher - while the blocked CV's own fold R2 ranged
+    # 0.761 to 0.887. A single pair cannot resolve a difference several times
+    # smaller than the spread it is drawn from.
+    pytest.importorskip("sklearn")
+    params_copy["prediction"]["rf"]["n_trees"] = 30
+    params_copy["prediction"]["rf"]["min_sample_rows"] = 100
+    params_copy["prediction"]["split"]["block_size_m"] = 4000
+
+    frame = _autocorrelated_sample(params_copy, seed=6)
+    out = prediction.compare_split_strategies(frame, params_copy, n_repeats=3)
+    assert set(out.columns) >= {
+        "method", "n_repeats", "r2_mean", "r2_sd", "r2_min", "r2_max",
+    }
+    assert (out["n_repeats"] == 3).all()
+    assert out["r2_sd"].notna().all()
+
+
+def test_the_split_comparison_still_marks_only_blocked_reportable(
+    params_copy: dict[str, Any]
+) -> None:
+    pytest.importorskip("sklearn")
+    params_copy["prediction"]["rf"]["n_trees"] = 20
+    params_copy["prediction"]["rf"]["min_sample_rows"] = 100
+
+    frame = _autocorrelated_sample(params_copy, seed=7)
+    out = prediction.compare_split_strategies(
+        frame, params_copy, n_repeats=2
+    ).set_index("method")
+    assert bool(out.loc["spatial_block", "reportable"])
+    assert not bool(out.loc[prediction.RANDOM_SPLIT, "reportable"])
+
+
+def test_the_split_comparison_rejects_zero_repeats(
+    params: dict[str, Any]
+) -> None:
+    frame = pd.DataFrame({"block_id": [0, 1]})
+    with pytest.raises(ValueError, match="n_repeats"):
+        prediction.compare_split_strategies(frame, params, n_repeats=0)

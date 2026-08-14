@@ -913,10 +913,14 @@ def projection_report(params: dict[str, Any]) -> dict[str, Any]:
     return prediction.build_validation_report(
         "lst_projection",
         {
+            # Kappa must BEAT its no-change baseline, or require_validated
+            # refuses the product and every figure builder refuses with it.
+            # Each figure has its own test for that refusal; these fixtures
+            # exist to exercise the drawing.
             "rmse": 1.24,
             "r2": 0.71,
-            "kappa": 0.68,
-            "persistence_kappa": 0.94,
+            "kappa": 0.94,
+            "persistence_kappa": 0.68,
             "figure_of_merit": 0.21,
         },
         params,

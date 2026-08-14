@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-14 (Phase 6 **run 1 DISCARDED** — wrong analysis region; five defects fixed, 1029 tests pass, awaiting run 2)_
+_Last updated: 2026-08-14 (Phase 6 **run 2: Track A lands, Track B fails and is diagnosed** — five more defects fixed, 1050 tests pass, awaiting run 3)_
 
 ## Status snapshot
 
@@ -12,9 +12,170 @@ _Last updated: 2026-08-14 (Phase 6 **run 1 DISCARDED** — wrong analysis region
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
-| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 1 DISCARDED, fixed, awaiting run 2.** Run 1 used an 18,090 km² compositing bounding box as the analysis unit instead of the 699 km² district, voiding every number. S1 (`explain()` keys, band name) and S2 (DW 2021 = 100 % coverage) closed; S3/S4/S6 reopened; **S5 closed as a negative — the CA scored 0.006 BELOW a no-change null, FoM 0.019** (Dynamic World vegetation churn). Five defects fixed + a grouped-class sensitivity. 1029 tests pass, 14 skip |
+| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 2: Track A LANDS, Track B fails.** Track A over the district is a genuine urban-heat model — NDBI 0.094 / built 0.093 / LCZ 0.086 at the top, elevation down from 1st (0.180) to 5th (0.021); held-out RMSE **1.13 °C**, R² **0.894** on 212 blocks. Track B scores **0.007 BELOW** a no-change null under both class schemes (FoM 0.028/0.032): the Pontius split (quantity 0.011 vs allocation 0.069) diagnoses a net-demand allocator facing gross churn. Five more defects fixed — rasters were the district's bounding box (46 % outside), the export guard passed a no-skill projection, scheme auto-selection killed the greening lever. 1050 tests pass, 14 skip |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 2 (2026-08-14) — Track A LANDS. Track B fails, and the failure is now diagnosed
+
+Ran Part 1 and Part 2 through Step 12, stopping at a `NameError` I had left behind. The
+region guard did its job — `PASS: work region 685.6 km2` — and **Track A is now a real
+urban-heat model**. Track B failed again, but for a reason that is now measured rather
+than guessed at, and four further defects surfaced.
+
+#### Track A: the region fix changed what the model learned
+
+| | run 1 (18,090 km²) | run 2 (685.6 km²) |
+|---|---|---|
+| top predictor | `elevation_m` **0.180** | `NDBI` **0.094** |
+| `elevation_m` rank | **1st** | **5th** (0.021) |
+| blocks / rows per block | 2,469 / 5 | **212 / 105** |
+| blocked CV R² | 0.844 (0.835–0.857) | 0.843 (**0.761–0.887**) |
+| held-out RMSE / R² | 0.996 / 0.847 | **1.132 / 0.894** |
+
+Run 1's model was fitting a regional lapse-and-distance gradient across Western Province.
+Run 2's leading predictors are NDBI (0.094), built fraction (0.093) and LCZ class (0.086),
+with NDVI at 0.020 — that is an urban-surface model, and the fold spread finally looks
+like a real one. **These are the numbers to quote.**
+
+#### D6 — the rasters were the district's BOUNDING BOX, not the district
+
+Step 0's guard measured the *region* and passed, correctly. But
+`Export.image.toDrive` writes the region's **bounding box**, and nothing clipped to the
+geometry, so Part 2 was handed a rectangle:
+
+| | |
+|---|---|
+| exported raster | 297 × 423 cells at 100 m = **1,256 km²** |
+| cells inside a GN division | 68,125 = **681 km²** |
+| **outside Colombo District** | **46 %** |
+
+Every Track B number — transition matrix, class areas, Kappa, the GHSL comparison — was
+computed over that. **Track A escaped**, because `.sample()` clips to the geometry, which
+is why its results survive.
+
+This is not a Phase 4/5 bug: those phases exported rasters the same way but analysed them
+through zonal statistics on GN polygons, so out-of-district pixels never entered a result.
+Phase 6 is the first phase to analyse a raster wholesale.
+
+**Fix.** `prediction_stack()` and `lulc_class_image()` now `.clip(region)`. Clipping also
+makes the `observed` band do double duty — cells outside the district come back masked, so
+they read as unobserved and drop out of every downstream mask. Plus
+`prediction.require_expected_area()`, the raster-side companion to the Step 0 guard, which
+Step 9 now calls: it refuses an analysis grid that is not the size Colombo District is, and
+its message names unclipped export as the likely cause.
+
+#### D7 — the export guard passed a projection with no skill
+
+Run 2's projected-LST product was **accepted** because Kappa (0.854) is finite. Its
+no-change baseline was **0.861**. The guard checked "is it a number", not "does it beat
+doing nothing".
+
+**Fix (decided with the user).** `ca_markov.validation.min_kappa_above_null: 0.0`, enforced
+in `require_validated` for any product carrying both Kappa and its baseline. The
+consequence is deliberate and severe: **with the current CA, no projected-LST product can
+be exported at all.** Phase 6's honest output is Track A plus a documented negative result
+for Track B.
+
+#### D8 — the scheme auto-selection chose between two failures, and killed the scenario
+
+Step 9 picked `grouped` on a figure of merit of 0.032 against 0.028. Both are far below the
+0.10 floor, so the "better" scheme was the less-bad failure. That choice then silently
+destroyed deliverable 3:
+
+```
+scenario   n_priority_cells   n_eligible   n_converted
+greening               2,823            2             0
+```
+
+Under grouping only **bare** land is eligible, and the district holds **67 bare cells in
+total** — 2 inside priority zones, and `floor(0.2 x 2) = 0`. The greening lever did
+nothing at all.
+
+**Fix (decided with the user).** The projection always uses the **ungrouped** scheme.
+Grouping is a validation *sensitivity* — it answers "is this failure caused by classifier
+churn?" and nothing else. With ungrouped classes the lever works again (the dry-run harness
+converts ~100 cells rather than 0).
+
+#### D9 — a bug I introduced in the run-1 fix
+
+Step 10 called `ca_markov_project` **without** `grouped=`, so the projection was fed
+grouped labels while resolving the ungrouped class list. Grass and shrub became all-zero
+identity rows, and the areas table was mislabelled: the "Trees 651.77 km²" row was really
+*green* (trees + grass + shrub). Fixed, and `resolve_scheme()` now supplies codes and
+labels together so the two cannot drift.
+
+#### D10 — the blocker: a `NameError` I left behind
+
+Step 12 still referenced `KAPPA`, `NULL_KAPPA` and `FOM`, which the run-1 rewrite replaced
+with `LULC_METRICS`. Part 3's MOLUSCE cell had the same stale names. Both fixed, and the
+notebook build now runs an ALL-CAPS name-flow check across cells so a variable used before
+assignment cannot reach Colab again.
+
+#### The split comparison was underpowered, and its number meant nothing
+
+Run 2 reported a **negative** gap of −0.037 — the blocked split scoring *higher* than the
+random one — while the blocked CV's own folds ranged 0.761 to 0.887. A single pair of
+splits cannot resolve a difference several times smaller than the spread it is drawn from.
+
+`compare_split_strategies` now takes `n_repeats` (default 5) and reports mean, sd, min and
+max per strategy. Step 8 compares the gap against the combined spread and prints
+**inconclusive** when it cannot resolve it, rather than letting either sign be read as a
+finding.
+
+#### Track B: what the failure actually is
+
+Both schemes, on land only, over 114,443 scored cells:
+
+| scheme | Kappa | null | above null | FoM | quantity | allocation |
+|---|---|---|---|---|---|---|
+| ungrouped | 0.842 | 0.849 | **−0.007** | **0.028** | 0.011 | 0.069 |
+| grouped | 0.854 | 0.861 | **−0.007** | **0.032** | 0.011 | 0.063 |
+
+268 hits against 8,548 misses. The CA projected roughly **936 changes against 8,832
+observed** — about 11 % of the change volume.
+
+The Pontius split is the diagnosis: **quantity disagreement 0.011, allocation disagreement
+0.069.** The model gets the *amounts* of each class nearly right and puts them in the
+wrong *places*. That is the signature of a **net-demand allocator facing gross churn**, not
+of classifier noise alone — and grouping moving the figure of merit only 0.028 → 0.032
+is direct evidence that churn is not the whole story.
+
+**Fix (decided with the user): test it properly.** `ca_markov.validation_intervals` now
+carries two triplets — the 3-year `2018 → 2021` validated at 2024, and a 4-year
+`2017 → 2021` validated at **2025**, both ends >99.8 % covered per this run's own Step 2
+probe. Step 9 scores intervals × schemes. If a longer step barely moves the figure of
+merit, the failure is structural and the negative result is properly evidenced.
+
+#### S-item status after run 2
+
+| # | Answer | Status |
+|---|---|---|
+| S1 | closed in run 1 | ✅ |
+| S2 | closed in run 1; re-confirmed (2018 99.98 %, 2021 100 %, 2024 99.85 %) | ✅ |
+| **S3** | **blocked CV RMSE 1.262 °C (1.131–1.431), R² 0.843 (0.761–0.887); held out 1.132 / 0.894 over 212 blocks** | ✅ closed |
+| S4 | −0.037, but from a single pair of splits against a fold spread of 0.126 — **not resolvable**. Re-run with `n_repeats` | 🔄 reopened |
+| S5 | fails under both schemes: −0.007 below the null, FoM 0.028/0.032. **Diagnosed** as allocation, not quantity | 🔄 reopened for the 4-year interval |
+| S6 | GHSL 4,642 built-dominant cells vs the CA's 47,987, 65.3 % cell agreement — but computed over the bounding box. Note that DW "built" (roads, paved, sparse settlement) is far more inclusive than GHSL built *surface* ≥ 0.5 even after thresholding | 🔄 reopened |
+| S7 | extrapolation **0.09 %** of projected pixels outside the training envelope, all scenarios, well within the 5 % tolerance | ✅ closed |
+| S8 | not reached | ⬜ |
+| S9 | grouping moves FoM 0.028 → 0.032 — it is **not** the explanation. Scheme choice removed from the code: projection is always ungrouped | ✅ closed |
+| **S10** | **does a 4-year step help?** New after run 2 | ⬜ |
+
+#### What must not be quoted from run 2
+
+Every Track B number, and the GHSL comparison: computed over 1,256 km², 46 % of it outside
+the district. The split-comparison gap of −0.037. **Track A's results stand** — the sample
+was clipped to the district.
+
+#### Run 3 needs a full re-run, Part 1 included
+
+The clip changes every raster, and two more Dynamic World years (2017, 2025) are needed for
+the second interval. `git push` first.
+
+**1050 tests pass locally, 14 skip** (up from 1029/14: +21 tests).
+
+---
 
 ### Colab run 1 (2026-08-14) — ❌ DISCARDED. Wrong region; five defects fixed
 
