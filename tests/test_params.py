@@ -553,6 +553,69 @@ def test_the_ghsl_cross_check_year_is_within_ghsl_coverage(
     assert int(availability[0][:4]) <= year <= int(availability[1][:4])
 
 
+def test_the_forest_is_configured_to_mask_water(params: dict[str, Any]) -> None:
+    # Colab run 1 trained across a great deal of Indian Ocean. LST over open
+    # water is not driven by NDVI, NDBI or built fraction at all.
+    assert params["prediction"]["rf"]["mask_water"] is True
+
+
+def test_the_class_grouping_covers_every_retained_class(
+    params: dict[str, Any],
+) -> None:
+    grouping = params["prediction"]["ca_markov"]["class_grouping"]
+    assert set(grouping) == set(params["prediction"]["ca_markov"]["classes"])
+
+
+def test_every_grouped_code_has_a_label(params: dict[str, Any]) -> None:
+    cfg = params["prediction"]["ca_markov"]
+    assert set(cfg["class_grouping"].values()) == set(cfg["grouped_labels"])
+
+
+def test_the_grouping_merges_the_classes_run_1_found_unstable(
+    params: dict[str, Any],
+) -> None:
+    # Run 1: grass persisted 0.399 with 0.425 going to trees; shrub persisted
+    # 0.364 with 0.484 going to trees. Trees, grass and shrub must land in one
+    # class for the sensitivity to suppress anything.
+    grouping = params["prediction"]["ca_markov"]["class_grouping"]
+    assert grouping[1] == grouping[2] == grouping[5]
+    for separate in (0, 4, 6, 7):  # water, crops, built, bare
+        assert grouping[separate] != grouping[1]
+
+
+def test_validation_excludes_the_classes_the_ca_cannot_change(
+    params: dict[str, Any],
+) -> None:
+    assert params["prediction"]["ca_markov"]["validation"]["exclude_immutable"] is True
+
+
+def test_the_grouped_greening_scenario_uses_grouped_class_codes(
+    params: dict[str, Any],
+) -> None:
+    cfg = params["prediction"]["ca_markov"]
+    grouped_codes = set(cfg["class_grouping"].values())
+    block = params["prediction"]["scenarios"]["greening"]["grouped"]
+    for key in ("eligible_classes", "protect_classes"):
+        assert set(block[key]) <= grouped_codes, key
+    assert block["target_class"] in grouped_codes
+    assert block["paint_as_class"] in grouped_codes
+
+
+def test_the_grouped_greening_scenario_still_protects_built_land(
+    params: dict[str, Any],
+) -> None:
+    block = params["prediction"]["scenarios"]["greening"]["grouped"]
+    assert 6 in block["protect_classes"]
+    assert 6 not in block["eligible_classes"]
+
+
+def test_the_ghsl_threshold_is_a_fraction(params: dict[str, Any]) -> None:
+    # GHSL built_surface is a per-cell FRACTION; the CA emits a modal class.
+    # The threshold is what makes them comparable.
+    threshold = params["prediction"]["ghsl_cross_check_threshold"]
+    assert 0.0 < threshold <= 1.0
+
+
 def test_the_dynamic_world_palette_covers_every_legend_class(
     params: dict[str, Any],
 ) -> None:

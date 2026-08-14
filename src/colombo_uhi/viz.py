@@ -2634,6 +2634,7 @@ def build_transition_matrix_figure(
     params: dict[str, Any],
     classes: Sequence[int],
     title: str | None = None,
+    class_labels: Mapping[int, str] | None = None,
 ) -> Any:
     """Heatmap of the calibrated one-step transition probabilities.
 
@@ -2651,6 +2652,10 @@ def build_transition_matrix_figure(
         params: Parsed params mapping.
         classes: Class codes, in the matrix's row and column order.
         title: Figure title.
+        class_labels: Override for the class names. Pass
+            ``prediction.ca_markov.grouped_labels`` when the matrix was built on
+            the grouped scheme, or the axes will be labelled with the raw
+            Dynamic World legend and "Green" will read as "Trees".
 
     Returns:
         A ``matplotlib.figure.Figure``.
@@ -2673,7 +2678,10 @@ def build_transition_matrix_figure(
         )
 
     scheme = str(params["prediction"]["ca_markov"]["scheme"])
-    names = params["landcover"][scheme]["classes"]
+    names = dict(
+        params["landcover"][scheme]["classes"] if class_labels is None
+        else class_labels
+    )
     labels = [str(names.get(code, code)) for code in codes]
 
     footer = caveat_footer(params, ["scenario_not_forecast"]) + (
@@ -2727,10 +2735,13 @@ def plot_transition_matrix(
     params: dict[str, Any],
     classes: Sequence[int],
     title: str | None = None,
+    class_labels: Mapping[int, str] | None = None,
 ) -> Path:
     """Write the transition heatmap. See :func:`build_transition_matrix_figure`."""
     return _save_figure(
-        build_transition_matrix_figure(probabilities, params, classes, title=title),
+        build_transition_matrix_figure(
+            probabilities, params, classes, title=title, class_labels=class_labels
+        ),
         out_path,
     )
 
@@ -2742,6 +2753,7 @@ def build_lulc_validation_figure(
     params: dict[str, Any],
     report: Mapping[str, Any] | None,
     title: str | None = None,
+    class_labels: Mapping[int, str] | None = None,
 ) -> Any:
     """Three land-cover panels - start, observed, projected - and the metrics.
 
@@ -2752,6 +2764,10 @@ def build_lulc_validation_figure(
         params: Parsed params mapping.
         report: Validation report; stamped onto the figure.
         title: Figure title.
+        class_labels: Override for the legend names. Pass
+            ``prediction.ca_markov.grouped_labels`` when the panels carry
+            grouped codes, or the legend will read "Trees" for a class that is
+            really trees, grass and shrub together.
 
     Returns:
         A ``matplotlib.figure.Figure``.
@@ -2777,7 +2793,10 @@ def build_lulc_validation_figure(
 
     scheme = str(params["prediction"]["ca_markov"]["scheme"])
     palette = landcover_palette(params, scheme)
-    names = params["landcover"][scheme]["classes"]
+    names = dict(
+        params["landcover"][scheme]["classes"] if class_labels is None
+        else class_labels
+    )
     codes = sorted(palette)
     cmap = ListedColormap([palette[code] for code in codes])
     norm = BoundaryNorm([*codes, codes[-1] + 1], cmap.N)
@@ -2851,11 +2870,13 @@ def plot_lulc_validation(
     params: dict[str, Any],
     report: Mapping[str, Any] | None,
     title: str | None = None,
+    class_labels: Mapping[int, str] | None = None,
 ) -> Path:
     """Write the land-cover validation panels. See :func:`build_lulc_validation_figure`."""
     return _save_figure(
         build_lulc_validation_figure(
-            initial, observed, projected, params, report, title=title
+            initial, observed, projected, params, report, title=title,
+            class_labels=class_labels,
         ),
         out_path,
     )

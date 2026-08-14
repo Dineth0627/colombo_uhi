@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-13 (Phase 6 **WRITTEN, NOT YET RUN** — 983 tests pass locally, awaiting Colab run 1)_
+_Last updated: 2026-08-14 (Phase 6 **run 1 DISCARDED** — wrong analysis region; five defects fixed, 1029 tests pass, awaiting run 2)_
 
 ## Status snapshot
 
@@ -12,9 +12,156 @@ _Last updated: 2026-08-13 (Phase 6 **WRITTEN, NOT YET RUN** — 983 tests pass l
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
-| 6 | Scenario projection (RF + CA-Markov) | 🟡 **written, NOT YET RUN.** `prediction.py` (78 public names), `viz.py` +6 figure pairs, `notebooks/06_prediction.ipynb` (48 cells, 3 parts), `docs/molusce_handoff.md`. 983 tests pass locally, 10 skip. **Eight unknowns S1–S8 for Colab to settle** |
+| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 1 DISCARDED, fixed, awaiting run 2.** Run 1 used an 18,090 km² compositing bounding box as the analysis unit instead of the 699 km² district, voiding every number. S1 (`explain()` keys, band name) and S2 (DW 2021 = 100 % coverage) closed; S3/S4/S6 reopened; **S5 closed as a negative — the CA scored 0.006 BELOW a no-change null, FoM 0.019** (Dynamic World vegetation churn). Five defects fixed + a grouped-class sensitivity. 1029 tests pass, 14 skip |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 1 (2026-08-14) — ❌ DISCARDED. Wrong region; five defects fixed
+
+Ran Part 1 and Part 2 through Step 10, then stopped at Step 11 on a `ValueError`.
+**Every number the run produced is void**, for one reason: the analysis region was
+26× too large. Three further defects and one blocker surfaced underneath it.
+
+#### D1 — the region invalidates everything
+
+The notebook used `aoi.analysis_region(params)` as the analysis unit. That function
+returns **Western Province buffered outward by the 25 km SUHII ring** — a bounding box
+for masks and composites, sized so the rural reference fits inside it. The run measured
+it: **18,090 km²**. Colombo District is **699 km²**.
+
+Notebooks 04 and 05 both use `aoi.colombo_district(params).geometry()`. Phase 6 was the
+only place the bounding box was used as a study area. That was a bug in the notebook, not
+in the config.
+
+| Symptom the run reported | What was actually happening |
+|---|---|
+| `elevation_m` ranked #1 in permutation importance (0.180) | the region spans sea level to **424 m** and 0–**100 km** from the coast, so the forest learned a regional lapse-and-distance gradient rather than urban heat structure |
+| held-out R² **0.847**, blocked CV R² 0.844 (0.835–0.857) | that gradient is easy to fit and says nothing about intra-urban heat |
+| random-vs-blocked gap only **+0.009 R²** | a smooth regional gradient is learnable from distant blocks, so holding out 2 km blocks barely hurt — **the blocked split was never stressed**. This is not evidence that leakage is absent |
+| water = **32 %** of CA cells (5,828 km²) | the Indian Ocean sits inside the buffered region; the CA spent most of its time projecting land-cover transitions on open sea |
+| CA built area 1,625 km² vs GHSL 489.5 km² (**+232 %**) | region, *and* the two are different quantities — see D4 |
+
+**Fix.** `prediction.work_region()` returns the district and is now the default for every
+`region=None` in the module. Notebook Step 0 measures the region with one `getInfo` and
+**refuses** if it is not within 20 % of `aoi.expected_areas_km2.district`. A test walks
+the module AST and fails if anything calls `aoi.analysis_region` again.
+
+#### D2 — no water mask, and water was being scored
+
+Two separate problems that the over-large region made enormous.
+
+The forest trained on ocean pixels: LST over open water is not driven by NDVI, NDBI or
+built fraction at all, so those rows teach a relationship that does not exist. And water
+is configured **immutable**, so the CA is *definitionally* correct on every water cell —
+including them in the confusion matrix does not measure agreement, it pads the diagonal.
+
+**Fix.** `prediction.rf.mask_water: true` applies `aoi.static_water_mask` inside
+`prediction_stack` (the cheap JRC-only variant Phase 4 chose, because the three-detector
+`water_mask` embeds a Landsat composite into every image it masks).
+`ca_markov.validation.exclude_immutable: true` plus `prediction.scoring_mask()` drops
+immutable classes before any metric is computed, and the excluded count is reported
+beside every number.
+
+#### D3 — the CA-Markov does not beat doing nothing
+
+The headline negative result, and it is **not** an artefact of the region.
+
+| metric | run 1 | floor |
+|---|---|---|
+| Kappa | 0.928 | 0.60 |
+| Kappa of the no-change null | **0.933** | — |
+| **Kappa above null** | **−0.006** | — |
+| Figure of merit | **0.019** | 0.10 |
+| hits / misses / false alarms / wrong class | 1,439 / 66,054 / 7,702 / 338 |
+
+The transition matrix says why:
+
+| from → | persistence | largest off-diagonal |
+|---|---|---|
+| grass (2) | **0.399** | 0.425 → trees |
+| shrub (5) | **0.364** | 0.484 → trees |
+| bare (7) | 0.538 | 0.272 → built |
+| built (6) | 0.900 | 0.096 → trees |
+| trees (1) | 0.964 | 0.021 → built |
+| water (0) | 0.998 | — |
+
+A **42 % grass-to-trees transition in three years** is not land cover changing; it is
+Dynamic World flipping between spectrally similar vegetation classes. And a Markov-CA
+allocates **net** demand, so it structurally cannot reproduce gross churn — the run
+projected 9,479 changes against 67,831 observed.
+
+**Fix (decided with the user).** Add `ca_markov.class_grouping`, which merges trees,
+grass and shrub into one "green" class (crops stay separate, matching
+`spatial_stats.landscape.green_classes`). `prediction.group_classes()` applies it, and
+Step 9 now validates **both** schemes and reports the pair — CLAUDE.md caveat 5. The
+projection uses whichever has the better figure of merit, the one metric a no-change
+projection cannot game, and the choice is recorded as **S9**.
+
+Under grouping the greening lever is genuinely **weaker**: grass and shrub already count
+as green, so only bare land is eligible. That is a real consequence of suppressing the
+churn, not something to hide — `scenarios.greening.grouped` carries its own class lists,
+and converted cells are painted with the **trees** profile (`paint_as_class: 1`) taken
+from the ungrouped map, with "new planting is canopy, not lawn" stated on the figure.
+
+#### D4 — the GHSL cross-check compared different quantities
+
+GHSL's 489.5 km² is fraction-weighted built **surface**. The CA's 1,625 km² is a count of
+cells whose **modal class** is built. The 232 % "disagreement" was mostly the comparison.
+
+**Fix.** `prediction.ghsl_built_comparison()` thresholds GHSL at
+`ghsl_cross_check_threshold: 0.5` to a built-**dominant** mask and compares cell counts —
+the comparable pair — then reports the fraction-weighted area separately and labelled.
+
+#### D5 — the blocker: wrong reader for the committed geometry
+
+`spatial_stats.read_zone_geodataframe` expects the raw export keyed on `adm4_pcode`. But
+`data/outputs/gn_divisions_colombo.geojson` is Phase 5's **post-processed** output, in
+which that column was already renamed to `zone_id` (properties: `adm3_name`,
+`adm3_pcode`, `adm4_name`, `area_sqkm`, `id`, `zone_id`). Step 11 died on exactly that.
+
+**Fix.** `prediction.read_priority_geometry()` accepts either layout and always returns
+`zone_id` in the analysis CRS. The frozen Phase 5 reader is untouched.
+
+#### One more thing the fix surfaced
+
+Pinning immutable classes. The Markov chain projects water shrinking — observed
+water-to-land transitions here are shoreline mixing and classifier noise, not reclamation
+— but the CA forbids water from changing. The demand and the constraint contradicted each
+other, and the deficit surfaced against *built* as a spurious shortfall that reads like an
+allocation failure. `projected_class_areas(..., pin_immutable=True)` now holds immutable
+classes at their observed count and rescales the rest. Both schemes now allocate with
+**zero** shortfall.
+
+#### S-item status after run 1
+
+| # | Unknown | Answer | Status |
+|---|---|---|---|
+| S1 | `explain()` keys and the `classify()` band name | `['importance', 'numberOfTrees', 'outOfBagErrorEstimate', 'trees']`; OOB error **1.220**; band `LST_C_projected` as intended | ✅ closed |
+| S2 | Dynamic World coverage, especially the never-probed 2021 | **2018 99.98 %, 2021 100.0 %, 2024 99.85 %** — all clear the 90 % floor. 2016 = **56.2 %**, consistent with Phase 5 | ✅ closed |
+| S3 | Blocked held-out RMSE/R² and the fold spread | measured over the wrong region — **discard** | 🔄 reopened |
+| S4 | Random-vs-blocked inflation | +0.009 R², but the test was never stressed — **discard** | 🔄 reopened |
+| S5 | Kappa, null, Pontius, FoM against the floors | **FAILED**: −0.006 below the null, FoM 0.019. Driven by classifier churn, which the region does not create — but must be re-measured on land only, under both schemes | 🔄 reopened as a known-negative |
+| S6 | CA vs GHSL 2030 built area | invalid comparison — **discard** | 🔄 reopened |
+| S7 | Extrapolation fraction per scenario | not reached | ⬜ |
+| S8 | MOLUSCE vs the Python CA | not reached | ⬜ |
+| **S9** | **Which class scheme the projection uses, and by how much the two differ** | new after run 1 | ⬜ |
+
+#### What must not be quoted from run 1
+
+Every Track A metric (RMSE 1.031, R² 0.844, the +0.009 gap), every projected class area,
+and the GHSL comparison. They describe 18,090 km² of Western Province and a great deal of
+Indian Ocean. S1 and S2 survive unchanged; S5's *mechanism* survives as a finding about
+Dynamic World, but its numbers must be re-measured.
+
+#### Run 2 needs a full re-run, Part 1 included
+
+Every export is region-dependent. `git push` first — Step 0's staleness guard runs against
+the pushed repo, and it now names the whole run-1 API surface.
+
+**1029 tests pass locally, 14 skip** (up from 983/10: +46 tests; the 4 extra skips are
+`geopandas` cross-checks that resolve in Colab).
+
+---
 
 ## PHASE 6 — implementation record (conditional scenario projection, NOT YET RUN)
 

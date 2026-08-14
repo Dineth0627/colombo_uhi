@@ -1633,6 +1633,13 @@ prediction:
                                       # Read permutation importance instead. Revisit in Phase 7.
     sample_pixels: 20000              # [DEFAULT — Phase 6] exported, not .getInfo()'d
     min_sample_rows: 500              # refuse to fit below this
+    mask_water: true                  # [Phase 6, run 1] train on LAND only. LST over open water
+                                      # is not driven by NDVI/NDBI/built fraction at all, so water
+                                      # pixels teach the forest a relationship that does not
+                                      # exist. Uses aoi.static_water_mask - the cheap JRC-only
+                                      # variant Phase 4 chose because the three-detector
+                                      # water_mask embeds a Landsat composite into every image it
+                                      # masks and blew the interactive memory limit.
     extrapolation:
       method: "per_predictor_range"   # flag rows outside the training min/max of ANY predictor
       tolerance_fraction: 0.05        # [DEFAULT — Phase 6] > 5 % of projected pixels outside the
@@ -1693,6 +1700,39 @@ prediction:
                                       # be estimated from almost nothing.
     immutable_classes: [0]            # water is held fixed. The CA is not a hydrological model
                                       # and must not be allowed to "reclaim" the harbour.
+                                      # Because it is immutable, the CA is DEFINITIONALLY correct
+                                      # on every water cell - see validation.exclude_immutable.
+
+    # ---- Class grouping: the run-1 sensitivity ------------------------------
+    # Colab run 1 measured Dynamic World flipping between spectrally similar
+    # vegetation classes at a 3-year step over Colombo: grass persisted only
+    # 0.399 with 0.425 going to trees, shrub persisted 0.364 with 0.484 going to
+    # trees. A 42 % grass->trees transition in three years is not land cover
+    # changing. A Markov-CA allocates NET demand, so it structurally cannot
+    # reproduce that gross churn - run 1 projected 9,479 changes against 67,831
+    # observed, giving a figure of merit of 0.019.
+    #
+    # Grouping the unstable vegetation classes into one "green" class suppresses
+    # the churn. BOTH schemes are validated and reported as a sensitivity
+    # (CLAUDE.md caveat 5); the projection uses whichever the EVIDENCE favours,
+    # recorded in PROGRESS.md. Crops stay separate, matching
+    # spatial_stats.landscape.green_classes, which excludes cropland from green.
+    class_grouping:
+      0: 0                            # water            -> water
+      1: 1                            # trees            -> green
+      2: 1                            # grass            -> green
+      4: 4                            # crops            -> crops (kept separate)
+      5: 1                            # shrub_and_scrub  -> green
+      6: 6                            # built            -> built
+      7: 7                            # bare             -> bare
+    grouped_labels:
+      0: "Water"
+      1: "Green"
+      4: "Crops"
+      6: "Built"
+      7: "Bare"
+    report_grouped_sensitivity: true   # false -> run the ungrouped scheme only
+
     neighbourhood_radius_cells: 2     # 5x5 kernel for the transition-potential filter
     allocation_seed: 42
     coverage_probe_years: [2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]
@@ -1713,6 +1753,13 @@ prediction:
                                       # cannot game
       min_kappa: 0.60                 # [DEFAULT — Phase 6] floors, not targets. Failing one is a
       min_figure_of_merit: 0.10       # result to report, never something to tune away.
+      exclude_immutable: true         # [Phase 6, run 1] score only cells that COULD have changed.
+                                      # Water is immutable, so the CA is definitionally correct on
+                                      # every water cell; including them is not validation, it is
+                                      # padding the diagonal. Run 1 scored 32 % water (the Indian
+                                      # Ocean, inside the over-large region) and read Kappa 0.928 -
+                                      # against a no-change null of 0.933. The excluded cell count
+                                      # is reported beside every metric.
 
   # ---- Scenarios ------------------------------------------------------------
   scenarios:
@@ -1730,6 +1777,19 @@ prediction:
                                       # immutable; BUILT because converting built land to canopy
                                       # is a demolition programme, not a greening programme, and
                                       # modelling it silently would overstate what is achievable.
+      grouped:                        # the same lever under ca_markov.class_grouping
+        eligible_classes: [7]         # ONLY bare. Grass and shrub already count as "green" once
+                                      # grouped, so the lever is genuinely WEAKER under this
+                                      # scheme - that is a real consequence of suppressing the
+                                      # classifier churn, not a modelling choice to hide. Say so
+                                      # when quoting a grouped-scheme greening effect.
+        target_class: 1               # green
+        protect_classes: [0, 6]
+        paint_as_class: 1             # converted cells are painted with the observed TREES
+                                      # profile, not the blended "green" median. Assumption:
+                                      # new planting is canopy, not lawn. It is stated on the
+                                      # figure, because canopy and lawn differ thermally and the
+                                      # grouped class cannot tell them apart.
 
   # ---- Priority zones (INTERIM — Phase 7 replaces this) ---------------------
   priority_zones:
@@ -1778,6 +1838,15 @@ prediction:
   ghsl_cross_check_year: 2030         # GHS_BUILT_S runs to 2030, so the CA's projected built
                                       # area has an INDEPENDENT comparison for 2030. Reported as
                                       # agreement, not used to correct the CA.
+  ghsl_cross_check_threshold: 0.5     # [Phase 6, run 1] GHSL built_surface is a FRACTION of each
+                                      # cell; the CA emits a MODAL class. Run 1 compared 489.5 km2
+                                      # of fraction-weighted built surface against 1,625 km2 of
+                                      # built-dominant cells and reported a 232 % disagreement
+                                      # that was an artefact of comparing two different
+                                      # quantities. Threshold the fraction here to get a
+                                      # built-DOMINANT mask, compare cell counts against the CA,
+                                      # and report the fraction-weighted area separately and
+                                      # labelled as the different quantity it is.
 
 greening:
   method: "mcda_weighted_overlay"     # [CLAUDE.md] MCDA / AHP weighted overlay

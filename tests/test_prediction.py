@@ -1449,3 +1449,561 @@ def test_the_training_source_is_a_single_sensor_family(
         f"prediction.rf.source {key!r} does not restrict its sensors; only a "
         "single-family source may train the projection model"
     )
+
+
+# =============================================================================
+# Colab run 1 regressions
+# =============================================================================
+# Every test below pins a defect the first Colab run actually produced. They are
+# grouped here rather than filed under the feature they touch, because what they
+# have in common is more useful than what they test: each one is a way a
+# confident, plausible, WRONG product reached the end of a pipeline.
+
+
+# --- D1: the analysis region -------------------------------------------------
+
+
+def test_no_region_default_resolves_to_the_compositing_bounding_box() -> None:
+    # THE run-1 defect. aoi.analysis_region is Western Province buffered by the
+    # 25 km SUHII ring - a bounding box for masks and composites, 18,090 km2
+    # against the district's 699. Using it as the analysis unit made elevation
+    # the top predictor (a regional lapse gradient), inflated R2, collapsed the
+    # blocked-vs-random gap to +0.009, and had the CA projecting land-cover
+    # transitions on the Indian Ocean.
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(prediction))
+    offenders = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "analysis_region"
+    ]
+    assert not offenders, (
+        f"prediction.py calls aoi.analysis_region at line(s) {offenders}. "
+        "Phase 6's analysis unit is Colombo District - use work_region()."
+    )
+
+
+def test_work_region_docstring_names_the_helper_it_is_not() -> None:
+    # A future reader reaching for analysis_region must hit the reason not to.
+    doc = prediction.work_region.__doc__ or ""
+    assert "analysis_region" in doc
+    assert "18,090" in doc or "699" in doc
+
+
+def test_the_district_area_is_configured_for_the_notebook_guard(
+    params: dict[str, Any]
+) -> None:
+    # Notebook 06 Step 0 measures the region and compares against this. Without
+    # it the guard has nothing to check.
+    assert params["aoi"]["expected_areas_km2"]["district"] == 699
+
+
+# --- D2: water ----------------------------------------------------------------
+
+
+def test_the_forest_masks_water_by_default(params: dict[str, Any]) -> None:
+    # LST over open water is not driven by NDVI, NDBI or built fraction, so
+    # water pixels teach a relationship that does not exist.
+    assert prediction.resolve_rf_settings(params)["mask_water"] is True
+
+
+def test_scoring_excludes_a_cell_that_is_immutable_in_either_year(
+    params: dict[str, Any]
+) -> None:
+    # A cell that was water at either end of the interval is dropped. Scoring a
+    # class the CA is forbidden from changing pads the diagonal.
+    early = np.array([[0, 1], [6, 6]])
+    late = np.array([[1, 1], [6, 0]])
+    mask, report = prediction.scoring_mask(params, early, late)
+    assert mask.tolist() == [[False, True], [True, False]]
+    assert report["n_excluded"] == 2
+    assert report["excluded_fraction"] == pytest.approx(0.5)
+
+
+def test_scoring_can_be_told_to_keep_everything(params: dict[str, Any]) -> None:
+    mask, report = prediction.scoring_mask(
+        params, np.array([[0, 6]]), exclude_immutable=False
+    )
+    assert mask.all()
+    assert report["n_excluded"] == 0
+    assert report["exclude_immutable"] is False
+
+
+def test_scoring_mask_rejects_arrays_of_different_shapes(
+    params: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="share a shape"):
+        prediction.scoring_mask(params, np.zeros((2, 2)), np.zeros((3, 3)))
+
+
+def test_scoring_mask_needs_at_least_one_array(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        prediction.scoring_mask(params)
+
+
+def test_excluding_water_changes_the_headline_kappa(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    # Run 1's Kappa of 0.928 was built on 32% water. Make the difference
+    # visible: a map that is mostly immutable water scores very differently
+    # once the water is dropped.
+    rng = np.random.default_rng(21)
+    initial = np.where(rng.random((60, 60)) < 0.6, 0, 6)
+    observed = initial.copy()
+    land = initial != 0
+    flip = land & (rng.random(initial.shape) < 0.4)
+    observed[flip] = 1
+    projected = initial.copy()
+
+    everything = prediction.validate_projection(
+        initial, observed, projected, params, classes
+    )
+    mask, _ = prediction.scoring_mask(params, initial, observed)
+    land_only = prediction.validate_projection(
+        initial, observed, projected, params, classes, mask=mask
+    )
+    assert everything["kappa"] > land_only["kappa"]
+    assert land_only["n_scored"] < everything["n_scored"]
+
+
+# --- validate_projection ------------------------------------------------------
+
+
+def test_the_validation_bundle_agrees_with_the_individual_metrics(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    rng = np.random.default_rng(22)
+    initial = rng.choice(classes, (40, 40))
+    observed = initial.copy()
+    observed[rng.random(initial.shape) < 0.15] = 6
+    projected = initial.copy()
+    projected[rng.random(initial.shape) < 0.10] = 6
+
+    bundle = prediction.validate_projection(
+        initial, observed, projected, params, classes
+    )
+    matrix = prediction.confusion_matrix(
+        observed.ravel(), projected.ravel(), classes
+    )
+    assert bundle["kappa"] == pytest.approx(prediction.cohen_kappa(matrix))
+    assert bundle["persistence_kappa"] == pytest.approx(
+        prediction.persistence_baseline_kappa(
+            initial.ravel(), observed.ravel(), classes
+        )
+    )
+    assert bundle["kappa_above_null"] == pytest.approx(
+        bundle["kappa"] - bundle["persistence_kappa"]
+    )
+
+
+def test_the_validation_bundle_carries_every_metric_that_must_be_read_together(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    initial = np.array([[0, 1], [6, 6]])
+    bundle = prediction.validate_projection(
+        initial, initial, initial, params, classes
+    )
+    for name in (
+        "kappa", "persistence_kappa", "kappa_above_null", "figure_of_merit",
+        "quantity_disagreement", "allocation_disagreement", "hits", "misses",
+    ):
+        assert name in bundle
+
+
+def test_the_validation_bundle_refuses_an_empty_scoring_set(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    water = np.zeros((4, 4), dtype=int)
+    mask, _ = prediction.scoring_mask(params, water)
+    with pytest.raises(ValueError, match="nothing"):
+        prediction.validate_projection(
+            water, water, water, params, classes, mask=mask
+        )
+
+
+def test_the_validation_bundle_rejects_a_mismatched_mask(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    grid = np.zeros((3, 3), dtype=int)
+    with pytest.raises(ValueError, match="mask has shape"):
+        prediction.validate_projection(
+            grid, grid, grid, params, classes, mask=np.ones((2, 2), dtype=bool)
+        )
+
+
+# --- D3: class grouping -------------------------------------------------------
+
+
+def test_the_grouping_covers_every_retained_class(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    # A class the grouping misses would be silently dropped from the grouped
+    # run, and the two schemes would stop being comparable.
+    assert set(prediction.resolve_class_grouping(params)) == set(classes)
+
+
+def test_the_grouping_collapses_the_unstable_vegetation_classes(
+    params: dict[str, Any]
+) -> None:
+    # Run 1: grass persisted 0.399 with 0.425 going to trees; shrub persisted
+    # 0.364 with 0.484 going to trees. Grouping exists to suppress exactly that.
+    grouping = prediction.resolve_class_grouping(params)
+    assert grouping[1] == grouping[2] == grouping[5]  # trees, grass, shrub
+    assert grouping[6] != grouping[1]                 # built stays separate
+    assert grouping[0] != grouping[1]                 # water stays separate
+    assert grouping[4] != grouping[1]                 # crops stay separate
+
+
+def test_grouping_rejects_a_class_it_does_not_cover(
+    params_copy: dict[str, Any]
+) -> None:
+    params_copy["prediction"]["ca_markov"]["class_grouping"].pop(5)
+    with pytest.raises(ValueError, match=r"\[5\]"):
+        prediction.resolve_class_grouping(params_copy)
+
+
+def test_grouping_rejects_a_target_with_no_label(
+    params_copy: dict[str, Any]
+) -> None:
+    params_copy["prediction"]["ca_markov"]["class_grouping"][7] = 99
+    with pytest.raises(ValueError, match="99"):
+        prediction.resolve_class_grouping(params_copy)
+
+
+def test_grouped_classes_are_the_distinct_targets(params: dict[str, Any]) -> None:
+    grouping = prediction.resolve_class_grouping(params)
+    assert prediction.resolve_grouped_classes(params) == sorted(set(grouping.values()))
+
+
+def test_group_classes_recodes_the_array(params: dict[str, Any]) -> None:
+    grouped = prediction.group_classes(np.array([[1, 2, 5], [0, 6, 4]]), params)
+    assert grouped[0].tolist() == [1, 1, 1]      # all three become green
+    assert grouped[1].tolist() == [0, 6, 4]      # water, built, crops unchanged
+
+
+def test_group_classes_passes_a_nodata_sentinel_through(
+    params: dict[str, Any]
+) -> None:
+    # Folding -1 into a real class would put nodata on the map as land cover.
+    assert prediction.group_classes(np.array([-1, 2]), params).tolist() == [-1, 1]
+
+
+def test_group_classes_is_idempotent(params: dict[str, Any]) -> None:
+    once = prediction.group_classes(np.array([[1, 2, 5, 6]]), params)
+    twice = prediction.group_classes(once, params)
+    assert np.array_equal(once, twice)
+
+
+def test_grouping_reduces_off_diagonal_churn(params: dict[str, Any]) -> None:
+    # The point of the whole sensitivity, as a property: merging trees, grass
+    # and shrub converts grass->trees transitions into persistence.
+    classes = prediction.resolve_ca_classes(params)
+    grouped_codes = prediction.resolve_grouped_classes(params)
+    early = np.array([2, 2, 5, 5, 1, 6, 6, 0])
+    late = np.array([1, 1, 1, 2, 1, 6, 6, 0])  # heavy vegetation churn
+
+    # Both matrices carry classes absent at the earlier date, which warn by
+    # design; that behaviour has its own test.
+    with pytest.warns(UserWarning, match="never observed"):
+        raw = prediction.transition_probabilities(
+            prediction.transition_matrix(early, late, classes)
+        )
+    with pytest.warns(UserWarning, match="never observed"):
+        grouped = prediction.transition_probabilities(
+            prediction.transition_matrix(
+                prediction.group_classes(early, params),
+                prediction.group_classes(late, params),
+                grouped_codes,
+            )
+        )
+    green = grouped_codes.index(prediction.resolve_class_grouping(params)[2])
+    grass = classes.index(2)
+    assert grouped[green, green] > raw[grass, grass]
+
+
+# --- D3: grouped scenarios ----------------------------------------------------
+
+
+def test_the_grouped_scenario_reads_its_own_class_lists(
+    params: dict[str, Any]
+) -> None:
+    ungrouped = prediction.resolve_scenario("greening", params)
+    grouped = prediction.resolve_scenario("greening", params, grouped=True)
+    assert grouped["grouped"] is True
+    assert grouped["eligible_classes"] != ungrouped["eligible_classes"]
+    assert set(grouped["eligible_classes"]) <= set(
+        prediction.resolve_grouped_classes(params)
+    )
+
+
+def test_the_grouped_lever_is_weaker_and_the_config_says_so(
+    params: dict[str, Any]
+) -> None:
+    # Grass and shrub already count as green once grouped, so only bare is left
+    # to convert. That is a real consequence of suppressing the churn, and the
+    # report has to state it rather than quote the two schemes as equivalent.
+    grouped = prediction.resolve_scenario("greening", params, grouped=True)
+    ungrouped = prediction.resolve_scenario("greening", params)
+    assert len(grouped["eligible_classes"]) < len(ungrouped["eligible_classes"])
+
+
+def test_the_grouped_scenario_paints_converted_cells_as_trees(
+    params: dict[str, Any]
+) -> None:
+    # The grouped "green" median blends canopy and lawn, which differ
+    # thermally. paint_as_class keeps the canopy assumption explicit.
+    grouped = prediction.resolve_scenario("greening", params, grouped=True)
+    assert grouped["paint_as_class"] == 1
+
+
+def test_a_scenario_without_a_grouped_block_refuses_to_be_grouped(
+    params_copy: dict[str, Any]
+) -> None:
+    params_copy["prediction"]["scenarios"]["greening"].pop("grouped")
+    with pytest.raises(KeyError, match="NOT interchangeable"):
+        prediction.resolve_scenario("greening", params_copy, grouped=True)
+
+
+def test_business_as_usual_needs_no_grouped_block(params: dict[str, Any]) -> None:
+    resolved = prediction.resolve_scenario(
+        "business_as_usual", params, grouped=True
+    )
+    assert resolved["canopy_increase_fraction"] == 0.0
+
+
+def test_a_grouped_scenario_rejects_an_ungrouped_class_code(
+    params_copy: dict[str, Any]
+) -> None:
+    # Class 2 (grass) does not exist once grouped; naming it would silently
+    # convert nothing.
+    params_copy["prediction"]["scenarios"]["greening"]["grouped"][
+        "eligible_classes"
+    ] = [2]
+    with pytest.raises(ValueError, match="grouped codes"):
+        prediction.resolve_scenario("greening", params_copy, grouped=True)
+
+
+# --- D4: the GHSL cross-check -------------------------------------------------
+
+
+def test_ghsl_and_the_ca_agree_when_the_ca_mirrors_the_threshold(
+    params: dict[str, Any]
+) -> None:
+    rng = np.random.default_rng(23)
+    fraction = rng.random((30, 30))
+    threshold = float(params["prediction"]["ghsl_cross_check_threshold"])
+    labels = np.where(fraction >= threshold, 6, 1)
+    out = prediction.ghsl_built_comparison(
+        fraction, labels, params, built_class=6, cell_area_m2=1e4
+    )
+    assert out["cell_agreement"] == pytest.approx(1.0)
+    assert out["cell_difference"] == 0
+
+
+def test_the_fraction_weighted_area_is_reported_but_not_the_comparison(
+    params: dict[str, Any]
+) -> None:
+    # Run 1 compared 489.5 km2 of fraction-weighted built SURFACE against
+    # 1,625 km2 of built-DOMINANT cells and called the 232% gap a
+    # disagreement. The two quantities are now reported separately.
+    fraction = np.full((10, 10), 0.6)
+    labels = np.full((10, 10), 6)
+    out = prediction.ghsl_built_comparison(
+        fraction, labels, params, built_class=6, cell_area_m2=1e4
+    )
+    assert out["ghsl_dominant_km2"] == pytest.approx(1.0)
+    assert out["ghsl_fraction_weighted_km2"] == pytest.approx(0.6)
+    assert out["ghsl_dominant_km2"] != out["ghsl_fraction_weighted_km2"]
+
+
+def test_the_ghsl_comparison_honours_a_mask(params: dict[str, Any]) -> None:
+    fraction = np.full((4, 4), 0.9)
+    labels = np.full((4, 4), 6)
+    mask = np.zeros((4, 4), dtype=bool)
+    mask[0] = True
+    out = prediction.ghsl_built_comparison(
+        fraction, labels, params, built_class=6, cell_area_m2=1e4, mask=mask
+    )
+    assert out["ca_built_cells"] == 4
+    assert out["ghsl_dominant_cells"] == 4
+
+
+def test_the_ghsl_comparison_rejects_a_grid_mismatch(
+    params: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="one grid"):
+        prediction.ghsl_built_comparison(
+            np.zeros((3, 3)), np.zeros((4, 4)), params,
+            built_class=6, cell_area_m2=1e4,
+        )
+
+
+# --- D5: the priority geometry reader -----------------------------------------
+
+
+def test_the_committed_zone_geometry_is_the_processed_layout() -> None:
+    # This is the file a fresh clone has, and the one run 1 died on: Phase 5
+    # already renamed adm4_pcode to zone_id when it wrote it to data/outputs/.
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "data" / "outputs" / (
+        "gn_divisions_colombo.geojson"
+    )
+    if not path.exists():  # pragma: no cover - present in the repo
+        pytest.skip("the committed GN geometry is absent")
+    with path.open(encoding="utf-8") as handle:
+        properties = json.load(handle)["features"][0]["properties"]
+    assert "zone_id" in properties
+    assert "adm4_pcode" not in properties
+
+
+def test_the_priority_reader_accepts_the_processed_layout(
+    params: dict[str, Any], tmp_path: Any
+) -> None:
+    gpd = pytest.importorskip("geopandas")
+    from shapely.geometry import box
+
+    frame = gpd.GeoDataFrame(
+        {"zone_id": ["LK1103005", "LK1103006"]},
+        geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+        crs=params["crs"]["analysis_epsg"],
+    )
+    path = tmp_path / "processed.geojson"
+    frame.to_file(path, driver="GeoJSON")
+
+    out = prediction.read_priority_geometry(path, params)
+    assert list(out["zone_id"]) == ["LK1103005", "LK1103006"]
+
+
+def test_the_priority_reader_accepts_the_raw_export_layout(
+    params: dict[str, Any], tmp_path: Any
+) -> None:
+    gpd = pytest.importorskip("geopandas")
+    from shapely.geometry import box
+
+    key = params["spatial_stats"]["geometry"]["export_properties"]["gn"][0]
+    frame = gpd.GeoDataFrame(
+        {key: ["LK1103005"]},
+        geometry=[box(0, 0, 1, 1)],
+        crs=params["crs"]["analysis_epsg"],
+    )
+    path = tmp_path / "raw.geojson"
+    frame.to_file(path, driver="GeoJSON")
+
+    out = prediction.read_priority_geometry(path, params)
+    assert list(out["zone_id"]) == ["LK1103005"]
+
+
+def test_the_priority_reader_names_both_layouts_when_it_gets_neither(
+    params: dict[str, Any], tmp_path: Any
+) -> None:
+    gpd = pytest.importorskip("geopandas")
+    from shapely.geometry import box
+
+    frame = gpd.GeoDataFrame(
+        {"nonsense": ["x"]}, geometry=[box(0, 0, 1, 1)],
+        crs=params["crs"]["analysis_epsg"],
+    )
+    path = tmp_path / "wrong.geojson"
+    frame.to_file(path, driver="GeoJSON")
+
+    with pytest.raises(ValueError, match="adm4_pcode"):
+        prediction.read_priority_geometry(path, params)
+
+
+def test_the_priority_reader_rejects_duplicate_zone_ids(
+    params: dict[str, Any], tmp_path: Any
+) -> None:
+    gpd = pytest.importorskip("geopandas")
+    from shapely.geometry import box
+
+    frame = gpd.GeoDataFrame(
+        {"zone_id": ["A", "A"]},
+        geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)],
+        crs=params["crs"]["analysis_epsg"],
+    )
+    path = tmp_path / "dupes.geojson"
+    frame.to_file(path, driver="GeoJSON")
+
+    with pytest.raises(ValueError, match="duplicate zone_id"):
+        prediction.read_priority_geometry(path, params)
+
+
+def test_immutable_classes_are_pinned_so_demand_matches_the_constraint(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    # An immutable class cannot supply or absorb cells. A Markov chain that
+    # projects water shrinking therefore hands the allocator a demand it can
+    # never meet, and the deficit surfaces against some OTHER class as a
+    # shortfall that reads like an allocation failure. Pinning removes the
+    # contradiction at source.
+    counts = np.full(len(classes), 100.0)
+    probabilities = np.full((len(classes), len(classes)), 1.0 / len(classes))
+    frame = prediction.projected_class_areas(
+        counts, probabilities, 1, 1e4, classes, params
+    )
+    water = int(params["prediction"]["ca_markov"]["immutable_classes"][0])
+    assert int(frame.set_index("class_code").loc[water, "cells"]) == 100
+    assert int(frame["cells"].sum()) == int(counts.sum())
+
+
+def test_pinning_can_be_switched_off(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    counts = np.array([200.0] + [50.0] * (len(classes) - 1))
+    probabilities = np.full((len(classes), len(classes)), 1.0 / len(classes))
+    unpinned = prediction.projected_class_areas(
+        counts, probabilities, 1, 1e4, classes, params, pin_immutable=False
+    )
+    water = int(params["prediction"]["ca_markov"]["immutable_classes"][0])
+    assert int(unpinned.set_index("class_code").loc[water, "cells"]) != 200
+
+
+def test_the_ca_leaves_no_shortfall_under_either_scheme(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    rng = np.random.default_rng(24)
+    early = rng.choice(classes, (40, 40))
+    late = early.copy()
+    late[rng.random(early.shape) < 0.10] = 6
+
+    for grouped in (False, True):
+        a, b = (
+            (prediction.group_classes(early, params),
+             prediction.group_classes(late, params))
+            if grouped else (early, late)
+        )
+        result = prediction.ca_markov_project(
+            a, b, params, steps=1, grouped=grouped
+        )
+        assert int(result["allocation"]["shortfall"].sum()) == 0
+        assert set(np.unique(result["labels"]).tolist()) <= set(result["classes"])
+
+
+def test_the_ca_reports_which_scheme_it_ran(
+    params: dict[str, Any], classes: list[int]
+) -> None:
+    grid = np.array([[0, 1], [6, 6]])
+    # Crops and bare are absent from this 4-cell grid, so their transition rows
+    # warn by design; that behaviour has its own test.
+    with pytest.warns(UserWarning, match="never observed"):
+        grouped = prediction.ca_markov_project(
+            prediction.group_classes(grid, params),
+            prediction.group_classes(grid, params),
+            params, steps=1, grouped=True,
+        )
+    assert grouped["grouped"] is True
+    assert grouped["classes"] == prediction.resolve_grouped_classes(params)
+
+
+def test_the_scheme_resolver_returns_matching_codes_and_labels(
+    params: dict[str, Any]
+) -> None:
+    for grouped in (False, True):
+        codes, labels = prediction.resolve_scheme(params, grouped)
+        assert set(codes) <= set(labels), grouped

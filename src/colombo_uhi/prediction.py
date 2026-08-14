@@ -81,6 +81,28 @@ tests and stated loudly in the relevant docstrings:
    RMSE, R2 *and* Kappa for a projected LST product - which is exactly what
    CLAUDE.md's caveat 3 asks for - and only the two regression metrics for a
    present-day fitted surface where no CA was involved.
+8. **The analysis region is Colombo District, not the compositing bounding
+   box.** :func:`work_region` exists because Colab run 1 used
+   ``aoi.analysis_region`` - Western Province plus a 25 km ring, **18,090 km²**
+   against the district's 699 - and every number it produced described a
+   regional elevation gradient and a lot of Indian Ocean.
+9. **A cell the model cannot change is not evidence that it is right.**
+   :func:`scoring_mask` drops immutable classes before any metric is computed,
+   because run 1's Kappa of 0.928 was built on 32 % water.
+
+Three things run 1 measured that the code now carries as configuration rather
+than as assumptions:
+
+* Dynamic World flips between spectrally similar vegetation classes at a 3-year
+  step over Colombo - grass persisted 0.399 with 0.425 going to trees. A
+  Markov-CA allocates **net** demand and structurally cannot reproduce that
+  gross churn, so ``ca_markov.class_grouping`` offers a collapsed scheme and
+  :func:`group_classes` applies it. Both schemes are validated and reported.
+* GHSL built *surface fraction* and a CA *modal class* are different
+  quantities. :func:`ghsl_built_comparison` thresholds the first before
+  comparing counts, and reports the fraction-weighted area separately.
+* The committed zone geometry is Phase 5's post-processed file, already keyed on
+  ``zone_id``. :func:`read_priority_geometry` accepts either layout.
 
 Design notes:
     * ``ee``, ``numpy``, ``pandas``, ``rasterio`` and ``sklearn`` are deferred
@@ -105,6 +127,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never at runtime
     import ee
+    import geopandas as gpd
     import numpy as np
     import pandas as pd
 
@@ -299,6 +322,7 @@ def resolve_rf_settings(
         "sample_pixels": int(cfg["sample_pixels"]),
         "min_sample_rows": int(cfg["min_sample_rows"]),
         "lcz_encoding": str(cfg["lcz_encoding"]),
+        "mask_water": bool(cfg["mask_water"]),
         "variables_per_split": (
             None if cfg["variables_per_split"] is None
             else int(cfg["variables_per_split"])
@@ -425,24 +449,144 @@ def resolve_ca_classes(params: dict[str, Any]) -> list[int]:
     return sorted(codes)
 
 
-def resolve_scenario(name: str, params: dict[str, Any]) -> dict[str, Any]:
+def resolve_class_grouping(params: dict[str, Any]) -> dict[int, int]:
+    """Map each retained land-cover class onto its grouped class.
+
+    Colab run 1 measured Dynamic World flipping between spectrally similar
+    vegetation classes over a three-year step: grass persisted only 0.399 with
+    0.425 going to trees, shrub persisted 0.364 with 0.484 going to trees. A
+    42 % grass-to-trees transition in three years is the classifier changing its
+    mind, not the land cover changing. Because a Markov-CA allocates **net**
+    demand, it cannot reproduce that gross churn - run 1 projected 9,479 changes
+    against 67,831 observed, for a figure of merit of 0.019.
+
+    Grouping the unstable vegetation classes into one "green" class suppresses
+    the churn. Both schemes are validated and reported side by side; the
+    projection uses whichever the evidence favours.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        Mapping of source class code to grouped class code.
+
+    Raises:
+        ValueError: If the grouping does not cover every class in
+            ``prediction.ca_markov.classes``, or maps one to a code with no
+            entry in ``grouped_labels`` - either of which would silently drop
+            cells from the grouped run and make the two schemes incomparable.
+    """
+    cfg = params["prediction"]["ca_markov"]
+    grouping = {int(k): int(v) for k, v in (cfg.get("class_grouping") or {}).items()}
+    codes = resolve_ca_classes(params)
+
+    missing = sorted(set(codes) - set(grouping))
+    if missing:
+        raise ValueError(
+            f"prediction.ca_markov.class_grouping does not cover class(es) "
+            f"{missing}; it must map every code in classes {codes}, or the "
+            "grouped run silently drops those cells and the two schemes stop "
+            "being comparable"
+        )
+    labels = {int(k) for k in (cfg.get("grouped_labels") or {})}
+    unlabelled = sorted(set(grouping.values()) - labels)
+    if unlabelled:
+        raise ValueError(
+            f"prediction.ca_markov.class_grouping produces code(s) {unlabelled} "
+            f"with no entry in grouped_labels {sorted(labels)}"
+        )
+    return {code: grouping[code] for code in codes}
+
+
+def resolve_grouped_classes(params: dict[str, Any]) -> list[int]:
+    """Sorted grouped class codes.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        The distinct codes :func:`resolve_class_grouping` maps onto.
+    """
+    return sorted(set(resolve_class_grouping(params).values()))
+
+
+def resolve_scheme(
+    params: dict[str, Any], grouped: bool = False
+) -> tuple[list[int], dict[int, str]]:
+    """Class codes and labels for whichever class scheme is in play.
+
+    Args:
+        params: Parsed params mapping.
+        grouped: Use ``prediction.ca_markov.class_grouping`` and
+            ``grouped_labels`` rather than the raw legend.
+
+    Returns:
+        ``(codes, labels)``.
+    """
+    cfg = params["prediction"]["ca_markov"]
+    if grouped:
+        return (
+            resolve_grouped_classes(params),
+            {int(k): str(v) for k, v in cfg["grouped_labels"].items()},
+        )
+    legend = params["landcover"][str(cfg["scheme"])]["classes"]
+    return (
+        resolve_ca_classes(params),
+        {int(k): str(v) for k, v in legend.items()},
+    )
+
+
+def group_classes(
+    labels: "np.ndarray", params: dict[str, Any]
+) -> "np.ndarray":
+    """Recode a class array onto the grouped scheme.
+
+    Args:
+        labels: Class-code array, any shape.
+        params: Parsed params mapping.
+
+    Returns:
+        An array of the same shape and dtype whose codes are grouped. Values
+        outside ``prediction.ca_markov.classes`` are passed through unchanged,
+        so a nodata sentinel survives the recode rather than being folded into a
+        real class.
+    """
+    import numpy as np  # Deferred: see module docstring.
+
+    grid = np.asarray(labels)
+    grouping = resolve_class_grouping(params)
+    out = grid.copy()
+    for source, target in grouping.items():
+        if source != target:
+            out[grid == source] = target
+    return out
+
+
+def resolve_scenario(
+    name: str, params: dict[str, Any], grouped: bool = False
+) -> dict[str, Any]:
     """Resolve and validate one scenario definition.
 
     Args:
         name: Scenario key from ``prediction.scenarios``.
         params: Parsed params mapping.
+        grouped: Read the scenario's ``grouped:`` block, whose class codes refer
+            to ``prediction.ca_markov.class_grouping`` rather than the raw
+            Dynamic World legend.
 
     Returns:
-        Mapping with ``key``, ``label``, ``canopy_increase_fraction`` and, for a
-        scenario that converts anything, ``eligible_classes``, ``target_class``
-        and ``protect_classes``.
+        Mapping with ``key``, ``label``, ``canopy_increase_fraction``,
+        ``grouped``, and - for a scenario that converts anything -
+        ``eligible_classes``, ``target_class``, ``protect_classes`` and
+        ``paint_as_class``.
 
     Raises:
-        KeyError: If the scenario is not configured.
+        KeyError: If the scenario is not configured, or ``grouped`` is requested
+            and the scenario has no ``grouped:`` block.
         ValueError: If the canopy fraction is outside ``[0, 1]``, a class code
-            is outside ``prediction.ca_markov.classes``, or an eligible class is
-            also protected - a contradiction that would otherwise resolve
-            silently in whichever order the code happened to test.
+            is outside the applicable class list, or an eligible class is also
+            protected - a contradiction that would otherwise resolve silently in
+            whichever order the code happened to test.
     """
     scenarios = params["prediction"]["scenarios"]
     if name not in scenarios:
@@ -462,25 +606,50 @@ def resolve_scenario(name: str, params: dict[str, Any]) -> dict[str, Any]:
         "key": name,
         "label": str(cfg.get("label", name)),
         "canopy_increase_fraction": fraction,
+        "grouped": bool(grouped),
     }
     if fraction == 0.0 and "target_class" not in cfg:
         # A pure business-as-usual scenario converts nothing, so it needs no
         # class lists. Return early rather than inventing defaults for it.
         resolved.update(
-            {"eligible_classes": [], "target_class": None, "protect_classes": []}
+            {
+                "eligible_classes": [],
+                "target_class": None,
+                "protect_classes": [],
+                "paint_as_class": None,
+            }
         )
         return resolved
 
-    codes = resolve_ca_classes(params)
+    if grouped:
+        block = cfg.get("grouped")
+        if not block:
+            raise KeyError(
+                f"scenario {name!r} has no 'grouped:' block, so it cannot be "
+                "applied under prediction.ca_markov.class_grouping. Grouping "
+                "merges grass and shrub into 'green', which changes what is "
+                "eligible for conversion - the lists are NOT interchangeable."
+            )
+        cfg = {**cfg, **dict(block)}
+        codes = resolve_grouped_classes(params)
+    else:
+        codes = resolve_ca_classes(params)
+
     eligible = [int(code) for code in cfg["eligible_classes"]]
     protect = [int(code) for code in cfg.get("protect_classes", [])]
     target = int(cfg["target_class"])
+    resolved["paint_as_class"] = int(cfg.get("paint_as_class", target))
 
     unknown = sorted({*eligible, *protect, target} - set(codes))
     if unknown:
+        source = (
+            "the grouped codes of prediction.ca_markov.class_grouping"
+            if grouped
+            else "prediction.ca_markov.classes"
+        )
         raise ValueError(
             f"scenario {name!r} names class code(s) {unknown} that are not in "
-            f"prediction.ca_markov.classes {codes}"
+            f"{source} {codes}"
         )
     overlap = sorted(set(eligible) & set(protect))
     if overlap:
@@ -1124,6 +1293,144 @@ def figure_of_merit(
     }
 
 
+def scoring_mask(
+    params: dict[str, Any],
+    *label_arrays: "np.ndarray",
+    exclude_immutable: bool | None = None,
+) -> tuple["np.ndarray", dict[str, Any]]:
+    """Which cells validation is entitled to score.
+
+    A cell carrying an **immutable** class is one the cellular automaton is
+    forbidden from changing, so the model is definitionally correct on it.
+    Including such cells does not measure agreement, it pads the diagonal.
+
+    Colab run 1 made the cost visible: water was 32 % of the cells (the Indian
+    Ocean, inside an over-large region), and Kappa read 0.928 - against a
+    no-change null of 0.933. Most of both numbers was ocean.
+
+    Args:
+        params: Parsed params mapping.
+        *label_arrays: One or more class-code arrays of identical shape. A cell
+            is excluded if it carries an immutable class in **any** of them, so
+            a cell that was water at either end of the interval is dropped.
+        exclude_immutable: Override for
+            ``prediction.ca_markov.validation.exclude_immutable``.
+
+    Returns:
+        ``(mask, report)``. ``mask`` is ``True`` where scoring is allowed;
+        ``report`` carries ``n_total``, ``n_scored``, ``n_excluded``,
+        ``excluded_fraction`` and ``immutable_classes``, so the excluded count
+        travels with every metric computed from it.
+
+    Raises:
+        ValueError: If no arrays are given or they differ in shape.
+    """
+    import numpy as np  # Deferred: see module docstring.
+
+    if not label_arrays:
+        raise ValueError("at least one label array is required")
+    grids = [np.asarray(a) for a in label_arrays]
+    shapes = {g.shape for g in grids}
+    if len(shapes) != 1:
+        raise ValueError(f"label arrays must share a shape, got {sorted(shapes)}")
+
+    cfg = params["prediction"]["ca_markov"]
+    immutable = [int(code) for code in cfg["immutable_classes"]]
+    enabled = bool(
+        cfg["validation"]["exclude_immutable"]
+        if exclude_immutable is None
+        else exclude_immutable
+    )
+
+    mask = np.ones(grids[0].shape, dtype=bool)
+    if enabled and immutable:
+        for grid in grids:
+            mask &= ~np.isin(grid, immutable)
+
+    total = int(mask.size)
+    scored = int(mask.sum())
+    return mask, {
+        "n_total": total,
+        "n_scored": scored,
+        "n_excluded": total - scored,
+        "excluded_fraction": (total - scored) / total if total else 0.0,
+        "immutable_classes": immutable,
+        "exclude_immutable": enabled,
+    }
+
+
+def validate_projection(
+    initial: "np.ndarray",
+    observed: "np.ndarray",
+    projected: "np.ndarray",
+    params: dict[str, Any],
+    classes: Sequence[int],
+    mask: "np.ndarray | None" = None,
+) -> dict[str, Any]:
+    """Every land-cover agreement metric for one projection, in one call.
+
+    Bundles the four numbers that have to be read together - Kappa, the
+    no-change baseline Kappa, the Pontius quantity/allocation split, and the
+    figure of merit - so a caller cannot compute one and quietly omit another.
+
+    Args:
+        initial: Class codes at the start of the projected interval.
+        observed: Reference class codes at the end of it.
+        projected: Model class codes for the same date.
+        params: Parsed params mapping.
+        classes: Class codes in play.
+        mask: Optional boolean array selecting the cells to score; see
+            :func:`scoring_mask`. ``None`` scores everything.
+
+    Returns:
+        Flat mapping of metric name to value, including ``kappa``,
+        ``persistence_kappa``, ``kappa_above_null``, ``figure_of_merit``, the
+        Pontius components and the hit/miss/false-alarm counts.
+
+    Raises:
+        ValueError: If the arrays differ in shape or nothing is left to score.
+    """
+    import numpy as np  # Deferred: see module docstring.
+
+    start = np.asarray(initial)
+    truth = np.asarray(observed)
+    guess = np.asarray(projected)
+    if not (start.shape == truth.shape == guess.shape):
+        raise ValueError(
+            "initial, observed and projected must match, got "
+            f"{start.shape}, {truth.shape} and {guess.shape}"
+        )
+    if mask is not None:
+        keep = np.asarray(mask, dtype=bool)
+        if keep.shape != start.shape:
+            raise ValueError(
+                f"mask has shape {keep.shape}, expected {start.shape}"
+            )
+        start, truth, guess = start[keep], truth[keep], guess[keep]
+    if start.size == 0:
+        raise ValueError(
+            "no cells left to score. If exclude_immutable dropped everything, "
+            "the projection is entirely immutable classes and there is nothing "
+            "for validation to measure."
+        )
+
+    matrix = confusion_matrix(truth, guess, classes)
+    kappa = cohen_kappa(matrix)
+    null_kappa = persistence_baseline_kappa(start, truth, classes)
+    pontius = quantity_allocation_disagreement(matrix)
+    merit = figure_of_merit(start, truth, guess)
+
+    return {
+        "n_scored": int(start.size),
+        "kappa": kappa,
+        "persistence_kappa": null_kappa,
+        "kappa_above_null": kappa - null_kappa,
+        "figure_of_merit": merit["figure_of_merit"],
+        **pontius,
+        **{k: v for k, v in merit.items() if k != "figure_of_merit"},
+    }
+
+
 # --- Markov core --------------------------------------------------------------
 
 
@@ -1240,6 +1547,8 @@ def projected_class_areas(
     cell_area_m2: float,
     classes: Sequence[int],
     params: dict[str, Any],
+    grouped: bool = False,
+    pin_immutable: bool = True,
 ) -> "pd.DataFrame":
     """Project how many cells of each class the Markov chain implies.
 
@@ -1253,6 +1562,14 @@ def projected_class_areas(
         cell_area_m2: Area of one cell, for the reported area column.
         classes: Class codes, in the matrix's order.
         params: Parsed params mapping, for the class labels.
+        grouped: Resolve codes and labels from
+            ``prediction.ca_markov.class_grouping`` rather than the raw legend.
+        pin_immutable: Hold ``prediction.ca_markov.immutable_classes`` at their
+            current count and rescale the rest. An immutable class cannot supply
+            or absorb cells, so a demand that asks water to shrink is one the
+            allocator can never meet - and the deficit surfaces against some
+            other class as a shortfall that looks like an allocation failure but
+            is really a contradiction between the demand and the constraint.
 
     Returns:
         ``pandas.DataFrame`` with :data:`AREA_COLUMNS`. Cell counts are rounded
@@ -1274,6 +1591,28 @@ def projected_class_areas(
         )
 
     projected = counts @ markov_project(probabilities, steps)
+
+    # An immutable class cannot supply or absorb cells, so a demand that asks it
+    # to shrink is a demand the allocator can never meet - and the deficit shows
+    # up against some other class as a spurious shortfall. Observed water-to-land
+    # transitions here are shoreline mixing and classifier noise, not
+    # reclamation, so pin the immutable classes to their current count and
+    # rescale the rest to preserve the total.
+    if pin_immutable:
+        immutable = [
+            index
+            for index, code in enumerate(codes)
+            if code in {int(c) for c in
+                        params["prediction"]["ca_markov"]["immutable_classes"]}
+        ]
+        if immutable:
+            mutable = [i for i in range(len(codes)) if i not in immutable]
+            projected[immutable] = counts[immutable]
+            remaining = float(counts.sum() - counts[immutable].sum())
+            mutable_total = float(projected[mutable].sum())
+            if mutable and mutable_total > 0:
+                projected[mutable] *= remaining / mutable_total
+
     total = int(round(counts.sum()))
     rounded = np.floor(projected).astype(np.int64)
     residual = total - int(rounded.sum())
@@ -1282,8 +1621,7 @@ def projected_class_areas(
         # it, so the totals reconcile exactly and the adjustment is traceable.
         rounded[int(np.argmax(projected))] += residual
 
-    scheme = str(params["prediction"]["ca_markov"]["scheme"])
-    labels = params["landcover"][scheme]["classes"]
+    _, labels = resolve_scheme(params, grouped)
     area_km2 = rounded * float(cell_area_m2) / 1e6
     share = rounded / total if total else np.zeros_like(rounded, dtype=float)
     return pd.DataFrame(
@@ -1379,6 +1717,7 @@ def ca_allocate(
     params: dict[str, Any],
     changeable: "np.ndarray | None" = None,
     seed: int | None = None,
+    grouped: bool = False,
 ) -> tuple["np.ndarray", "pd.DataFrame"]:
     """Allocate a Markov demand in space by neighbourhood potential.
 
@@ -1414,7 +1753,7 @@ def ca_allocate(
     if grid.ndim != 2:
         raise ValueError(f"labels must be 2-D, got shape {grid.shape}")
 
-    codes = resolve_ca_classes(params)
+    codes, class_labels = resolve_scheme(params, grouped)
     unknown = sorted(set(int(code) for code in demand) - set(codes))
     if unknown:
         raise ValueError(
@@ -1508,8 +1847,6 @@ def ca_allocate(
         shortfall[gaining] = remaining
         surplus = {code: value for code, value in surplus.items() if value > 0}
 
-    scheme = str(cfg["scheme"])
-    class_labels = params["landcover"][scheme]["classes"]
     report = pd.DataFrame(
         {
             "class_code": codes,
@@ -1531,6 +1868,7 @@ def ca_markov_project(
     changeable: "np.ndarray | None" = None,
     cell_area_m2: float | None = None,
     seed: int | None = None,
+    grouped: bool = False,
 ) -> dict[str, Any]:
     """Calibrate a Markov chain on two dates and allocate it forward in space.
 
@@ -1567,7 +1905,7 @@ def ca_markov_project(
             f"early and late must match, got {start.shape} and {finish.shape}"
         )
 
-    codes = resolve_ca_classes(params)
+    codes, _ = resolve_scheme(params, grouped)
     cfg = params["prediction"]["ca_markov"]
     scale = float(cfg["raster_scale_m"])
     area = float(scale * scale if cell_area_m2 is None else cell_area_m2)
@@ -1586,11 +1924,11 @@ def ca_markov_project(
         [int(np.sum(finish[valid] == code)) for code in codes], dtype=np.int64
     )
     areas = projected_class_areas(
-        current, probabilities, steps, area, codes, params
+        current, probabilities, steps, area, codes, params, grouped=grouped
     )
     demand = dict(zip(areas["class_code"], areas["cells"]))
     labels, allocation = ca_allocate(
-        finish, demand, params, changeable=valid, seed=seed
+        finish, demand, params, changeable=valid, seed=seed, grouped=grouped
     )
     return {
         "labels": labels,
@@ -1599,6 +1937,8 @@ def ca_markov_project(
         "areas": areas,
         "allocation": allocation,
         "steps": int(steps),
+        "grouped": bool(grouped),
+        "classes": codes,
         "framing": str(params["prediction"]["framing"]),
     }
 
@@ -1710,6 +2050,7 @@ def apply_greening_scenario(
     params: dict[str, Any],
     scenario: str,
     seed: int | None = None,
+    grouped: bool = False,
 ) -> tuple["np.ndarray", dict[str, Any]]:
     """Convert a share of eligible cells inside priority zones to canopy.
 
@@ -1725,12 +2066,18 @@ def apply_greening_scenario(
         scenario: Scenario key from ``prediction.scenarios``.
         seed: Tie-break seed; defaults to
             ``prediction.ca_markov.allocation_seed``.
+        grouped: Read the scenario's ``grouped:`` block, because ``labels``
+            carries grouped codes. Under grouping the lever is genuinely
+            **weaker** - grass and shrub already count as green, so only bare
+            land remains eligible - and the report says so via
+            ``paint_as_class``.
 
     Returns:
         ``(new_labels, report)``. The report carries ``scenario``, ``label``,
         ``canopy_increase_fraction``, ``n_priority_cells``, ``n_eligible``,
-        ``n_converted`` and ``target_class`` - every number the figure caption
-        needs to state what lever was pulled and how hard.
+        ``n_converted``, ``target_class``, ``paint_as_class`` and ``grouped`` -
+        every number the figure caption needs to state what lever was pulled and
+        how hard.
 
     Raises:
         ValueError: If the arrays differ in shape or ``labels`` is not 2-D.
@@ -1746,7 +2093,7 @@ def apply_greening_scenario(
             f"priority_mask has shape {mask.shape}, expected {grid.shape}"
         )
 
-    cfg = resolve_scenario(scenario, params)
+    cfg = resolve_scenario(scenario, params, grouped=grouped)
     ca_cfg = params["prediction"]["ca_markov"]
     rng = np.random.default_rng(
         int(ca_cfg["allocation_seed"] if seed is None else seed)
@@ -1758,6 +2105,8 @@ def apply_greening_scenario(
         "label": cfg["label"],
         "canopy_increase_fraction": cfg["canopy_increase_fraction"],
         "target_class": cfg["target_class"],
+        "paint_as_class": cfg["paint_as_class"],
+        "grouped": bool(grouped),
         "n_priority_cells": int(mask.sum()),
         "n_eligible": 0,
         "n_converted": 0,
@@ -2526,6 +2875,44 @@ def compare_rf_implementations(
 # =============================================================================
 
 
+def work_region(params: dict[str, Any]) -> "ee.Geometry":
+    """Colombo District — the analysis unit for every Phase 6 product.
+
+    .. warning::
+        **This is deliberately NOT** :func:`colombo_uhi.aoi.analysis_region`.
+        That function returns Western Province buffered outward by the 25 km
+        SUHII ring: a *bounding box for masks and composites*, sized so the
+        rural reference fits inside it. Colab run 1 used it as the analysis unit
+        by mistake and measured **18,090 km² instead of 699 km²**, with these
+        consequences:
+
+        * the forest trained across terrain from sea level to 424 m and 0-100 km
+          from the coast, so ``elevation_m`` came out the single most important
+          predictor - it had learned a regional lapse-and-distance gradient, not
+          urban heat structure;
+        * the held-out R² of 0.847 was inflated by that easy gradient;
+        * the blocked-versus-random gap collapsed to +0.009, because a smooth
+          regional gradient is learnable from distant blocks - the blocked split
+          was never actually stressed;
+        * water was 32 % of the CA cells, so the cellular automaton spent most
+          of its time projecting land-cover transitions on the Indian Ocean.
+
+        Notebooks 04 and 05 both use ``aoi.colombo_district(params).geometry()``.
+        Phase 6 now matches them. Notebook 06 Step 0 additionally measures the
+        region and refuses if it is not within 20 % of
+        ``aoi.expected_areas_km2.district``.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        The Colombo District ``ee.Geometry``, ~699 km².
+    """
+    from colombo_uhi import aoi
+
+    return aoi.colombo_district(params).geometry()
+
+
 def prediction_stack(
     params: dict[str, Any],
     epoch: str | None = None,
@@ -2556,7 +2943,7 @@ def prediction_stack(
         params: Parsed params mapping.
         epoch: Override for ``prediction.rf.epoch``.
         region: Region the source collection is filtered to; defaults to
-            :func:`colombo_uhi.aoi.analysis_region`.
+            :func:`work_region` (Colombo District).
         source: Override for ``prediction.rf.source``.
 
     Returns:
@@ -2571,7 +2958,7 @@ def prediction_stack(
     settings = resolve_rf_settings(params)
     epoch_key = str(settings["epoch"] if epoch is None else epoch)
     source_key = str(settings["source"] if source is None else source)
-    work_region = aoi.analysis_region(params) if region is None else region
+    region_geom = work_region(params) if region is None else region
 
     from_covariates = list(
         spatial_stats.resolve_regression_predictors(None, params)
@@ -2591,17 +2978,29 @@ def prediction_stack(
         )
 
     stack = spatial_stats.covariate_stack(
-        params, epoch_key, work_region, source=source_key
+        params, epoch_key, region_geom, source=source_key
     )
     if "lcz_class" in settings["predictors"]:
         stack = stack.addBands(
             landcover.lcz_class_image(params).rename(["lcz_class"]).toFloat()
         )
     keep = [settings["response"], *settings["predictors"]]
-    return stack.select(keep).toFloat().set(
+    stack = stack.select(keep).toFloat()
+
+    if settings["mask_water"]:
+        # LST over open water is not driven by NDVI, NDBI or built fraction at
+        # all, so water pixels teach the forest a relationship that does not
+        # exist - and Colab run 1 sampled a great deal of Indian Ocean.
+        # static_water_mask, not water_mask: the three-detector version embeds a
+        # Landsat composite into every image it masks, which is what exceeded
+        # the interactive memory limit in Phase 2 (Colab run 3, 2026-08-08).
+        stack = stack.updateMask(aoi.static_water_mask(params, region=region_geom).Not())
+
+    return stack.set(
         {
             "epoch": epoch_key,
             "source": source_key,
+            "water_masked": int(settings["mask_water"]),
             "framing": str(params["prediction"]["framing"]),
         }
     )
@@ -2644,7 +3043,7 @@ def training_sample_collection(
         params: Parsed params mapping.
         epoch: Override for ``prediction.rf.epoch``.
         region: Sampling region; defaults to
-            :func:`colombo_uhi.aoi.analysis_region`.
+            :func:`work_region` (Colombo District).
         source: Override for ``prediction.rf.source``.
         n_pixels: Override for ``prediction.rf.sample_pixels``.
         seed: Override for ``prediction.rf.random_seed``.
@@ -2655,20 +3054,18 @@ def training_sample_collection(
     """
     import ee  # Deferred: see module docstring.
 
-    from colombo_uhi import aoi
-
     settings = resolve_rf_settings(params)
-    work_region = aoi.analysis_region(params) if region is None else region
+    region_geom = work_region(params) if region is None else region
     scale = int(settings["scale_m"] if scale_m is None else scale_m)
     crs = str(params["crs"]["analysis_epsg"])
 
-    stack = prediction_stack(params, epoch=epoch, region=work_region, source=source)
+    stack = prediction_stack(params, epoch=epoch, region=region_geom, source=source)
     # Coordinates are taken in the ANALYSIS projection, so they are metres and
     # spatial_block_ids can cut square blocks on them. Degrees would make a
     # "2 km" block a different size at every latitude.
     coordinates = ee.Image.pixelCoordinates(ee.Projection(crs)).rename(["x", "y"])
     return stack.addBands(coordinates).sample(
-        region=work_region,
+        region=region_geom,
         scale=scale,
         projection=ee.Projection(crs),
         numPixels=int(settings["sample_pixels"] if n_pixels is None else n_pixels),
@@ -3155,7 +3552,7 @@ def lulc_class_image(
         params: Parsed params mapping.
         year: Calendar year to composite.
         region: Region to filter to; defaults to
-            :func:`colombo_uhi.aoi.analysis_region`.
+            :func:`work_region` (Colombo District).
         scale_m: Override for ``prediction.ca_markov.raster_scale_m``.
 
     Returns:
@@ -3169,7 +3566,7 @@ def lulc_class_image(
     """
     import ee  # Deferred: see module docstring.
 
-    from colombo_uhi import aoi, landcover
+    from colombo_uhi import landcover
 
     cfg = params["prediction"]["ca_markov"]
     scheme = str(cfg["scheme"])
@@ -3180,13 +3577,13 @@ def lulc_class_image(
             "WorldCover has two epochs and LCZ has one."
         )
 
-    work_region = aoi.analysis_region(params) if region is None else region
+    region_geom = work_region(params) if region is None else region
     crs = str(params["crs"]["analysis_epsg"])
     native = int(params["datasets"]["dynamic_world"]["scale_m"])
     target = int(cfg["raster_scale_m"] if scale_m is None else scale_m)
 
     labels = (
-        landcover.dynamic_world_mode(params, int(year), region=work_region)
+        landcover.dynamic_world_mode(params, int(year), region=region_geom)
         .setDefaultProjection(crs=crs, scale=native)
     )
     # "observed" is the honest companion to the labels: 1 where Dynamic World
@@ -3343,6 +3740,147 @@ def write_lulc_projection(
             validation=str(dict(report or {}).get("metrics", {})),
         )
     return destination
+
+
+def ghsl_built_comparison(
+    ghsl_fraction: "np.ndarray",
+    projected: "np.ndarray",
+    params: dict[str, Any],
+    built_class: int,
+    cell_area_m2: float,
+    mask: "np.ndarray | None" = None,
+) -> dict[str, Any]:
+    """Compare the CA's built area against GHSL, like for like.
+
+    .. warning::
+        These two layers measure **different quantities**, and Colab run 1
+        compared them anyway: 489.5 km² of GHSL fraction-weighted built
+        *surface* against 1,625 km² of CA built-*dominant* cells, reported as a
+        232 % disagreement that was mostly an artefact of the comparison.
+
+        So this does both, and labels them:
+
+        * **cell counts** - GHSL thresholded at
+          ``prediction.ghsl_cross_check_threshold`` to a built-DOMINANT mask,
+          against the CA's built cells. This is the comparable pair.
+        * **fraction-weighted areas** - GHSL's summed built fraction against the
+          CA's built cell area. Reported for completeness, never differenced as
+          though they were the same measurement.
+
+    Args:
+        ghsl_fraction: GHSL built-surface fraction per cell, 0-1.
+        projected: Projected class-code array.
+        params: Parsed params mapping.
+        built_class: Class code counted as built.
+        cell_area_m2: Area of one cell.
+        mask: Optional boolean array selecting cells to compare.
+
+    Returns:
+        Mapping with ``ghsl_dominant_cells``, ``ca_built_cells``,
+        ``cell_difference``, ``cell_agreement`` (share of cells on which the two
+        agree), ``ghsl_dominant_km2``, ``ca_built_km2``,
+        ``ghsl_fraction_weighted_km2`` and ``threshold``.
+
+    Raises:
+        ValueError: If the arrays differ in shape.
+    """
+    import numpy as np  # Deferred: see module docstring.
+
+    fraction = np.asarray(ghsl_fraction, dtype=float)
+    labels = np.asarray(projected)
+    if fraction.shape != labels.shape:
+        raise ValueError(
+            f"ghsl_fraction is {fraction.shape} but projected is "
+            f"{labels.shape}; they must be one grid"
+        )
+    keep = (
+        np.ones(labels.shape, dtype=bool) if mask is None
+        else np.asarray(mask, dtype=bool)
+    )
+    if keep.shape != labels.shape:
+        raise ValueError(f"mask has shape {keep.shape}, expected {labels.shape}")
+
+    threshold = float(params["prediction"]["ghsl_cross_check_threshold"])
+    finite = keep & np.isfinite(fraction)
+
+    ghsl_dominant = finite & (fraction >= threshold)
+    ca_built = keep & (labels == int(built_class))
+    km2 = float(cell_area_m2) / 1e6
+
+    agreement = (
+        float(np.mean(ghsl_dominant[finite] == ca_built[finite]))
+        if finite.any() else float("nan")
+    )
+    return {
+        "threshold": threshold,
+        "ghsl_dominant_cells": int(ghsl_dominant.sum()),
+        "ca_built_cells": int(ca_built.sum()),
+        "cell_difference": int(ca_built.sum()) - int(ghsl_dominant.sum()),
+        "cell_agreement": agreement,
+        "ghsl_dominant_km2": float(ghsl_dominant.sum()) * km2,
+        "ca_built_km2": float(ca_built.sum()) * km2,
+        "ghsl_fraction_weighted_km2": float(np.nansum(fraction[finite])) * km2,
+    }
+
+
+def read_priority_geometry(
+    path: str | Path, params: dict[str, Any]
+) -> "gpd.GeoDataFrame":
+    """Read the zone geometry, whichever of its two shapes is on disk.
+
+    ``spatial_stats.read_zone_geodataframe`` expects the **raw export**, keyed on
+    ``adm4_pcode``. But ``data/outputs/gn_divisions_colombo.geojson`` - the
+    committed file, and the one a fresh clone has - is Phase 5's
+    **post-processed** output, in which that column has already been renamed to
+    ``zone_id``. Colab run 1 died here, at Step 11, on exactly that mismatch.
+
+    This accepts either layout and always returns the processed one. It does not
+    modify the frozen Phase 5 reader.
+
+    Args:
+        path: Path to the ``.geojson``.
+        params: Parsed params mapping.
+
+    Returns:
+        ``geopandas.GeoDataFrame`` with a string ``zone_id``, reprojected to
+        ``crs.analysis_epsg``.
+
+    Raises:
+        ValueError: If neither key is present (naming both accepted layouts),
+            or ``zone_id`` has duplicates.
+    """
+    import geopandas as gpd  # Deferred: see module docstring.
+
+    level = str(params["prediction"]["priority_zones"]["level"])
+    raw_key = str(
+        params["spatial_stats"]["geometry"]["export_properties"][level][0]
+    )
+
+    frame = gpd.read_file(str(path))
+    if "zone_id" in frame.columns:
+        pass  # already the processed layout
+    elif raw_key in frame.columns:
+        frame = frame.rename(columns={raw_key: "zone_id"})
+    else:
+        raise ValueError(
+            f"{path} has neither 'zone_id' nor {raw_key!r}; it has "
+            f"{sorted(frame.columns)}. Two layouts are accepted: the RAW "
+            f"Earth Engine export (keyed on {raw_key!r}) and the Phase 5 "
+            "POST-PROCESSED file in data/outputs/ (already keyed on "
+            "'zone_id')."
+        )
+
+    frame["zone_id"] = frame["zone_id"].astype(str)
+    if frame["zone_id"].duplicated().any():
+        raise ValueError(
+            f"{path} has duplicate zone_id values; the same division would "
+            "compete with itself in the priority ranking"
+        )
+
+    target = str(params["crs"]["analysis_epsg"])
+    if frame.crs is not None and frame.crs.to_string() != target:
+        frame = frame.to_crs(target)
+    return frame
 
 
 def ghsl_built_cross_check(
