@@ -2231,3 +2231,268 @@ def test_the_split_comparison_rejects_zero_repeats(
     frame = pd.DataFrame({"block_id": [0, 1]})
     with pytest.raises(ValueError, match="n_repeats"):
         prediction.compare_split_strategies(frame, params, n_repeats=0)
+
+
+# =============================================================================
+# Colab run 3 regressions
+# =============================================================================
+# Run 3 confirmed the clip (688.9 km2, -1.5 % from the district) and settled
+# Track B. It then stopped dead at the end of Step 9, because a MEASURED
+# NEGATIVE RESULT raised the same exception as "nobody ran a validation" - and
+# took Track A's valid products with it.
+
+
+# --- an absence is not a failure ---------------------------------------------
+
+
+def test_a_failed_validation_is_a_subclass_of_a_missing_one() -> None:
+    # So a caller that already excepts ValidationMissing keeps working, while a
+    # caller that wants to tell them apart can.
+    assert issubclass(prediction.ValidationFailed, prediction.ValidationMissing)
+
+
+@pytest.mark.parametrize(
+    "metrics, held_out",
+    [
+        ({"rmse": 1.0, "r2": 0.7}, True),                       # kappa absent
+        ({"rmse": 1.0, "r2": 0.7, "kappa": float("nan")}, True),  # kappa nan
+    ],
+)
+def test_no_evidence_reads_as_absent_not_failed(
+    params: dict[str, Any], metrics: dict[str, float], held_out: bool
+) -> None:
+    report = prediction.build_validation_report(
+        "lst_projection", metrics, params, held_out=held_out
+    )
+    verdict = prediction.assess_validation(report, params)
+    assert verdict["present"] is False
+    assert verdict["valid"] is False
+
+
+def test_an_absent_report_reads_as_absent(params: dict[str, Any]) -> None:
+    verdict = prediction.assess_validation(None, params)
+    assert verdict["present"] is False
+    assert "NO VALIDATION" in verdict["headline"]
+
+
+def test_run_3s_below_null_kappa_reads_as_a_computed_failure(
+    params: dict[str, Any]
+) -> None:
+    # Run 3's actual primary-interval numbers. This is a MEASUREMENT, and it
+    # belongs in the report - not a crash that discards the rest of the run.
+    report = prediction.build_validation_report(
+        "lulc_projection",
+        {"kappa": 0.8566, "persistence_kappa": 0.8576, "figure_of_merit": 0.0022},
+        params, held_out=True,
+    )
+    verdict = prediction.assess_validation(report, params)
+    assert verdict["present"] is True
+    assert verdict["valid"] is False
+    assert "FAILED VALIDATION" in verdict["headline"]
+
+
+def test_training_set_metrics_read_as_a_computed_failure(
+    params: dict[str, Any]
+) -> None:
+    report = prediction.build_validation_report(
+        "lst_fit", {"rmse": 1.0, "r2": 0.7}, params, held_out=False
+    )
+    verdict = prediction.assess_validation(report, params)
+    assert verdict["present"] is True
+    assert verdict["valid"] is False
+
+
+def test_a_passing_report_is_present_and_valid(params: dict[str, Any]) -> None:
+    report = prediction.build_validation_report(
+        "lulc_projection", {"kappa": 0.90, "persistence_kappa": 0.80},
+        params, held_out=True,
+    )
+    verdict = prediction.assess_validation(report, params)
+    assert verdict == {
+        "present": True, "valid": True, "reason": None, "headline": None
+    }
+
+
+def test_require_validated_raises_the_specific_type(
+    params: dict[str, Any]
+) -> None:
+    failed = prediction.build_validation_report(
+        "lulc_projection", {"kappa": 0.85, "persistence_kappa": 0.86},
+        params, held_out=True,
+    )
+    with pytest.raises(prediction.ValidationFailed):
+        prediction.require_validated(failed, params)
+    with pytest.raises(prediction.ValidationMissing):
+        prediction.require_validated(None, params)
+
+
+# --- the caption stamps a failure rather than refusing it --------------------
+
+
+def test_the_caption_stamps_a_measured_failure(params: dict[str, Any]) -> None:
+    # A figure showing that a projection FAILED is exactly what the report
+    # needs. Refusing to draw it throws the evidence away.
+    report = prediction.build_validation_report(
+        "lulc_projection",
+        {"kappa": 0.8566, "persistence_kappa": 0.8576, "figure_of_merit": 0.0022},
+        params, held_out=True,
+    )
+    caption = " ".join(prediction.validation_caption(report, params).split())
+    assert "FAILED VALIDATION" in caption
+    assert "must not be quoted as a projection" in caption
+    # ...and the metrics are still on it, so the reader can see the numbers.
+    assert "Kappa=0.857" in caption
+
+
+def test_the_caption_still_refuses_when_nothing_was_computed(
+    params: dict[str, Any]
+) -> None:
+    with pytest.raises(prediction.ValidationMissing):
+        prediction.validation_caption(None, params)
+
+
+def test_a_passing_caption_carries_no_failure_banner(
+    params: dict[str, Any]
+) -> None:
+    report = prediction.build_validation_report(
+        "lulc_projection", {"kappa": 0.90, "persistence_kappa": 0.80},
+        params, held_out=True,
+    )
+    assert "FAILED VALIDATION" not in prediction.validation_caption(report, params)
+
+
+def test_exports_still_refuse_a_measured_failure(params: dict[str, Any]) -> None:
+    # The guard has to keep holding where it matters: nothing unvalidated is
+    # ever WRITTEN, however freely it may be plotted.
+    report = prediction.build_validation_report(
+        "lulc_projection", {"kappa": 0.85, "persistence_kappa": 0.86},
+        params, held_out=True,
+    )
+    with pytest.raises(prediction.ValidationFailed):
+        prediction.export_projection(None, params, report, None)
+
+
+def test_writing_a_raster_still_refuses_a_measured_failure(
+    params: dict[str, Any], tmp_path: Any
+) -> None:
+    report = prediction.build_validation_report(
+        "lulc_projection", {"kappa": 0.85, "persistence_kappa": 0.86},
+        params, held_out=True,
+    )
+    destination = tmp_path / "must_not_exist.tif"
+    with pytest.raises(prediction.ValidationFailed):
+        prediction.write_lulc_projection(
+            np.zeros((2, 2), dtype=int), {}, destination, params, report
+        )
+    assert not destination.exists()
+
+
+# --- nodata must never masquerade as a class ---------------------------------
+
+
+def test_the_nodata_sentinel_is_not_a_real_class(params: dict[str, Any]) -> None:
+    # 0 is WATER. Clipping leaves the bounding box's corners unwritten, and an
+    # unmasked read fills them with 0 - so run 3 reported 583 km2 of water in a
+    # 689 km2 district.
+    assert prediction.LULC_NODATA not in prediction.resolve_ca_classes(params)
+    assert prediction.LULC_NODATA < 0
+
+
+def test_reading_a_clipped_raster_fills_nodata_with_the_sentinel(
+    params: dict[str, Any], tmp_path: Any
+) -> None:
+    rasterio = pytest.importorskip("rasterio")
+
+    labels = np.full((4, 4), 6, dtype="int16")
+    observed = np.ones((4, 4), dtype="int16")
+    labels[0] = 0          # a row that is genuinely water
+    observed[3] = 0        # a row outside the district
+
+    path = tmp_path / "lulc.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", height=4, width=4, count=2, dtype="int16",
+        crs="EPSG:32644", nodata=0,
+        transform=rasterio.transform.from_origin(0, 0, 100, 100),
+    ) as handle:
+        handle.write(labels, 1)
+        handle.write(observed, 2)
+
+    read_labels, read_observed, _ = prediction.read_lulc_raster(path, params)
+    # nodata=0 means the water row reads back as the sentinel, not as water -
+    # which is the honest answer for a file that cannot tell them apart.
+    assert (read_labels[0] == prediction.LULC_NODATA).all()
+    assert not read_observed[3].any()
+
+
+# --- the exclusion count belongs inside the analysis grid --------------------
+
+
+def test_scoring_counts_are_taken_inside_the_analysis_grid(
+    params: dict[str, Any]
+) -> None:
+    # Run 3 printed "58,366 cells excluded as immutable" - 583 km2 of water in a
+    # 689 km2 district - because the count spanned the whole raster.
+    grid = np.full((100, 100), 6, dtype=np.int16)
+    inside = np.zeros((100, 100), dtype=bool)
+    inside[:55] = True
+    grid[~inside] = prediction.LULC_NODATA
+    grid[:2] = np.where(inside[:2], 0, prediction.LULC_NODATA)
+
+    _, wide = prediction.scoring_mask(params, grid)
+    _, narrow = prediction.scoring_mask(params, grid, within=inside)
+
+    assert wide["n_total"] == 10_000
+    assert narrow["n_total"] == 5_500
+    # Both find the same 200 water cells; only the denominator differs.
+    assert wide["n_excluded"] == narrow["n_excluded"] == 200
+    assert narrow["excluded_fraction"] > wide["excluded_fraction"]
+
+
+def test_the_scoring_mask_is_confined_to_the_analysis_grid(
+    params: dict[str, Any]
+) -> None:
+    grid = np.full((10, 10), 6, dtype=np.int16)
+    inside = np.zeros((10, 10), dtype=bool)
+    inside[:4] = True
+    mask, _ = prediction.scoring_mask(params, grid, within=inside)
+    assert not mask[4:].any()
+    assert mask[:4].all()
+
+
+def test_scoring_rejects_a_mismatched_within_mask(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="within has shape"):
+        prediction.scoring_mask(
+            params, np.zeros((3, 3), dtype=int),
+            within=np.ones((2, 2), dtype=bool),
+        )
+
+
+# --- the primary interval is the longest one --------------------------------
+
+
+def test_the_primary_interval_is_the_longest_step(params: dict[str, Any]) -> None:
+    # Chosen on figure of merit: 0.074 at a 4-year step against 0.002 at three,
+    # the one metric a no-change map cannot game. A future edit must not quietly
+    # demote it back.
+    intervals = prediction.resolve_validation_intervals(params)
+    steps = [late - early for early, late, _ in intervals]
+    assert steps[0] == max(steps), (
+        f"the primary interval has a {steps[0]}-year step but a longer one "
+        f"({max(steps)}) is configured; run 3 measured 34x the figure of merit "
+        "at the longer step"
+    )
+
+
+def test_the_primary_interval_is_the_longest_the_record_supports(
+    params: dict[str, Any]
+) -> None:
+    # Dynamic World is only reliable from 2017 (2016 measured 56 % coverage),
+    # so 2017 -> 2021 -> 2025 is the last equal-step triplet available. That is
+    # what makes Track B's failure settled rather than open.
+    early, late, target = prediction.resolve_validation_intervals(params)[0]
+    step = late - early
+    assert early - step < 2017, (
+        "a longer step would still fit inside Dynamic World's usable record; "
+        "try it before calling Track B settled"
+    )
+    assert target <= int(params["time"]["end_year"])

@@ -51,16 +51,27 @@ from `exports.export_name`, so they follow
 
 | File | Contents | Role in MOLUSCE |
 |---|---|---|
-| `lulc_district_..._30m_2018.tif` | band 1 `label`, band 2 `observed` | **Initial** state map |
-| `lulc_district_..._30m_2021.tif` | same | calibration end / validation start |
-| `lulc_district_..._30m_2024.tif` | same | **Final** state map, and the reference for validation |
+| `lulc_district_..._100m_2017.tif` | band 1 `label`, band 2 `observed` | **Initial** state map |
+| `lulc_district_..._100m_2021.tif` | same | **Final** state map for calibration |
+| `lulc_district_..._100m_2025.tif` | same | the reference for validation |
+| `lulc_district_..._100m_2018.tif`, `..._2024.tif` | same | the 3-year sensitivity interval, and the projection base |
 | `rf_training_sample_district_..._100m_2020s_landsat_oli_dry.csv` | sampled pixels | not used by MOLUSCE; Track A only |
 
-All three rasters are written on **EPSG:32644 at 30 m**, over the same region
-(`aoi.analysis_region`), so they already satisfy MOLUSCE's requirement that every
-input share resolution, extent and pixel dimensions. If QGIS's *Check geometry*
-still complains, the cause is almost always that one file was re-exported with a
-different region — re-run the whole Step 4 loop rather than patching one file.
+Every raster is written on **EPSG:32644 at 100 m**, clipped to **Colombo District**
+(`prediction.work_region`, ~699 km²), so they already satisfy MOLUSCE's requirement
+that every input share resolution, extent and pixel dimensions. If QGIS's *Check
+geometry* still complains, the cause is almost always that one file was re-exported
+with a different region — re-run the whole Step 4 loop rather than patching one file.
+
+100 m, not 30 m: the projected land cover feeds a random forest **fitted** at 100 m,
+and running the automaton finer would apply that model at a scale it was never fitted
+at. One grid for everything.
+
+> **Two earlier runs were discarded over the region.** Run 1 used Western Province
+> plus a 25 km ring (18,090 km²) as the analysis unit; run 2 used the district's
+> *bounding box* (1,256 km², 46 % of it outside the district) because nothing clipped
+> to the geometry. If your rasters do not measure ~699 km² of classified cells,
+> stop and re-export.
 
 ### The `observed` band is not optional
 
@@ -126,7 +137,7 @@ Two warnings that apply to both implementations:
 * **WorldPop stops at 2020** (`datasets.worldpop.availability`). Population is
   held constant, and `prediction.held_constant` records that. A projected
   population would be a second unvalidated model stacked on the first.
-* **Resample every factor to the 30 m CA grid before loading**, on EPSG:32644,
+* **Resample every factor to the 100 m CA grid before loading**, on EPSG:32644,
   matching extent and pixel count exactly. A factor on an inherited grid is what
   made a Phase 5 export serialise at 159 MB.
 
@@ -165,7 +176,7 @@ Produce **Class statistics** and the **Transition matrix**.
   transitions, which are the only ones that matter for a change model.
 * **Sample count**: start at 10 000 and raise it if the training error plateaus
   high.
-* **Neighbourhood**: 1 pixel. At 30 m this is a 3×3 window, comparable to the
+* **Neighbourhood**: 1 pixel. At 100 m this is a 3×3 window, comparable to the
   Python CA's `neighbourhood_radius_cells: 2` (5×5) — not identical, which is
   another expected source of divergence.
 * **Learning rate**: 0.01 to start.
@@ -189,7 +200,13 @@ Produce **Class statistics** and the **Transition matrix**.
   you to an uncertainty estimate; it belongs in the report.
 
 ### 5.6 Validation
-Do this on the **2021 → 2024** hold-out, not on 2018 → 2024.
+Do this on the **2021 → 2025** hold-out, not on the projection pair.
+
+That is the PRIMARY interval since run 3: calibrate **2017 → 2021** (4 years),
+simulate one iteration to **2025**, validate against observed 2025. The 3-year
+`2018 → 2021 → 2024` triplet is the sensitivity — run it too if you have the
+patience, since the difference between them is the most interesting thing Track B
+measured.
 
 Recalibrate with Initial = 2018, Final = 2021, simulate one iteration (3 years)
 to 2024, and validate against the **observed 2024** raster. Using the same pair
@@ -218,13 +235,13 @@ Put these in `data/interim/` before running notebook 06, Part 3:
 
 | File | Name it | Used for |
 |---|---|---|
-| Simulated 2024 map (from the 2018→2021 calibration) | `molusce_projected_2024.tif` | scored with the same Kappa / FoM / Pontius functions as the Python CA |
+| Simulated 2025 map (from the 2017→2021 calibration) | `molusce_projected_2025.tif` | scored with the same Kappa / FoM / Pontius functions as the Python CA |
 | Simulated 2030 map | `molusce_projected_2030.tif` | compared cell-by-cell against the Python CA |
 | Simulated 2036 map | `molusce_projected_2036.tif` | same |
 | Transition matrix export | `molusce_transition_matrix.csv` | checked against `prediction.transition_probabilities` |
 | Certainty raster (2030) | `molusce_certainty_2030.tif` | uncertainty discussion in the report |
 
-They must be single-band integer rasters on **EPSG:32644 at 30 m**, on the same
+They must be single-band integer rasters on **EPSG:32644 at 100 m**, on the same
 grid as the exports in §2. Part 3 reads them with
 `prediction.read_lulc_raster`, which **raises** if the grid does not match —
 that is intentional, because a silently misaligned comparison would produce a
@@ -249,3 +266,54 @@ In `PROGRESS.md`, under the Phase 6 record, note:
 
 A disagreement between the two implementations is a finding. Do not reconcile
 them by editing one until it matches the other.
+
+---
+
+## 8. What you are now comparing MOLUSCE against
+
+Colab runs 1–3 turned the Python CA-Markov into a **known-negative baseline**, and that
+makes Part 3 more interesting rather than less.
+
+Measured over Colombo District, on land only, across two class schemes and both calibration
+intervals Dynamic World's record supports:
+
+| interval | step | figure of merit | Kappa − no-change baseline |
+|---|---|---|---|
+| 2018 → 2021, validated 2024 | 3 yr | 0.0022 | −0.0010 |
+| 2017 → 2021, validated 2025 | 4 yr | **0.0740** | −0.0344 |
+
+Quantity disagreement 0.003–0.032 against allocation disagreement 0.059–0.071. In plain
+terms: **the automaton gets the amount of each class nearly right and puts it in the wrong
+place.** A longer step helps enormously with locating change (34× the figure of merit) but
+buys its hits with false alarms, so nothing beats a map that says "nothing changes". Four
+years is the longest equal-step triplet the record allows, so there is no further interval
+to try.
+
+### Why MOLUSCE might do better, and what to look for
+
+The Python CA allocates **net demand** — the difference between the Markov-projected class
+totals and the current ones — and places it by a neighbourhood filter. MOLUSCE's ANN learns
+a **transition potential per class from the driver rasters**, which is a genuinely different
+mechanism and the obvious candidate for why allocation failed here.
+
+So the comparison to run is not "which is right" but:
+
+1. **Does MOLUSCE's figure of merit clear 0.10 where the Python CA cannot?** Score it on the
+   **2017 → 2021 → 2025** interval — that is the primary now. Part 3 scores it through the
+   same `prediction.validate_projection` call, on the same mask, so the numbers are directly
+   comparable.
+2. **Does its Kappa beat the no-change baseline?** Part 3 prints `kappa_above_null` for both.
+   That is the number to read first; the baseline is identical for each, so whichever
+   implementation sits closer to it has located less of the change.
+3. **Does the quantity/allocation split move?** If MOLUSCE's allocation disagreement drops
+   while its quantity disagreement stays put, the ANN transition potential is the difference,
+   and that is a publishable finding about method choice.
+
+If MOLUSCE also fails to beat the baseline, that is a stronger result than either
+implementation alone: two independent allocators, one neighbourhood-based and one
+ANN-based, cannot place Dynamic World's land-cover change over Colombo at these intervals.
+Report it that way.
+
+**Do not tune either implementation until it clears the floors.** A model fitted to its own
+validation set has no validation set, and the whole value of this comparison is that neither
+was.

@@ -1394,3 +1394,99 @@ def test_the_difference_map_writes_a_png(
         np.zeros((10, 10)), tmp_path / "difference.png", params, projection_report
     )
     assert out.exists() and out.stat().st_size > 0
+
+
+# --- a measured failure is drawn, and stamped --------------------------------
+# Run 3's land-cover projection failed validation, and the run died rather than
+# drawing it - taking Track A's valid figures with it. A figure showing that a
+# projection failed is exactly what the report needs; what must never happen is
+# a figure silent about its status.
+
+
+@pytest.fixture(scope="module")
+def failed_report(params: dict[str, Any]) -> dict[str, Any]:
+    from colombo_uhi import prediction
+
+    # Run 3's actual primary-interval numbers.
+    return prediction.build_validation_report(
+        "lulc_projection",
+        {"kappa": 0.8566, "persistence_kappa": 0.8576, "figure_of_merit": 0.0022},
+        params,
+        held_out=True,
+        n_test=66_926,
+    )
+
+
+def test_the_projection_caption_stamps_a_measured_failure(
+    params: dict[str, Any], failed_report: dict[str, Any]
+) -> None:
+    caption = " ".join(viz.projection_caption(failed_report, params).split())
+    assert "FAILED VALIDATION" in caption
+    assert "must not be quoted as a projection" in caption
+
+
+def test_the_lulc_figure_draws_a_failed_projection_with_the_banner(
+    params: dict[str, Any],
+    failed_report: dict[str, Any],
+    lulc_panels: dict[str, Any],
+) -> None:
+    figure = viz.build_lulc_validation_figure(
+        lulc_panels["initial"], lulc_panels["observed"], lulc_panels["projected"],
+        params, failed_report,
+    )
+    assert len([ax for ax in figure.axes if ax.get_images()]) == 3
+    footer = " ".join(" ".join(t.get_text().split()) for t in figure.texts)
+    assert "FAILED VALIDATION" in footer
+
+
+def test_the_scenario_figure_draws_a_failed_projection_with_the_banner(
+    params: dict[str, Any], failed_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    rng = np.random.default_rng(11)
+    baseline = rng.normal(32.0, 1.5, (16, 24))
+    figure = viz.build_projected_lst_figure(
+        {"Business as usual, 2030": baseline, "Greening, 2030": baseline - 0.4},
+        params, failed_report,
+    )
+    footer = " ".join(" ".join(t.get_text().split()) for t in figure.texts)
+    assert "FAILED VALIDATION" in footer
+
+
+def test_the_difference_map_draws_a_failed_projection_with_the_banner(
+    params: dict[str, Any], failed_report: dict[str, Any]
+) -> None:
+    import numpy as np
+
+    figure = viz.build_scenario_difference_figure(
+        np.full((10, 10), -0.3), params, failed_report
+    )
+    footer = " ".join(" ".join(t.get_text().split()) for t in figure.texts)
+    assert "FAILED VALIDATION" in footer
+
+
+def test_a_figure_still_refuses_when_nothing_was_computed(
+    params: dict[str, Any], lulc_panels: dict[str, Any]
+) -> None:
+    # Absence of evidence is not evidence, and it does not get a figure.
+    from colombo_uhi import prediction
+
+    with pytest.raises(prediction.ValidationMissing):
+        viz.build_lulc_validation_figure(
+            lulc_panels["initial"], lulc_panels["observed"],
+            lulc_panels["projected"], params, None,
+        )
+
+
+def test_a_failed_figure_writes_a_png(
+    params: dict[str, Any],
+    failed_report: dict[str, Any],
+    lulc_panels: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    out = viz.plot_lulc_validation(
+        lulc_panels["initial"], lulc_panels["observed"], lulc_panels["projected"],
+        tmp_path / "failed.png", params, failed_report,
+    )
+    assert out.exists() and out.stat().st_size > 0

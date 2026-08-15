@@ -199,6 +199,17 @@ HORIZON_COLUMNS: tuple[str, ...] = (
 #: Label attached to a validation report that was never actually computed.
 NOT_COMPUTED = "not_computed"
 
+#: Value :func:`read_lulc_raster` fills where a land-cover raster has no data.
+#:
+#: **Not 0.** Clipping to the district leaves the bounding box's corners
+#: unwritten, and an unmasked read returns the GeoTIFF fill - which for these
+#: exports is 0, the code for *water*. Colab run 3 reported "58,366 cells
+#: excluded as immutable": 583 km² of water inside a 689 km² district. The true
+#: figure was 1,960 cells. The analysis itself survived, because the ``observed``
+#: band caught it, but nothing should depend on that: an unclassified cell must
+#: never be able to masquerade as a class.
+LULC_NODATA = -1
+
 #: Wrap width of :func:`validation_caption`, matching
 #: :data:`colombo_uhi.viz.CAVEAT_WRAP_CHARS` so a caption and a caveat footer
 #: line up when they sit on the same figure.
@@ -1347,6 +1358,7 @@ def scoring_mask(
     params: dict[str, Any],
     *label_arrays: "np.ndarray",
     exclude_immutable: bool | None = None,
+    within: "np.ndarray | None" = None,
 ) -> tuple["np.ndarray", dict[str, Any]]:
     """Which cells validation is entitled to score.
 
@@ -1365,6 +1377,11 @@ def scoring_mask(
             a cell that was water at either end of the interval is dropped.
         exclude_immutable: Override for
             ``prediction.ca_markov.validation.exclude_immutable``.
+        within: Optional boolean array restricting the mask, and the counts, to
+            the analysis grid. **Pass it.** Without it the counts are taken over
+            the whole raster including its unwritten corners: run 3 reported
+            "58,366 cells excluded as immutable", 583 km² of water inside a
+            689 km² district, when the true figure was 1,960 cells.
 
     Returns:
         ``(mask, report)``. ``mask`` is ``True`` where scoring is allowed;
@@ -1392,12 +1409,23 @@ def scoring_mask(
         else exclude_immutable
     )
 
-    mask = np.ones(grids[0].shape, dtype=bool)
+    if within is None:
+        inside = np.ones(grids[0].shape, dtype=bool)
+    else:
+        inside = np.asarray(within, dtype=bool)
+        if inside.shape != grids[0].shape:
+            raise ValueError(
+                f"within has shape {inside.shape}, expected {grids[0].shape}"
+            )
+
+    mask = inside.copy()
     if enabled and immutable:
         for grid in grids:
             mask &= ~np.isin(grid, immutable)
 
-    total = int(mask.size)
+    # Counted INSIDE the analysis grid, so "excluded as immutable" means water
+    # and not "outside the district" - see the `within` note above.
+    total = int(inside.sum())
     scored = int(mask.sum())
     return mask, {
         "n_total": total,
@@ -2482,39 +2510,62 @@ def build_validation_report(
     }
 
 
-def require_validated(
+class ValidationFailed(ValidationMissing):
+    """Raised when a product's validation metrics were computed and FAILED.
+
+    Distinct from :class:`ValidationMissing`, which means no validation was ever
+    computed. The difference matters: an absence is not evidence, but a failure
+    **is** — it is a measurement, and it belongs in the report. Colab run 3
+    produced a land-cover projection whose Kappa (0.857) sat below its own
+    no-change baseline (0.858); raising the same error for that as for "nobody
+    ran a validation" cost the whole run, Track A's valid products included.
+    """
+
+
+def assess_validation(
     report: Mapping[str, Any] | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    """Refuse to proceed unless the product's validation metrics exist.
+    """Judge a validation report without acting on the judgement.
 
-    This is the gate CLAUDE.md caveat 3 asks for. Every export wrapper and every
-    figure helper in this phase calls it first, so there is no path from an
-    unvalidated model to a written product or a plotted map.
+    This is the shared core of :func:`require_validated` (which raises) and
+    :func:`validation_caption` (which stamps). Splitting them is what lets a
+    *measured failure* be drawn on a figure and written into the report, while
+    still being refused an export.
 
-    It checks four things:
+    It answers two different questions, and keeps them apart:
 
-    1. a report exists at all;
-    2. it carries every metric :data:`REQUIRED_METRICS` demands for its kind;
-    3. every one of those is finite - a ``nan`` Kappa from a single-class map is
-       an absence of evidence, not a pass;
-    4. the metrics were computed on **held-out** data, and the extrapolation
-       fraction is within ``prediction.rf.extrapolation.tolerance_fraction``.
+    * **Is there evidence at all?** No report, an unknown product kind, a
+      required metric absent, or a metric that came back ``nan`` — these mean
+      validation was never really computed. ``present`` is ``False``.
+    * **Did the evidence pass?** Metrics computed on training data, a Kappa at
+      or below its own no-change baseline, or too much extrapolation — these are
+      *findings*. ``present`` is ``True`` and ``valid`` is ``False``.
 
     Args:
         report: Output of :func:`build_validation_report`.
         params: Parsed params mapping.
 
     Returns:
-        The report, unchanged, so callers can chain.
-
-    Raises:
-        ValidationMissing: On any of the four failures, naming the params key or
-            the function that produces what is missing.
+        Mapping with ``present`` (was validation computed), ``valid`` (did it
+        pass), ``reason`` (one line naming the failure, or ``None``), and
+        ``headline`` (a short banner for a figure, or ``None``).
     """
     import math as _math
 
+    def absent(reason: str) -> dict[str, Any]:
+        return {
+            "present": False, "valid": False, "reason": reason,
+            "headline": "NO VALIDATION WAS COMPUTED",
+        }
+
+    def failed(reason: str, headline: str) -> dict[str, Any]:
+        return {
+            "present": True, "valid": False, "reason": reason,
+            "headline": headline,
+        }
+
     if not report:
-        raise ValidationMissing(
+        return absent(
             "this product has no validation report. Predictive outputs are "
             "conditional scenario projections and must ship with validation "
             "metrics (CLAUDE.md caveat 3). Build one with "
@@ -2522,7 +2573,7 @@ def require_validated(
         )
     kind = str(report.get("kind", ""))
     if kind not in REQUIRED_METRICS:
-        raise ValidationMissing(
+        return absent(
             f"validation report has unknown kind {kind!r}; known kinds are "
             f"{list(PRODUCT_KINDS)}"
         )
@@ -2531,30 +2582,30 @@ def require_validated(
     required = [name for name in REQUIRED_METRICS[kind] if name in declared]
     metrics = dict(report.get("metrics") or {})
 
-    absent = [name for name in required if name not in metrics]
-    if absent:
-        raise ValidationMissing(
+    missing = [name for name in required if name not in metrics]
+    if missing:
+        return absent(
             f"a {kind!r} product requires {list(required)} and is missing "
-            f"{absent}. It has {sorted(metrics)}. A projected LST surface "
+            f"{missing}. It has {sorted(metrics)}. A projected LST surface "
             "inherits the Kappa of the land-cover projection under it - it is "
             "not validated by its regression metrics alone."
         )
     unusable = [
-        name
-        for name in required
-        if not _math.isfinite(float(metrics[name]))
+        name for name in required if not _math.isfinite(float(metrics[name]))
     ]
     if unusable:
-        raise ValidationMissing(
+        return absent(
             f"a {kind!r} product has non-finite {unusable}. A NaN metric is an "
             "absence of evidence, not a passing score; find out why it could "
             "not be computed before exporting anything built on it."
         )
+
     if not report.get("held_out"):
-        raise ValidationMissing(
+        return failed(
             f"a {kind!r} product's metrics were not computed on held-out data. "
             "Training-set metrics measure memorisation. Split with "
-            "blocked_split() or blocked_kfold() and re-score."
+            "blocked_split() or blocked_kfold() and re-score.",
+            "NOT VALIDATED: metrics come from the training set",
         )
 
     # A Kappa that does not beat its own no-change baseline is not evidence of
@@ -2569,29 +2620,75 @@ def require_validated(
         )
         margin = float(metrics["kappa"]) - float(metrics["persistence_kappa"])
         if margin <= floor:
-            raise ValidationMissing(
-                f"a {kind!r} product's Kappa is {metrics['kappa']:.3f} against a "
-                f"no-change baseline of {metrics['persistence_kappa']:.3f} - a "
-                f"margin of {margin:+.3f}, at or below "
-                f"prediction.ca_markov.validation.min_kappa_above_null "
+            return failed(
+                f"a {kind!r} product's Kappa is {metrics['kappa']:.3f} against "
+                f"a no-change baseline of "
+                f"{metrics['persistence_kappa']:.3f} - a margin of "
+                f"{margin:+.3f}, at or below "
+                "prediction.ca_markov.validation.min_kappa_above_null "
                 f"({floor:+.3f}).\n"
                 "A projection that a 'nothing changes' map matches has "
-                "demonstrated no skill at locating change, so anything built on "
-                "it is not a validated product. Report the negative result; do "
-                "not tune the automaton until it clears its own validation set."
+                "demonstrated no skill at locating change, so anything built "
+                "on it is not a validated product. Report the negative result; "
+                "do not tune the automaton until it clears its own validation "
+                "set.",
+                f"FAILED VALIDATION: Kappa {metrics['kappa']:.3f} does not beat "
+                f"its no-change baseline of "
+                f"{metrics['persistence_kappa']:.3f}",
             )
 
     extrapolation = report.get("extrapolation")
     if extrapolation and not extrapolation.get("within_tolerance", True):
-        raise ValidationMissing(
+        return failed(
             f"{extrapolation['fraction']:.1%} of the target pixels lie outside "
             "the training envelope on at least one predictor, above "
             "prediction.rf.extrapolation.tolerance_fraction "
             f"({extrapolation['tolerance']:.1%}). A random forest cannot "
             "extrapolate, so those pixels are pinned to the edge of the "
             "training range. Narrow the projection, widen the training sample, "
-            "or raise the tolerance deliberately and say so in the report."
+            "or raise the tolerance deliberately and say so in the report.",
+            f"FAILED VALIDATION: {extrapolation['fraction']:.1%} of pixels lie "
+            "outside the training envelope",
         )
+
+    return {"present": True, "valid": True, "reason": None, "headline": None}
+
+
+def require_validated(
+    report: Mapping[str, Any] | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    """Refuse to write a product unless its validation metrics exist AND pass.
+
+    This is the gate CLAUDE.md caveat 3 asks for, and it is what
+    :func:`export_projection` and :func:`write_lulc_projection` call before
+    touching ``ee.batch`` or ``rasterio``. There is no path from an unvalidated
+    model to a **written** product.
+
+    .. note::
+        Figures do **not** call this. They call :func:`validation_caption`,
+        which stamps a measured failure onto the figure rather than refusing to
+        draw it — because a figure showing that a projection failed is exactly
+        what the report needs, and a run that crashes instead of drawing it
+        throws away every valid product beside it. What must never happen is a
+        figure silent about its status, and no path allows that.
+
+    Args:
+        report: Output of :func:`build_validation_report`.
+        params: Parsed params mapping.
+
+    Returns:
+        The report, unchanged, so callers can chain.
+
+    Raises:
+        ValidationMissing: If validation was never computed - no report, an
+            unknown kind, a required metric absent, or a ``nan``.
+        ValidationFailed: If validation WAS computed and did not pass.
+    """
+    verdict = assess_validation(report, params)
+    if not verdict["present"]:
+        raise ValidationMissing(verdict["reason"])
+    if not verdict["valid"]:
+        raise ValidationFailed(verdict["reason"])
     return dict(report)
 
 
@@ -2600,29 +2697,51 @@ def validation_caption(
 ) -> str:
     """The uncertainty text that must appear on a predictive figure.
 
+    Refuses only when validation was **never computed**. When it was computed
+    and *failed*, the caption leads with a banner naming the failure and the
+    figure is drawn — because a figure showing that a projection failed is
+    exactly what a report needs, and refusing to draw it throws away the
+    evidence along with every valid product beside it.
+
+    What no path allows is a predictive figure that is silent about its
+    validation status.
+
     Args:
         report: Output of :func:`build_validation_report`.
         params: Parsed params mapping.
 
     Returns:
-        A short multi-line string: the framing sentence, the metrics with the
-        split they were computed on, the extrapolation fraction, and any notes.
+        A short multi-line string: a failure banner if there is one, then the
+        framing sentence, the metrics with the split they were computed on, the
+        extrapolation fraction, and any notes.
 
     Raises:
-        ValidationMissing: If the report is absent or incomplete - a predictive
-            figure without metrics on it is not a figure this project ships.
+        ValidationMissing: If validation was never computed - no report, an
+            unknown kind, a required metric absent, or a ``nan``. A figure with
+            no metrics at all is not a figure this project ships.
     """
     import textwrap
 
-    validated = require_validated(report, params)
-    metrics = validated["metrics"]
+    verdict = assess_validation(report, params)
+    if not verdict["present"]:
+        raise ValidationMissing(verdict["reason"])
 
-    items = [
+    validated = dict(report or {})
+    metrics = dict(validated.get("metrics") or {})
+
+    items: list[str] = []
+    if not verdict["valid"]:
+        items.append(
+            f"*** {verdict['headline']}. This product is shown as a MEASURED "
+            "NEGATIVE RESULT, not as a projection to be used. It has not been "
+            "exported, and it must not be quoted as a projection."
+        )
+    items.append(
         "CONDITIONAL SCENARIO PROJECTION, NOT A FORECAST. This is what the "
         "surface would look like IF the calibrated transition rates continued "
         "and the fitted LST-driver relationship held. It is Land Surface "
-        "Temperature, not air temperature.",
-    ]
+        "Temperature, not air temperature."
+    )
 
     labels = {
         "rmse": "RMSE",
@@ -2643,7 +2762,7 @@ def validation_caption(
                 f", on {validated['n_blocks']} held-out spatial blocks of "
                 f"{validated['block_size_m']:.0f} m"
             )
-        basis = "held-out data" if validated["held_out"] else NOT_COMPUTED
+        basis = "held-out data" if validated.get("held_out") else NOT_COMPUTED
         items.append(f"Validation ({basis}): " + ", ".join(parts) + split)
 
     extrapolation = validated.get("extrapolation")
@@ -3858,8 +3977,12 @@ def read_lulc_raster(
                 "coverage band, cells Dynamic World never classified are "
                 "written as 0 and read back as water."
             )
-        labels = handle.read(1)
-        observed = handle.read(2)
+        # masked=True, filled with LULC_NODATA - NOT the raw read. The rasters
+        # are clipped to the district, so the bounding box's corners carry no
+        # data, and an unmasked read returns the GeoTIFF fill of 0 = *water*.
+        # See LULC_NODATA for what that cost in run 3.
+        labels = handle.read(1, masked=True).filled(LULC_NODATA)
+        observed = handle.read(2, masked=True).filled(0)
         profile = dict(handle.profile)
 
     return (

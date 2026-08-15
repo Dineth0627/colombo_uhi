@@ -2353,21 +2353,73 @@ def projection_caption(
         extra: Figure-specific lines appended below.
 
     Returns:
-        The caveat footer, the validation caption and ``extra``, joined.
+        The caveat footer, the validation caption and ``extra``, joined. When
+        validation was computed and FAILED, the caption's banner leads.
 
     Raises:
-        colombo_uhi.prediction.ValidationMissing: If the report is absent or
-            incomplete.
+        colombo_uhi.prediction.ValidationMissing: If validation was never
+            computed. A measured failure is stamped, not refused.
     """
     from colombo_uhi import prediction
 
-    parts = [
-        caveat_footer(params, list(keys)),
-        prediction.validation_caption(report, params),
-    ]
+    caption = prediction.validation_caption(report, params)
+    caveats = caveat_footer(params, list(keys))
+
+    # When validation FAILED, its banner leads the whole footer. The standing
+    # caveats are true of every predictive figure; this one is true of THIS
+    # product, and a reader has to meet it first.
+    parts = (
+        [caption, caveats] if failure_headline(report, params)
+        else [caveats, caption]
+    )
     if extra:
         parts.append(extra.strip("\n"))
     return "\n".join(part for part in parts if part)
+
+
+def failure_headline(
+    report: Mapping[str, Any] | None, params: dict[str, Any]
+) -> str | None:
+    """One-line banner when a product's validation was computed and FAILED.
+
+    Args:
+        report: Validation report.
+        params: Parsed params mapping.
+
+    Returns:
+        The headline, or ``None`` when validation passed or was never computed.
+        An absence is the caption's business; it refuses outright.
+    """
+    from colombo_uhi import prediction
+
+    verdict = prediction.assess_validation(report, params)
+    if verdict["present"] and not verdict["valid"]:
+        return str(verdict["headline"])
+    return None
+
+
+def _suptitle(
+    figure: Any,
+    title: str,
+    report: Mapping[str, Any] | None,
+    params: dict[str, Any],
+    fontsize: int = 12,
+) -> None:
+    """Set the figure title, marking a failed validation inside it.
+
+    The footer leads with the failure too, but a reader skims titles first, and
+    a product that did not pass validation has to announce that before anything
+    else on the figure is read.
+    """
+    if failure_headline(report, params) is None:
+        figure.suptitle(title, fontsize=fontsize)
+        return
+    # A SHORT single-line marker, and the whole title in red. The full reason
+    # leads the footer. Anything longer wraps, and a wrapped suptitle lands on
+    # the panel titles of the multi-panel figures - which is worse than terse.
+    figure.suptitle(
+        f"{title}   [FAILED VALIDATION]", fontsize=fontsize, color="#b2182b"
+    )
 
 
 def landcover_palette(params: dict[str, Any], scheme: str) -> dict[int, str]:
@@ -2503,8 +2555,9 @@ def build_observed_vs_predicted_figure(
         },
     )
 
-    figure.suptitle(
-        title or "Random forest LST fit, held-out spatial blocks", fontsize=12
+    _suptitle(
+        figure, title or "Random forest LST fit, held-out spatial blocks",
+        report, params,
     )
     figure.text(
         0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
@@ -2608,7 +2661,7 @@ def build_feature_importance_figure(
     axes.grid(True, axis="x", linewidth=0.3, color="#dddddd")
     axes.set_axisbelow(True)
 
-    figure.suptitle(title or "Predictor importance", fontsize=12)
+    _suptitle(figure, title or "Predictor importance", report, params)
     figure.text(
         0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
     )
@@ -2853,8 +2906,9 @@ def build_lulc_validation_figure(
         frameon=False,
         handlelength=1.3,
     )
-    figure.suptitle(
-        title or "Land-cover projection against the held-out year", fontsize=12
+    _suptitle(
+        figure, title or "Land-cover projection against the held-out year",
+        report, params,
     )
     figure.text(
         0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
@@ -2973,7 +3027,9 @@ def build_projected_lst_figure(
     bar.set_label("Projected LST (degC)", fontsize=9)
     bar.ax.tick_params(labelsize=8)
 
-    figure.suptitle(title or "Projected land surface temperature", fontsize=12)
+    _suptitle(
+        figure, title or "Projected land surface temperature", report, params
+    )
     figure.text(
         0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
     )
@@ -3085,8 +3141,9 @@ def build_scenario_difference_figure(
     bar.set_label("Scenario minus baseline (degC)", fontsize=9)
     bar.ax.tick_params(labelsize=8)
 
-    figure.suptitle(
-        title or "Greening scenario minus business as usual", fontsize=12
+    _suptitle(
+        figure, title or "Greening scenario minus business as usual",
+        report, params,
     )
     figure.text(
         0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"

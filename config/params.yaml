@@ -1681,17 +1681,29 @@ prediction:
                                       # metrics are scale dependent.
     calibration_years: [2018, 2021]   # [Phase 6] calibrate the transition matrix on this pair
     validation_year: 2024             # project forward from 2021 and score against OBSERVED 2024
-    validation_intervals:             # [Phase 6, run 2] [calibrate_from, calibrate_to, validate_at]
-      - [2018, 2021, 2024]            # 3-year step - the primary
-      - [2017, 2021, 2025]            # 4-year step. Run 2 showed the CA reproducing the
-                                      # QUANTITY of change well (disagreement 0.011) while
-                                      # failing to place it (allocation 0.069, figure of merit
-                                      # 0.03), and grouping the churning vegetation classes
-                                      # barely moved it (0.028 -> 0.032). A longer step lets
-                                      # real change accumulate against a roughly fixed level of
-                                      # classifier noise, so this is a direct test of whether
-                                      # churn is the cause. Both ends measured >99.8 % Dynamic
-                                      # World coverage in run 2's Step 2 probe.
+    validation_intervals:             # [calibrate_from, calibrate_to, validate_at]
+                                      # The FIRST entry is the PRIMARY: it supplies the metrics
+                                      # that gate the export and appear in the report. The rest
+                                      # are sensitivities.
+      - [2017, 2021, 2025]            # 4-year step - PRIMARY since run 3. Chosen on FIGURE OF
+                                      # MERIT, the only metric a no-change map cannot game:
+                                      #   3-year step  FoM 0.0022   11 hits, 51 false alarms
+                                      #   4-year step  FoM 0.0740  516 hits, 1,649 false alarms
+                                      # One extra year raises the figure of merit 34x. The
+                                      # 3-year automaton is effectively the null map - it moves
+                                      # 62 cells out of 66,926. The 4-year one genuinely
+                                      # attempts change and pays for it in false alarms, so its
+                                      # Kappa sits FURTHER below the baseline (-0.034 vs
+                                      # -0.001). That is honest, not a regression: the model
+                                      # that actually does something lands further from doing
+                                      # nothing.
+                                      # This is also the LONGEST step the record supports.
+                                      # Dynamic World is only reliable from 2017 (2016 measured
+                                      # 56 % coverage), so 2017->2021->2025 is the last equal-
+                                      # step triplet available. There is no longer interval
+                                      # left to try, which is what makes Track B's failure a
+                                      # settled result rather than an open question.
+      - [2018, 2021, 2024]            # 3-year step - sensitivity
     projection_base_years: [2018, 2024]  # recalibrate on the full span for the real projection
     projection_years: [2030, 2035]    # what the report ASKS for. One Markov step is the
                                       # calibrated interval itself (here 2024-2018 = 6 years),

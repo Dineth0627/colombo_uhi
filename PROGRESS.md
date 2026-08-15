@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-14 (Phase 6 **run 2: Track A lands, Track B fails and is diagnosed** — five more defects fixed, 1050 tests pass, awaiting run 3)_
+_Last updated: 2026-08-15 (Phase 6 **run 3: Track A validated, Track B settled as a negative result** — 1075 tests pass, awaiting run 4)_
 
 ## Status snapshot
 
@@ -12,9 +12,151 @@ _Last updated: 2026-08-14 (Phase 6 **run 2: Track A lands, Track B fails and is 
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
-| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 2: Track A LANDS, Track B fails.** Track A over the district is a genuine urban-heat model — NDBI 0.094 / built 0.093 / LCZ 0.086 at the top, elevation down from 1st (0.180) to 5th (0.021); held-out RMSE **1.13 °C**, R² **0.894** on 212 blocks. Track B scores **0.007 BELOW** a no-change null under both class schemes (FoM 0.028/0.032): the Pontius split (quantity 0.011 vs allocation 0.069) diagnoses a net-demand allocator facing gross churn. Five more defects fixed — rasters were the district's bounding box (46 % outside), the export guard passed a no-skill projection, scheme auto-selection killed the greening lever. 1050 tests pass, 14 skip |
+| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 3: Track A VALIDATED, Track B settled as a NEGATIVE RESULT.** Track A: held-out RMSE **1.13 °C**, R² **0.894** on 212 spatial blocks, led by NDBI / built fraction / LCZ. Track B: a Markov-CA on Dynamic World reproduces the *quantity* of change (disagreement 0.003–0.032) and cannot *allocate* it (0.059–0.071), never beating a no-change map across 2 schemes × 2 intervals. A 4-year step raises the figure of merit **34×** (0.002 → 0.074) and 4 years is the longest Dynamic World supports, so the result is settled. Guard now distinguishes a measured failure from an absent one. 1075 tests pass, 15 skip |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 3 (2026-08-14) — both run-2 fixes hold; Track B settles as a negative result
+
+Ran Part 1 and Part 2 through Step 9, then stopped because the validation guard raised —
+which is the guard doing its job, wired so that it also destroyed the rest of the run.
+Everything it measured before that point stands.
+
+#### The clip worked
+
+```
+PASS: work region 688.9 km2, -1.5% from the expected 699 km2 for Colombo District
+```
+
+Run 2's 1,256 km² rectangle — 46 % of it outside the district — is gone. The rasters are
+still exported over the bounding box (297 × 423), but only the district is written, so
+`observed` is 0 outside and `VALID` lands on **68,886 cells = 688.9 km²**.
+
+#### S10 answered, and it went against the interval that was primary
+
+| interval | step | scheme | FoM | κ above null | hits / misses / false alarms |
+|---|---|---|---|---|---|
+| 2018→2021→2024 | 3 yr | ungrouped | 0.0022 | −0.0010 | 11 / 4,915 / 51 |
+| 2018→2021→2024 | 3 yr | grouped | 0.0029 | −0.0010 | 13 / 4,456 / 49 |
+| **2017→2021→2025** | **4 yr** | ungrouped | **0.0740** | −0.0344 | 516 / 4,680 / 1,649 |
+| 2017→2021→2025 | 4 yr | grouped | 0.0789 | −0.0346 | 516 / 4,258 / 1,646 |
+
+Three things follow, and together they settle Track B:
+
+1. **Interval length is the dominant control.** One extra year raises the figure of merit
+   **34×**. The 3-year automaton is effectively the null map — it moves 62 cells out of
+   66,926. The 4-year one genuinely attempts change.
+2. **Classifier churn is not the explanation.** Grouping trees, grass and shrub into one
+   class moves the figure of merit by **0.0007**. If vegetation classes flipping were the
+   cause, collapsing them would have fixed it. The hypothesis is retired.
+3. **Nothing beats a no-change map.** The 4-year run buys its hits with false alarms
+   (51 → 1,649), so its Kappa lands *further* below the baseline, not closer.
+
+The Pontius split names the failure precisely: **quantity disagreement 0.003–0.032 against
+allocation disagreement 0.059–0.071.** The automaton gets the *amount* of each class nearly
+right and puts it in the wrong *place* — what a net-demand allocator does when gross
+transitions exceed net ones by an order of magnitude.
+
+**4 years is the ceiling.** Dynamic World is only reliable from 2017 (2016 measured 56 %
+coverage), so `2017 → 2021 → 2025` is the last equal-step triplet the record supports.
+There is no longer interval left to try. That is what makes this a settled result rather
+than an open question, and it is why no further CA configurations will be attempted.
+
+#### D11 — a measured failure crashed the run
+
+`require_validated` raised the same exception for "validation failed" as for "no validation
+was ever computed", and Step 9 called it. So a **result** read as a crash and took Steps
+10–14 with it: no projected areas, no priority zones, no scenarios, no Track A products, no
+bundle.
+
+**Fix (decided with the user).** `prediction.assess_validation()` splits the judgement from
+the enforcement, and answers two different questions:
+
+* **Is there evidence at all?** No report, unknown kind, a required metric absent, a `nan`
+  → `present: False`. Still raises `ValidationMissing`.
+* **Did the evidence pass?** Training-set metrics, Kappa at or below its baseline, too much
+  extrapolation → `present: True, valid: False`. Raises the new `ValidationFailed`
+  (a subclass, so existing handlers keep working) **only where it matters**.
+
+What changed where:
+
+| | before | after |
+|---|---|---|
+| `export_projection`, `write_lulc_projection` | refuse | **refuse** (unchanged) |
+| figure builders | refuse | **draw, and stamp** `FAILED VALIDATION` in the title and at the head of the footer |
+| notebook Step 9 | raise, run over | assess, print the verdict in a box, **continue** |
+
+A figure showing that a projection failed is exactly what the report needs; refusing to
+draw it throws the evidence away along with every valid product beside it. What no path
+allows is a predictive figure silent about its status.
+
+#### D12 — nodata was reading as water
+
+`read_lulc_raster` used `handle.read(1)`, so the bounding box's unwritten corners came back
+as **0 = Water**. The analysis survived because `VALID` is built from band 2, but the
+reported counts did not:
+
+```
+scored 66,926 cells; 58,366 excluded as immutable (classes [0])
+```
+
+583 km² of water inside a 689 km² district. The true figure is **1,960 cells, 19.6 km²**.
+
+Two fixes: `LULC_NODATA = -1` with a masked read, so an unclassified cell can never
+masquerade as a class; and `scoring_mask(within=)` so the counts are taken inside the
+analysis grid rather than across the whole raster.
+
+#### D13 — the primary interval was the weaker one
+
+`validation_intervals` now leads with `[2017, 2021, 2025]`, chosen on **figure of merit** —
+the only metric a no-change map cannot game, and 0.074 against 0.002 is not close. The
+3-year triplet stays as the sensitivity.
+
+This makes the guard fail *harder* (−0.034 against −0.001), which is honest: the model that
+actually attempts change lands further from the model that does nothing. A params test pins
+that the primary is the longest step, and a second pins that no longer step would still fit
+inside Dynamic World's usable record.
+
+#### S-item status after run 3
+
+| # | Answer | Status |
+|---|---|---|
+| S1, S2 | closed in run 1 | ✅ |
+| S3 | closed in run 2: blocked CV RMSE 1.262 °C (1.131–1.431), R² 0.843 (0.761–0.887); held out 1.132 / 0.894 on 212 blocks | ✅ |
+| S4 | reopened in run 2; `compare_split_strategies(n_repeats=5)` now reports a spread, and Step 8 prints INCONCLUSIVE when the gap is smaller than it | 🔄 run 4 |
+| S5 | **closed as a NEGATIVE RESULT.** Nothing beat a no-change map, across 2 schemes × 2 intervals | ✅ |
+| S6 | GHSL cross-check not reached in run 3 | 🔄 run 4 |
+| S7 | closed in run 2: **0.09 %** of projected pixels outside the training envelope | ✅ |
+| S8 | MOLUSCE — not reached | ⬜ |
+| S9 | **closed.** Grouping moves the figure of merit by 0.0007. It is not the explanation, and it no longer decides anything: the projection is always ungrouped | ✅ |
+| S10 | **closed.** A 4-year step raises the figure of merit 34×, and 4 years is the longest the record supports | ✅ |
+
+#### What Phase 6 ships
+
+**Track A — a validated present-day LST model.** Held-out RMSE **1.13 °C**, R² **0.894**
+across 212 spatial blocks, with NDBI (0.094), built fraction (0.093) and LCZ class (0.086)
+as the leading predictors. It does not touch the cellular automaton and is unaffected by
+Track B's failure.
+
+**Track B — a measured negative result.** A Markov-CA on Dynamic World reproduces the
+*quantity* of land-cover change over Colombo and cannot *allocate* it, across two class
+schemes and both intervals the ten-year record supports. The evidence is the transition
+matrix, the four-row sensitivity, and the Pontius decomposition.
+
+Deliverable 2 is therefore a conditional scenario projection carrying a stated, quantified
+limitation — which is what CLAUDE.md caveat 3 asks for, arrived at by measurement rather
+than by assertion.
+
+#### Run 4
+
+**Part 1 can be skipped** if `data/interim/` still holds run 3's exports — nothing about the
+exports changed. Check that Step 9 prints the boxed verdict and **continues**, that Steps
+10–13 complete with a non-zero greening conversion count, that Step 14 refuses every
+projection export and says why, and that the bundle is produced.
+
+**1075 tests pass locally, 15 skip** (up from 1050/14: +25 tests).
+
+---
 
 ### Colab run 2 (2026-08-14) — Track A LANDS. Track B fails, and the failure is now diagnosed
 

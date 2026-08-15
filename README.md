@@ -10,6 +10,13 @@ Three deliverables:
    Benjamini-Hochberg FDR-corrected significance, 2000–2025.
 2. **Future hotspot scenario projection** — RF regression + CA-Markov,
    presented strictly as *conditional scenario projection*, never a forecast.
+   The random-forest LST model is validated (held-out RMSE 1.13 °C, R² 0.894 on
+   spatially blocked data). The CA-Markov land-cover component is a **measured
+   negative result**: it reproduces the *quantity* of land-cover change over
+   Colombo but cannot *allocate* it, and never beats a no-change map — across
+   two class schemes and both calibration intervals Dynamic World's record
+   supports. Deliverable 2 therefore carries a stated, quantified limitation
+   rather than an unvalidated map.
 3. **Urban greening priority recommendations** — MCDA/AHP weighted overlay.
 
 > ⚠️ **This project measures Land Surface Temperature, not air temperature.**
@@ -91,7 +98,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 | 3 | `03_uhi_metrics` | SUHII (≥2 rural defs), UTFVI, z-scores | ✅ done + Colab-verified |
 | 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | ✅ done + Colab-verified |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR, MAUP, landscape metrics | ✅ done + Colab-verified |
-| 6 | `06_prediction` | RF + CA-Markov scenario projection, spatially blocked validation, MOLUSCE handoff | 🟡 written, awaiting Colab |
+| 6 | `06_prediction` | RF + CA-Markov scenario projection, spatially blocked validation, MOLUSCE handoff | 🟡 Track A validated (RMSE 1.13 °C, R² 0.894); Track B a documented negative result |
 | 7 | `07_greening_priority` | MCDA/AHP overlay | ⬜ |
 | 8 | `08_figures_for_report` | final figures | ⬜ |
 
