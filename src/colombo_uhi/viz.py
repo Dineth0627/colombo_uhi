@@ -3096,15 +3096,27 @@ def build_scenario_difference_figure(
     if limit <= 0:
         raise ValueError(f"max_degc must be positive, got {limit}")
 
+    # A counterfactual-minus-observed difference and a projection-minus-
+    # projection difference carry different things, and the footer must not
+    # claim the wrong one.
+    carries = (
+        "- A COUNTERFACTUAL MINUS ITS OBSERVED BASELINE still carries the "
+        "model's error twice: both surfaces come from the\n  same forest, so "
+        "its errors partly cancel. That cancellation is a property of the "
+        "method, not evidence that\n  the difference is precise."
+        if str((report or {}).get("kind", "")) == "lst_scenario"
+        else
+        "- A DIFFERENCE OF TWO PROJECTIONS carries both projections' "
+        "uncertainty. It looks clean because the two surfaces\n  share a "
+        "model and so share its errors, which partly cancel - a property of "
+        "the method, not evidence of precision."
+    )
     footer = projection_caption(
         report,
         params,
         keys=("scenario_not_forecast", "lst_not_air_temp"),
         extra=(
-            "- A DIFFERENCE OF TWO PROJECTIONS carries both projections' "
-            "uncertainty. It looks clean because the two surfaces\n  share a "
-            "model and so share its errors, which partly cancel - a property of "
-            "the method, not evidence of precision.\n"
+            carries + "\n"
             "- Blue is cooler under the greening scenario. The magnitude is what "
             "the fitted LST-driver relationship implies for\n  the converted "
             "pixels; it is not a measured cooling."

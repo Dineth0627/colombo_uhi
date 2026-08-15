@@ -1,0 +1,202 @@
+{
+  "lst_fit": {
+    "kind": "lst_fit",
+    "framing": "conditional_scenario_projection_NOT_forecast",
+    "metrics": {
+      "rmse": 1.1319497783313404,
+      "r2": 0.8942797022850946
+    },
+    "held_out": true,
+    "n_train": 14259,
+    "n_test": 4812,
+    "n_blocks": 54,
+    "block_size_m": 2000.0,
+    "extrapolation": null,
+    "notes": [
+      "Fitted on 2020s landsat_oli_dry at 100 m; a single-sensor (L8+L9) series, because the Collection 2 inter-calibration was tested over Colombo and failed."
+    ]
+  },
+  "lulc_projection": {
+    "kind": "lulc_projection",
+    "framing": "conditional_scenario_projection_NOT_forecast",
+    "metrics": {
+      "n_scored": 66013.0,
+      "kappa": 0.8098194134786676,
+      "persistence_kappa": 0.8442153388811799,
+      "kappa_above_null": -0.03439592540251235,
+      "figure_of_merit": 0.0740209439104863,
+      "proportion_correct": 0.9022162301364882,
+      "quantity_disagreement": 0.03249359974550467,
+      "allocation_disagreement": 0.06529017011800696,
+      "total_disagreement": 0.09778376986351163,
+      "hits": 516.0,
+      "wrong_hits": 126.0,
+      "misses": 4680.0,
+      "false_alarms": 1649.0,
+      "observed_change": 5322.0,
+      "projected_change": 2291.0
+    },
+    "held_out": true,
+    "n_train": null,
+    "n_test": 66013,
+    "n_blocks": null,
+    "block_size_m": null,
+    "extrapolation": null,
+    "notes": [
+      "Calibrated 2017-2021, projected to 2025 and scored against the observed map using the ungrouped class scheme on the 66,013 cells Dynamic World classified in every year AND that the CA was permitted to change.",
+      "Kappa of the no-change null is 0.844; read the model's Kappa against that, not against zero."
+    ]
+  },
+  "lst_projection": {
+    "business_as_usual_2030": {
+      "kind": "lst_projection",
+      "framing": "conditional_scenario_projection_NOT_forecast",
+      "metrics": {
+        "rmse": 1.1319497783313404,
+        "r2": 0.8942797022850946,
+        "kappa": 0.8098194134786676,
+        "persistence_kappa": 0.8442153388811799,
+        "figure_of_merit": 0.0740209439104863
+      },
+      "held_out": true,
+      "n_train": 14259,
+      "n_test": 4812,
+      "n_blocks": 54,
+      "block_size_m": 2000.0,
+      "extrapolation": {
+        "fraction": 0.000937262894803398,
+        "n": 67217,
+        "n_outside": 63,
+        "tolerance": 0.05,
+        "within_tolerance": true,
+        "by_predictor": {
+          "NDVI": 0.0,
+          "NDBI": 0.0,
+          "built_fraction": 0.0,
+          "elevation_m": 4.463156641920943e-05,
+          "dist_coast_km": 1.4877188806403143e-05,
+          "pop_density": 0.0008777541395777854,
+          "lcz_class": 0.0
+        }
+      },
+      "notes": [
+        "Land cover projected by CA-Markov from 2018-2024; LST by a random forest fitted on the 2020s cross-section (space-for-time substitution - the model has never seen time).",
+        "Scenario: Business as usual.",
+        "Priority zones are a PHASE-5 INTERIM proxy ranked on outcome, not feasibility; Phase 7's MCDA replaces them."
+      ]
+    },
+    "greening_2030": {
+      "kind": "lst_projection",
+      "framing": "conditional_scenario_projection_NOT_forecast",
+      "metrics": {
+        "rmse": 1.1319497783313404,
+        "r2": 0.8942797022850946,
+        "kappa": 0.8098194134786676,
+        "persistence_kappa": 0.8442153388811799,
+        "figure_of_merit": 0.0740209439104863
+      },
+      "held_out": true,
+      "n_train": 14259,
+      "n_test": 4812,
+      "n_blocks": 54,
+      "block_size_m": 2000.0,
+      "extrapolation": {
+        "fraction": 0.000937262894803398,
+        "n": 67217,
+        "n_outside": 63,
+        "tolerance": 0.05,
+        "within_tolerance": true,
+        "by_predictor": {
+          "NDVI": 0.0,
+          "NDBI": 0.0,
+          "built_fraction": 0.0,
+          "elevation_m": 4.463156641920943e-05,
+          "dist_coast_km": 1.4877188806403143e-05,
+          "pop_density": 0.0008777541395777854,
+          "lcz_class": 0.0
+        }
+      },
+      "notes": [
+        "Land cover projected by CA-Markov from 2018-2024; LST by a random forest fitted on the 2020s cross-section (space-for-time substitution - the model has never seen time).",
+        "Scenario: Greening, 20% canopy increase in the top 60 GN divisions.",
+        "Priority zones are a PHASE-5 INTERIM proxy ranked on outcome, not feasibility; Phase 7's MCDA replaces them."
+      ]
+    },
+    "business_as_usual_2036": {
+      "kind": "lst_projection",
+      "framing": "conditional_scenario_projection_NOT_forecast",
+      "metrics": {
+        "rmse": 1.1319497783313404,
+        "r2": 0.8942797022850946,
+        "kappa": 0.8098194134786676,
+        "persistence_kappa": 0.8442153388811799,
+        "figure_of_merit": 0.0740209439104863
+      },
+      "held_out": true,
+      "n_train": 14259,
+      "n_test": 4812,
+      "n_blocks": 54,
+      "block_size_m": 2000.0,
+      "extrapolation": {
+        "fraction": 0.000937262894803398,
+        "n": 67217,
+        "n_outside": 63,
+        "tolerance": 0.05,
+        "within_tolerance": true,
+        "by_predictor": {
+          "NDVI": 0.0,
+          "NDBI": 0.0,
+          "built_fraction": 0.0,
+          "elevation_m": 4.463156641920943e-05,
+          "dist_coast_km": 1.4877188806403143e-05,
+          "pop_density": 0.0008777541395777854,
+          "lcz_class": 0.0
+        }
+      },
+      "notes": [
+        "Land cover projected by CA-Markov from 2018-2024; LST by a random forest fitted on the 2020s cross-section (space-for-time substitution - the model has never seen time).",
+        "Scenario: Business as usual.",
+        "Priority zones are a PHASE-5 INTERIM proxy ranked on outcome, not feasibility; Phase 7's MCDA replaces them.",
+        "Horizon 2036 is the nearest whole Markov step to the requested 2035; a fractional matrix power is not a valid transition matrix."
+      ]
+    },
+    "greening_2036": {
+      "kind": "lst_projection",
+      "framing": "conditional_scenario_projection_NOT_forecast",
+      "metrics": {
+        "rmse": 1.1319497783313404,
+        "r2": 0.8942797022850946,
+        "kappa": 0.8098194134786676,
+        "persistence_kappa": 0.8442153388811799,
+        "figure_of_merit": 0.0740209439104863
+      },
+      "held_out": true,
+      "n_train": 14259,
+      "n_test": 4812,
+      "n_blocks": 54,
+      "block_size_m": 2000.0,
+      "extrapolation": {
+        "fraction": 0.000937262894803398,
+        "n": 67217,
+        "n_outside": 63,
+        "tolerance": 0.05,
+        "within_tolerance": true,
+        "by_predictor": {
+          "NDVI": 0.0,
+          "NDBI": 0.0,
+          "built_fraction": 0.0,
+          "elevation_m": 4.463156641920943e-05,
+          "dist_coast_km": 1.4877188806403143e-05,
+          "pop_density": 0.0008777541395777854,
+          "lcz_class": 0.0
+        }
+      },
+      "notes": [
+        "Land cover projected by CA-Markov from 2018-2024; LST by a random forest fitted on the 2020s cross-section (space-for-time substitution - the model has never seen time).",
+        "Scenario: Greening, 20% canopy increase in the top 60 GN divisions.",
+        "Priority zones are a PHASE-5 INTERIM proxy ranked on outcome, not feasibility; Phase 7's MCDA replaces them.",
+        "Horizon 2036 is the nearest whole Markov step to the requested 2035; a fractional matrix power is not a valid transition matrix."
+      ]
+    }
+  }
+}

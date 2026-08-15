@@ -1490,3 +1490,23 @@ def test_a_failed_figure_writes_a_png(
         tmp_path / "failed.png", params, failed_report,
     )
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_the_difference_map_names_what_it_actually_differenced(
+    params: dict[str, Any]
+) -> None:
+    # A counterfactual minus its observed baseline is not a difference of two
+    # projections, and the footer must not claim it is.
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    scenario = prediction.build_validation_report(
+        "lst_scenario", {"rmse": 1.13, "r2": 0.894}, params, held_out=True
+    )
+    figure = viz.build_scenario_difference_figure(
+        np.zeros((8, 8)), params, scenario
+    )
+    footer = " ".join(" ".join(t.get_text().split()) for t in figure.texts)
+    assert "COUNTERFACTUAL MINUS ITS OBSERVED BASELINE" in footer
+    assert "DIFFERENCE OF TWO PROJECTIONS" not in footer

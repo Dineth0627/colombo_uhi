@@ -1,0 +1,2 @@
+scenario,method,fraction,canopy_class,excluded_classes,n_priority_cells,n_shifted,shifted_km2,shifted_predictors,mean_delta_c,priority_mean_delta_c,min_delta_c
+greening,canopy_shift,0.2,1,[0],2790,2767,27.67,"['NDVI', 'NDBI', 'built_fraction']",-0.03485394326158202,-0.8437721114652952,-2.2992577274467862

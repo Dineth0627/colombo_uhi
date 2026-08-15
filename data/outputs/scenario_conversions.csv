@@ -1,0 +1,5 @@
+year,scheme,scenario,label,canopy_increase_fraction,target_class,paint_as_class,grouped,n_priority_cells,n_eligible,n_converted
+2030,ungrouped,business_as_usual,Business as usual,0.0,,,False,2790,0,0
+2030,ungrouped,greening,Greening,0.2,1.0,1.0,False,2790,5,1
+2036,ungrouped,business_as_usual,Business as usual,0.0,,,False,2790,0,0
+2036,ungrouped,greening,Greening,0.2,1.0,1.0,False,2790,5,1

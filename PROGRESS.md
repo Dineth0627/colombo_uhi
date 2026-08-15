@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-15 (Phase 6 **run 5: runs end to end; greening lever rebuilt in predictor space** — 1092 tests pass, awaiting run 6)_
+_Last updated: 2026-08-15 (Phase 6 **SIGNED OFF** — Colab run 6, all checks closed, 92 output files. 1093 tests pass)_
 
 ## Status snapshot
 
@@ -12,9 +12,116 @@ _Last updated: 2026-08-15 (Phase 6 **run 5: runs end to end; greening lever rebu
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
-| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 5: runs END TO END; greening lever rebuilt.** Track A validated (held-out RMSE **1.13 °C**, R² **0.894**, 212 blocks); its fitted surface exports. Track B a settled negative result — nothing beats a no-change map across 2 schemes × 2 intervals, and 4 years is the longest step Dynamic World supports. **S4 inconclusive** (gap −0.002 vs a spread of 0.040 over 5 repeats), **S6** GHSL 39.7 km² vs CA 355.0 (definitional), **S7** 0.09 % extrapolation. Greening converted **1 cell** because grass+shrub+bare is 0.63 % of the district — the lever now shifts predictors toward the observed canopy centroid instead, on the observed baseline, where it validates and exports. 1092 tests pass, 15 skip |
+| 6 | Scenario projection (RF + CA-Markov) | ✅ **done + Colab-verified (runs 1–6).** Track A validated: held-out RMSE **1.13 °C**, R² **0.894** on 212 blocks, led by NDBI / built fraction / LCZ. Track B a measured **negative result**: reproduces the quantity of land-cover change, cannot allocate it, never beats a no-change map across 2 schemes × 2 intervals. Greening counterfactual **−0.84 °C** mean inside priority zones at a 20 % canopy shift, validated and exported. 1093 tests pass, 15 skip |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 6 (2026-08-15) — ✅ PHASE 6 COMPLETE. The greening lever bites; every guard held
+
+Every cell executed, zero errors, 92 files bundled. The one thing run 5 could not deliver
+now works, and the export split held exactly as designed.
+
+#### S11 closed — the canopy shift produces a real, validated result
+
+```
+method               canopy_shift
+fraction             0.2
+n_priority_cells     2790
+n_shifted            2767          (27.67 km2)
+mean shift applied   NDVI +0.0891   NDBI -0.0717   built_fraction -0.0891
+extrapolation        0.15 % of cells outside the training envelope (within tolerance)
+PASS: the greening counterfactual is validated and may be exported.
+```
+
+| | ΔLST |
+|---|---|
+| Mean across the district | **−0.035 °C** |
+| **Mean inside priority zones** | **−0.844 °C** |
+| Strongest cooling | **−2.299 °C** |
+
+**2,767 cells shifted against run 5's one.** The sign is right, the magnitude is
+plausible for a 20 % shift in surface character, and the effect is confined to the treated
+zones — the district-wide mean is small precisely because only 27.7 km² of 689 was treated.
+
+The ten most-cooled divisions all cool by 0.97–1.19 °C, and all ten are flagged priority.
+`greening_counterfactual_by_gn.csv` carries the per-division table.
+
+#### The export split held
+
+```
+Wrote the greening counterfactual rasters (Track A only, validated).
+*** NO projected land-cover raster written. The projection did not
+*** beat a no-change map, so there is no validated product to export.
+```
+
+Written: `greening_counterfactual_{baseline,greened,delta}.tif`, the per-division CSV, and
+both figures. Refused: every `lulc_projected_*.tif`. Track A's Earth Engine fitted surface
+exported as usual. That is the whole guard design working in one cell.
+
+#### One wording fix
+
+`build_scenario_difference_figure` stamped "A DIFFERENCE OF TWO PROJECTIONS carries both
+projections' uncertainty" on the greening map. True of the 2030/2036 maps, wrong here: this
+is a counterfactual minus its observed baseline, both from the same forest. The footer is
+now kind-aware and says so, with a test.
+
+#### Final S-item status
+
+| # | Answer |
+|---|---|
+| S1 | `explain()` → `['importance', 'numberOfTrees', 'outOfBagErrorEstimate', 'trees']`; band `LST_C_projected` |
+| S2 | Dynamic World 2018 99.98 %, 2021 100 %, 2024 99.85 %; 2016 = 56.2 %, excluded |
+| S3 | Blocked CV RMSE 1.262 °C (1.131–1.431), R² 0.843 (0.761–0.887); held out **1.132 / 0.894** on 212 blocks |
+| S4 | **Inconclusive** — gap −0.002 against a spread of 0.040 over 5 repeats. Not evidence leakage is absent |
+| S5 | **Negative result.** Nothing beats a no-change map, across 2 schemes × 2 intervals |
+| S6 | GHSL 39.7 km² vs CA 355.0, 54.1 % agreement — definitional |
+| S7 | 0.09 % of projected pixels outside the training envelope |
+| S8 | MOLUSCE — **not run**. Optional; the phase signs off without it |
+| S9 | Grouping moves the figure of merit by 0.0007. Not the explanation, and it decides nothing |
+| S10 | A 4-year step raises the figure of merit **34×**, and 4 years is the longest the record supports |
+| S11 | **−0.844 °C mean inside priority zones** at a 20 % canopy shift, 0.15 % extrapolation, validated and exported |
+
+---
+
+## PHASE 6 — what it delivers
+
+**Track A — a validated present-day LST model.** Held-out RMSE **1.13 °C**, R² **0.894**
+across 212 spatial blocks of 2 km, led by NDBI (0.094), built fraction (0.093) and LCZ class
+(0.086). Elevation is fifth (0.021) and distance-to-coast last (0.013) — an urban-surface
+model, not a regional gradient. Its fitted surface exports.
+
+**Track B — a measured negative result.** A Markov-CA on Dynamic World reproduces the
+*quantity* of land-cover change over Colombo (disagreement 0.003–0.032) and cannot
+*allocate* it (0.059–0.071), never beating a no-change map across two class schemes and both
+calibration intervals the ten-year record supports. Interval length is the dominant control
+(FoM 0.002 at 3 years, 0.074 at 4); classifier churn is not the explanation (grouping moves
+it 0.0007). No projected land-cover product was exported, and the guard is why.
+
+**Deliverable 3's quantitative half — a validated greening counterfactual.** A 20 % shift of
+surface character toward the observed canopy centroid, across 27.7 km² of priority zones,
+implies **−0.84 °C** mean inside those zones. It rests on Track A alone.
+
+### Caveats that travel into Phase 7
+
+1. **Nothing here is a forecast.** Every product is conditional, and every figure says so.
+2. **The forest has never seen time** — space-for-time substitution — and cannot extrapolate.
+3. **The land-cover projection has no demonstrated allocation skill.** Anything Phase 7
+   builds on a projected map inherits that. The Markov *quantity* projection is the part
+   that held up.
+4. **At 100 m Dynamic World sees Colombo as trees-or-built** — grass, shrub and bare are
+   0.63 % of the district. Any greening rule that needs a vacant-land reservoir will find
+   none.
+5. **The greening result assumes the planting happens.** Priority zones are a Phase-5 interim
+   proxy ranked on *outcome*, not feasibility; Phase 7's MCDA is where ownership, existing
+   use and plantable area enter. `canopy_shift_predictors` takes a plain mask, so swapping
+   the ranking in needs no scenario-code change.
+6. **α is a lever, not a measurement.** 20 % of surface character is not 20 % canopy cover,
+   and the report must state the value used.
+7. **Division means are a property of that aggregation** (`caveats.zonal_not_pixel`).
+
+**1093 tests pass locally, 15 skip.**
+
+---
 
 ### Colab run 5 (2026-08-15) — PHASE 6 RUNS END TO END. The greening lever was the wrong instrument
 
