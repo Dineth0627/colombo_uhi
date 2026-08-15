@@ -73,6 +73,8 @@ NOTEBOOK_CELLS: tuple[str, ...] = (
     "cell33",  # priority zones
     "cell34",  # scenarios
     "cell36",  # class-conditional profile + extrapolation
+    "cell36b",  # Step 12a: greening on the observed baseline (validated, exports)
+    "cell36c",  # Step 12a figures + per-division table
     "cell37",  # validation reports + projected figures
     "cell38",  # per-division summary
     "cell41",  # MOLUSCE reconciliation (absent -> skip path)
@@ -111,6 +113,15 @@ def _fake_geo_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         def read(self, index: int, masked: bool = False) -> Any:
             data = np.random.default_rng(index).random((ROWS, COLS))
             return np.ma.masked_invalid(data) if masked else data
+
+        # Writing is a no-op: this test is about the notebook's wiring, not
+        # about GDAL. That the guarded writers are REACHED, with a passing
+        # report, is what matters - and the WRITTEN list records it.
+        def write(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def update_tags(self, *args: Any, **kwargs: Any) -> None:
+            return None
 
     def _rasterize(shapes, out_shape, transform=None, fill=-1, dtype="int32"):
         out = np.full(out_shape, fill, dtype=dtype)
@@ -306,6 +317,24 @@ def test_every_part_2_notebook_cell_executes(
     assert "LULC_VALIDATED" in namespace, "Step 9 never set the validation flag"
     assert "SURFACES" in namespace and namespace["SURFACES"], (
         "Step 12 produced no projected surfaces"
+    )
+    # Run 5's finding: the class-flip lever converted ONE cell, because grass,
+    # shrub and bare are 0.63% of the district. The canopy shift must actually
+    # move something, or deliverable 3 is a no-op again.
+    assert namespace["CANOPY_REPORT"]["n_shifted"] > 0, (
+        "Step 12a shifted no cells - the greening lever does not bite"
+    )
+    assert namespace["GREENING_VALIDATED"], (
+        "the greening counterfactual rests on Track A alone and must validate"
+    )
+    # ...and being validated, it must actually reach the guarded writer, while
+    # the CA-dependent products do not.
+    written = namespace.get("WRITTEN", [])
+    assert any("greening_counterfactual" in path for path in written), (
+        f"the greening counterfactual was not written; WRITTEN holds {written}"
+    )
+    assert not any("lulc_projected" in path for path in written), (
+        "a land-cover projection was written despite failing validation"
     )
     assert (tmp_path / "figures").glob("*.png"), "no figures were written"
 

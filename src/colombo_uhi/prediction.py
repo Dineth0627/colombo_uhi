@@ -142,6 +142,7 @@ RANDOM_SPLIT = "random"
 #: Product kinds :func:`require_validated` knows how to gate.
 PRODUCT_KINDS: tuple[str, ...] = (
     "lst_fit",
+    "lst_scenario",
     "lst_projection",
     "lulc_projection",
 )
@@ -152,8 +153,14 @@ PRODUCT_KINDS: tuple[str, ...] = (
 #: inherits that projection's Kappa - it is not "a regression product" that can
 #: ship regression metrics alone. A present-day fitted surface involves no CA
 #: and therefore has no Kappa to report.
+#: A ``lst_scenario`` is a **counterfactual on observed predictors** - "what if
+#: these zones were greened today" - so no land-cover projection is involved and
+#: there is no Kappa to inherit. It is validated by the regression metrics of the
+#: forest that produced it, and nothing else. That is what lets a greening result
+#: export while the 2030/2036 horizons, which do rest on the CA, cannot.
 REQUIRED_METRICS: dict[str, tuple[str, ...]] = {
     "lst_fit": ("rmse", "r2"),
+    "lst_scenario": ("rmse", "r2"),
     "lst_projection": ("rmse", "r2", "kappa"),
     "lulc_projection": ("kappa",),
 }
@@ -2278,6 +2285,141 @@ def apply_greening_scenario(
     return out, report
 
 
+def canopy_shift_predictors(
+    arrays: Mapping[str, "np.ndarray"],
+    labels: "np.ndarray",
+    priority_mask: "np.ndarray",
+    class_profile: "pd.DataFrame",
+    params: dict[str, Any],
+    scenario: str = "greening",
+    predictors: Sequence[str] | None = None,
+    fraction: float | None = None,
+) -> tuple[dict[str, "np.ndarray"], dict[str, Any]]:
+    """Green the priority zones by moving predictors toward the canopy centroid.
+
+    Colab run 5 measured why this exists. Colombo District's observed 2024 land
+    cover, at 100 m modal Dynamic World, is **51.5 % built and 43.8 % trees**;
+    grass, shrub and bare together are **0.63 %** - 4.4 km² district-wide, and
+    five cells inside the priority zones. The class-flip lever
+    (:func:`apply_greening_scenario`) converted **one cell**, and the scenario
+    difference map read −0.000 °C.
+
+    That is a finding about the city, not a bug, and it says the instrument was
+    wrong. Real urban greening does not flip a hectare from "built" to "trees";
+    it raises canopy *within* cells that stay built - street trees, courtyards,
+    roof gardens - which in predictor terms is a higher NDVI and a lower NDBI,
+    not a different class.
+
+    So each priority cell is moved a fraction ``alpha`` along the straight line
+    from **its own class centroid** to the **canopy class centroid**::
+
+        new = (1 - alpha) * observed + alpha * canopy_centroid
+
+    .. note::
+        A convex combination of two *observed* centroids is the point. These
+        predictors cannot be moved independently and mean anything - Phase 5
+        measured VIF 28.4 for NDBI - and a random forest handed an off-manifold
+        combination returns a confident number about a surface it has never
+        seen. Interpolating between two real class signatures keeps the question
+        inside the training envelope, which
+        :func:`extrapolation_flags` then confirms rather than assumes.
+
+    Args:
+        arrays: Observed predictor rasters, keyed by name.
+        labels: 2-D class-code array on the same grid.
+        priority_mask: Boolean array, ``True`` inside a priority zone.
+        class_profile: Output of :func:`class_conditional_predictors`, carrying
+            the per-class centroid of each predictor.
+        params: Parsed params mapping.
+        scenario: Scenario key from ``prediction.scenarios``.
+        predictors: Which predictors to shift; defaults to those the profile
+            carries. Static predictors are passed through untouched.
+        fraction: Override for the scenario's ``canopy_increase_fraction``.
+
+    Returns:
+        ``(new_arrays, report)``. Every predictor in ``arrays`` is present in
+        ``new_arrays``; those not shifted are passed through unchanged. The
+        report carries ``scenario``, ``fraction``, ``canopy_class``,
+        ``n_priority_cells``, ``n_shifted``, ``shifted_km2`` and a
+        ``by_predictor`` mapping of the mean shift applied.
+
+    Raises:
+        ValueError: If the grids disagree, the canopy class is absent from the
+            profile, or the fraction is outside ``[0, 1]``.
+    """
+    import numpy as np  # Deferred: see module docstring.
+
+    grid = np.asarray(labels)
+    mask = np.asarray(priority_mask, dtype=bool)
+    if grid.ndim != 2:
+        raise ValueError(f"labels must be 2-D, got shape {grid.shape}")
+    if mask.shape != grid.shape:
+        raise ValueError(
+            f"priority_mask has shape {mask.shape}, expected {grid.shape}"
+        )
+
+    cfg = dict(params["prediction"]["scenarios"][scenario])
+    alpha = float(
+        cfg.get("canopy_increase_fraction", 0.0) if fraction is None else fraction
+    )
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(
+            f"canopy_increase_fraction must be in [0, 1], got {alpha}"
+        )
+    canopy_class = int(cfg["canopy_class"])
+    excluded = [int(code) for code in cfg.get("exclude_classes", [])]
+
+    profile = class_profile.set_index("class_code")
+    if canopy_class not in profile.index:
+        raise ValueError(
+            f"the class profile has no canopy class {canopy_class}; it has "
+            f"{sorted(profile.index)}. Without its centroid there is nothing "
+            "to shift toward."
+        )
+    names = [
+        str(name) for name in (
+            predictors if predictors is not None
+            else [c for c in profile.columns if c not in ("n", "thin")]
+        )
+        if name in arrays
+    ]
+
+    eligible = mask & ~np.isin(grid, excluded) & (grid != canopy_class)
+    out = {name: np.asarray(values, dtype=float).copy()
+           for name, values in arrays.items()}
+    by_predictor: dict[str, float] = {}
+
+    if alpha > 0 and eligible.any():
+        for name in names:
+            target = float(profile.loc[canopy_class, name])
+            values = out[name]
+            before = values[eligible].copy()
+            # Shift toward the canopy centroid from each cell's OWN value, not
+            # from its class centroid: two built cells differ, and collapsing
+            # them onto one centroid first would erase real variation before
+            # adding the intervention.
+            values[eligible] = (1.0 - alpha) * before + alpha * target
+            by_predictor[name] = float(
+                np.nanmean(values[eligible] - before)
+            )
+    else:
+        by_predictor = {name: 0.0 for name in names}
+
+    scale = float(params["prediction"]["ca_markov"]["raster_scale_m"])
+    return out, {
+        "scenario": scenario,
+        "method": str(cfg.get("method", "canopy_shift")),
+        "fraction": alpha,
+        "canopy_class": canopy_class,
+        "excluded_classes": excluded,
+        "n_priority_cells": int(mask.sum()),
+        "n_shifted": int(eligible.sum()),
+        "shifted_km2": int(eligible.sum()) * scale * scale / 1e6,
+        "shifted_predictors": names,
+        "by_predictor": by_predictor,
+    }
+
+
 def class_conditional_predictors(
     frame: "pd.DataFrame",
     class_column: str,
@@ -4028,6 +4170,62 @@ def write_lulc_projection(
         {"count": 1, "dtype": "int16", "height": array.shape[0],
          "width": array.shape[1]}
     )
+    with rasterio.open(destination, "w", **out_profile) as handle:
+        handle.write(array, 1)
+        handle.update_tags(
+            framing=str(params["prediction"]["framing"]),
+            validation=str(dict(report or {}).get("metrics", {})),
+        )
+    return destination
+
+
+def write_surface(
+    surface: "np.ndarray",
+    profile: Mapping[str, Any],
+    path: str | Path,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None,
+    nodata: float = -9999.0,
+) -> Path:
+    """Write a continuous surface - **only** if it has been validated.
+
+    The float counterpart to :func:`write_lulc_projection`, for an LST surface
+    computed in numpy rather than exported from Earth Engine. This is what lets
+    the observed-baseline greening result reach disk: it rests on Track A alone,
+    so it passes the guard, while the 2030/2036 horizons do not.
+
+    Args:
+        surface: 2-D float array.
+        profile: Rasterio profile from :func:`read_predictor_raster`.
+        path: Output ``.tif`` path.
+        params: Parsed params mapping.
+        report: Output of :func:`build_validation_report`.
+        nodata: Fill for non-finite cells.
+
+    Returns:
+        The written path.
+
+    Raises:
+        ValidationMissing: If validation was never computed.
+        ValidationFailed: If it was computed and did not pass.
+    """
+    require_validated(report, params)
+
+    import numpy as np  # Deferred: see module docstring.
+    import rasterio
+
+    array = np.asarray(surface, dtype="float32")
+    if array.ndim != 2:
+        raise ValueError(f"surface must be 2-D, got shape {array.shape}")
+    array = np.where(np.isfinite(array), array, nodata).astype("float32")
+
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    out_profile = dict(profile)
+    out_profile.update({
+        "count": 1, "dtype": "float32", "nodata": nodata,
+        "height": array.shape[0], "width": array.shape[1],
+    })
     with rasterio.open(destination, "w", **out_profile) as handle:
         handle.write(array, 1)
         handle.update_tags(

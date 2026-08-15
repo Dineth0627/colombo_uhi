@@ -1801,15 +1801,58 @@ prediction:
       canopy_increase_fraction: 0.0   # the calibrated transition rates, unmodified
     greening:
       label: "Greening"
-      canopy_increase_fraction: 0.20  # convert this fraction of ELIGIBLE cells inside priority
-                                      # zones to the target class. Configurable: this is the
-                                      # scenario lever, and the report must state the value used.
+      canopy_increase_fraction: 0.20  # the scenario lever. Under method "canopy_shift" this is
+                                      # the fraction of each priority cell's SURFACE CHARACTER
+                                      # moved toward canopy; under "class_flip" it is the
+                                      # fraction of eligible CELLS converted outright. The
+                                      # report must state the value used either way.
+
+      # ---- The lever, and why it changed after Colab run 5 -------------------
+      # Run 5 measured Colombo District's observed 2024 land cover at 100 m
+      # modal Dynamic World:
+      #     Built  35,510 cells  355.1 km2  51.5 %
+      #     Trees  30,191        301.9      43.8 %
+      #     Crops     953          9.5       1.4 %
+      #     Water   1,797         18.0       2.6 %
+      #     Grass + shrub + bare  435 cells  4.4 km2  0.63 %
+      # The class-flip lever converts grass, shrub and bare. Those total 4.4 km2
+      # district-wide and FIVE cells inside the 2,790-cell priority zone, so it
+      # converted ONE cell and the difference map read -0.000 degC.
+      #
+      # That is a finding, not a bug: at 100 m modal classification this city is
+      # trees-or-built, with no vacant reservoir to plant on. And it says the
+      # instrument was wrong. Real urban greening does not flip a hectare from
+      # "built" to "trees"; it raises canopy WITHIN cells that stay built -
+      # street trees, courtyards, roof gardens - which in predictor terms means
+      # a higher NDVI and a lower NDBI, not a different class.
+      method: "canopy_shift"          # "canopy_shift" (predictor space) or "class_flip"
+      canopy_class: 1                 # trees: the observed class centroid to move TOWARD
+      exclude_classes: [0]            # water - there is nothing to plant on it
+                                      #
+                                      # canopy_shift moves each priority cell a fraction alpha
+                                      # along the straight line from its own class centroid to
+                                      # the canopy class centroid, in predictor space:
+                                      #     NDVI            0.526 -> 0.788
+                                      #     NDBI           -0.079 -> -0.309
+                                      #     built_fraction  0.280 ->  0.000   (built -> trees)
+                                      # A convex combination of two OBSERVED centroids stays
+                                      # inside the training envelope, so the random forest is
+                                      # being asked about a surface it has seen - which
+                                      # perturbing one correlated predictor alone would not be.
+                                      # Phase 5 measured VIF 28.4 for NDBI; these predictors
+                                      # cannot be moved independently and mean anything.
+      # ---- class_flip settings: retained, but not the active lever ----------
+      # Kept because Phase 7 may want a land-conversion scenario, and because
+      # the run-5 measurement above is only interpretable beside the rule that
+      # produced it.
       eligible_classes: [2, 5, 7]     # grass, shrub_and_scrub, bare -> plantable
       target_class: 1                 # trees
       protect_classes: [0, 6]         # never converted. Water for the same reason it is
-                                      # immutable; BUILT because converting built land to canopy
-                                      # is a demolition programme, not a greening programme, and
-                                      # modelling it silently would overstate what is achievable.
+                                      # immutable; BUILT because converting a whole 1 ha cell
+                                      # from built to trees is a demolition programme, not a
+                                      # greening programme. Note this does NOT constrain
+                                      # canopy_shift, which raises canopy WITHIN built cells and
+                                      # is the realistic intervention.
       grouped:                        # the same lever under ca_markov.class_grouping
         eligible_classes: [7]         # ONLY bare. Grass and shrub already count as "green" once
                                       # grouped, so the lever is genuinely WEAKER under this

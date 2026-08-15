@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-15 (Phase 6 **run 4: the guard now reports instead of crashing** — the notebook itself is under test; 1077 tests pass, awaiting run 5)_
+_Last updated: 2026-08-15 (Phase 6 **run 5: runs end to end; greening lever rebuilt in predictor space** — 1092 tests pass, awaiting run 6)_
 
 ## Status snapshot
 
@@ -12,9 +12,129 @@ _Last updated: 2026-08-15 (Phase 6 **run 4: the guard now reports instead of cra
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
-| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 4: the guard reports instead of crashing.** Track A validated (held-out RMSE **1.13 °C**, R² **0.894**, 212 blocks). Track B a settled negative result: nothing beats a no-change map across 2 schemes × 2 intervals; a 4-year step raises the figure of merit **34×** (0.002 → 0.074) and 4 years is the longest Dynamic World supports. Step 9 now reports a failed validation and **continues**; exports still hard-refuse. `tests/test_notebook06.py` executes the notebook's own cells — the third notebook-only bug reached Colab because the dry-run harness was a parallel copy. 1077 tests pass, 15 skip |
+| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 5: runs END TO END; greening lever rebuilt.** Track A validated (held-out RMSE **1.13 °C**, R² **0.894**, 212 blocks); its fitted surface exports. Track B a settled negative result — nothing beats a no-change map across 2 schemes × 2 intervals, and 4 years is the longest step Dynamic World supports. **S4 inconclusive** (gap −0.002 vs a spread of 0.040 over 5 repeats), **S6** GHSL 39.7 km² vs CA 355.0 (definitional), **S7** 0.09 % extrapolation. Greening converted **1 cell** because grass+shrub+bare is 0.63 % of the district — the lever now shifts predictors toward the observed canopy centroid instead, on the observed baseline, where it validates and exports. 1092 tests pass, 15 skip |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 5 (2026-08-15) — PHASE 6 RUNS END TO END. The greening lever was the wrong instrument
+
+Every cell executed, zero errors, and the bundle shipped 85 files. Every guard fired where
+it should. One substantive problem remains, and it is in the deliverable that was asked for.
+
+#### What the machinery did
+
+| check | result |
+|---|---|
+| Step 9 reports a failed validation and **continues** | ✅ |
+| `excluded as immutable` is a plausible water area | ✅ 2,873 / 1,960 cells (28.7 / 19.6 km²) |
+| Step 14 refuses every projection export, with the reason | ✅ |
+| Track A's fitted surface still exports | ✅ `lst_fitted_surface_district_2000_2025_100m_2020s` |
+| The guard refuses all four deliberately-bad reports | ✅ |
+| Bundle produced | ✅ 85 files |
+
+**S4 closed — inconclusive, and the code said so itself.** Over 5 repeated splits: blocked
+R² 0.858 ± 0.037, random 0.856 ± 0.016, gap **−0.002 against a combined spread of 0.040**.
+The notebook printed `THE GAP IS SMALLER THAN THE SPREAD IT IS DRAWN FROM` rather than
+letting either sign read as a finding. Run 2's −0.037 from a single pair of splits meant
+nothing, and this is the evidence for that.
+
+**S6 closed.** GHSL built-dominant 39.7 km² against the CA's 355.0, **54.1 % cell
+agreement**. Definitional, as expected: Dynamic World's "built" includes roads, paved
+surfaces and sparse settlement; GHSL's ≥ 50 % threshold is building footprint. Report it as
+a statement about the two products, not about the automaton.
+
+**S7 re-confirmed.** 0.09 % of projected pixels outside the training envelope.
+
+#### D15 — the greening lever had almost nothing to convert
+
+```
+scenario   n_priority_cells   n_eligible   n_converted
+greening              2,790            5             1
+```
+
+The difference map read **−0.000 °C**. Not a code fault — the base year:
+
+| class | cells | km² | share |
+|---|---|---|---|
+| Built | 35,510 | 355.1 | **51.5 %** |
+| Trees | 30,191 | 301.9 | **43.8 %** |
+| Crops | 953 | 9.5 | 1.4 % |
+| Water | 1,797 | 18.0 | 2.6 % |
+| **Grass + shrub + bare** | **435** | **4.4** | **0.63 %** |
+
+The lever converted grass, shrub and bare. Those total 4.4 km² district-wide and **five
+cells** inside the 2,790-cell priority zone, so `floor(0.2 × 5) = 1`.
+
+**This is a finding about Colombo, and it says the instrument was wrong.** At 100 m modal
+Dynamic World classification the district is trees-or-built, with no vacant reservoir to
+plant on. And real urban greening does not flip a hectare from "built" to "trees" — it
+raises canopy *within* cells that stay built: street trees, courtyards, roof gardens. In
+predictor terms that is a higher NDVI and a lower NDBI, **not a different class**.
+
+**Fix (decided with the user): move the lever into predictor space.**
+`prediction.canopy_shift_predictors` moves each priority cell a fraction α along the line
+from its own value toward the **observed canopy centroid**:
+
+```
+NDVI            0.526 -> 0.788
+NDBI           -0.079 -> -0.309     (built centroid -> trees centroid)
+built_fraction  0.280 ->  0.000
+```
+
+A convex combination of two *observed* centroids is the point. These predictors cannot be
+moved independently and mean anything — Phase 5 measured VIF 28.4 for NDBI — and a forest
+handed an off-manifold combination returns a confident number about a surface it has never
+seen. Interpolating between two real class signatures keeps the question inside the
+training envelope, and `extrapolation_flags` then confirms that rather than assuming it.
+
+On a synthetic district built from run 5's own class centroids, the shift acts on **every**
+built cell in the zone where the flip acted on one. A test pins that it bites where the flip
+did not, and that it never leaves the interval between the two centroids.
+
+#### And it runs on the observed baseline, so it exports
+
+Track B failed, so anything resting on the projected land cover cannot be exported. The
+greening counterfactual does not rest on it: it asks *what if these zones were greened
+today*, using the validated forest and the **observed** predictor raster. No cellular
+automaton is involved.
+
+That needed a new product kind. `lst_scenario` requires RMSE and R² and **no Kappa** —
+there is no land-cover projection to inherit one from — so it passes the guard and writes,
+while the 2030/2036 horizons stay stamped and unexported. `write_surface` is its guarded
+writer, the float counterpart to `write_lulc_projection`.
+
+New notebook Step 12a carries it: baseline surface, greened surface, ΔLST, a per-division
+table, two figures, and the export. The 2030/2036 scenarios remain as Step 12b, stamped.
+
+#### A note on process
+
+The scratchpad cell-builder for notebook 06 was destroyed mid-session: `io.open(path, "w")`
+truncates the file *before* it validates the `newline` argument, and an escaped `"\n"` is
+invalid. Nothing committed was lost — the notebook is the artefact and was intact — and the
+notebook is now edited directly. That is better anyway: the builder was a second copy of the
+notebook, exactly the kind of thing that produced three drift bugs in the first place.
+
+#### S-item status after run 5
+
+| # | Answer | Status |
+|---|---|---|
+| S1, S2, S3, S5, S9, S10 | closed in runs 1–4 | ✅ |
+| S4 | **inconclusive** — gap −0.002 against a spread of 0.040 over 5 repeats. Not evidence that leakage is absent; a larger `block_size_m` is the sensitivity if it matters | ✅ closed |
+| S6 | GHSL 39.7 km² vs CA 355.0, 54.1 % agreement. Definitional | ✅ closed |
+| S7 | 0.09 % outside the training envelope | ✅ closed |
+| S8 | MOLUSCE — still not run. The Python CA is now a known-negative baseline, which makes the comparison more informative, not less | ⬜ |
+| **S11** | **what ΔLST does the canopy shift produce, and does it stay inside the training envelope?** New after run 5 | ⬜ |
+
+#### Run 6
+
+**Part 1 can be skipped.** The one new thing to establish is Step 12a: a non-zero
+`n_shifted`, an extrapolation fraction still inside tolerance after the shift, a ΔLST with a
+plausible sign and magnitude, and the greening rasters actually written while every
+CA-dependent product is still refused.
+
+**1092 tests pass locally, 15 skip** (up from 1077/15: +15).
+
+---
 
 ### Colab run 4 (2026-08-15) — Step 9 continues through a failure; one stale key left
 

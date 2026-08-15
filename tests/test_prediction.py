@@ -2496,3 +2496,246 @@ def test_the_primary_interval_is_the_longest_the_record_supports(
         "try it before calling Track B settled"
     )
     assert target <= int(params["time"]["end_year"])
+
+
+# =============================================================================
+# Colab run 5: the greening lever
+# =============================================================================
+# Run 5 measured Colombo District's observed 2024 land cover at 100 m modal
+# Dynamic World: 51.5 % built, 43.8 % trees, and grass + shrub + bare together
+# 0.63 % - 4.4 km2 district-wide, five cells inside the priority zones. The
+# class-flip lever converted ONE cell and the difference map read -0.000 degC.
+#
+# That is a finding about the city, and it says the instrument was wrong: real
+# urban greening raises canopy WITHIN cells that stay built, which in predictor
+# terms is a higher NDVI and a lower NDBI, not a different class.
+
+
+@pytest.fixture()
+def canopy_profile() -> pd.DataFrame:
+    """Run 5's measured class centroids for Colombo District, 2024."""
+    return pd.DataFrame({
+        "class_code": [0, 1, 2, 4, 5, 6, 7],
+        "n": [1797, 30191, 226, 953, 187, 35510, 22],
+        "thin": [False] * 6 + [True],
+        "NDVI": [0.446839, 0.787641, 0.665567, 0.641991, 0.495514, 0.525701,
+                 0.271171],
+        "NDBI": [-0.252637, -0.308997, -0.147590, -0.197240, -0.045380,
+                 -0.078641, 0.002569],
+        "built_fraction": [0.0110, 0.0, 0.0, 0.0006, 0.0, 0.2802, 0.0302],
+    })
+
+
+def _canopy_grid(profile: pd.DataFrame) -> tuple[dict[str, Any], np.ndarray]:
+    labels = np.full((20, 30), 6, dtype=np.int16)
+    labels[:6] = 1      # trees
+    labels[18:] = 0     # water
+    centroid = profile.set_index("class_code")
+    arrays = {
+        name: np.array([[float(centroid.loc[int(code), name]) for code in row]
+                        for row in labels])
+        for name in ("NDVI", "NDBI", "built_fraction")
+    }
+    arrays["elevation_m"] = np.full(labels.shape, 12.0)
+    return arrays, labels
+
+
+def test_the_canopy_shift_moves_predictors_toward_the_canopy_centroid(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    priority = np.zeros(labels.shape, dtype=bool)
+    priority[6:18] = True  # the built band
+
+    shifted, report = prediction.canopy_shift_predictors(
+        arrays, labels, priority, canopy_profile, params
+    )
+    alpha = report["fraction"]
+    built = (labels == 6) & priority
+    canopy = canopy_profile.set_index("class_code")
+    for name in ("NDVI", "NDBI", "built_fraction"):
+        expected = (1 - alpha) * arrays[name][built] + alpha * float(
+            canopy.loc[1, name]
+        )
+        assert shifted[name][built] == pytest.approx(expected)
+
+
+def test_the_canopy_shift_stays_between_the_two_observed_centroids(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    # THE reason for a convex combination. These predictors cannot be moved
+    # independently and mean anything - Phase 5 measured VIF 28.4 for NDBI - and
+    # a forest handed an off-manifold combination returns a confident number
+    # about a surface it has never seen.
+    arrays, labels = _canopy_grid(canopy_profile)
+    shifted, _ = prediction.canopy_shift_predictors(
+        arrays, labels, np.ones(labels.shape, dtype=bool), canopy_profile, params
+    )
+    canopy = canopy_profile.set_index("class_code")
+    built = labels == 6
+    for name in ("NDVI", "NDBI", "built_fraction"):
+        low = min(float(canopy.loc[6, name]), float(canopy.loc[1, name]))
+        high = max(float(canopy.loc[6, name]), float(canopy.loc[1, name]))
+        assert (shifted[name][built] >= low - 1e-9).all()
+        assert (shifted[name][built] <= high + 1e-9).all()
+
+
+def test_the_canopy_shift_bites_where_the_class_flip_did_not(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    # Run 5: the class flip found 5 eligible cells and converted 1. The shift
+    # acts on every non-water, non-canopy cell in the zone.
+    arrays, labels = _canopy_grid(canopy_profile)
+    priority = np.zeros(labels.shape, dtype=bool)
+    priority[6:18] = True
+
+    _, report = prediction.canopy_shift_predictors(
+        arrays, labels, priority, canopy_profile, params
+    )
+    _, flip_report = prediction.apply_greening_scenario(
+        labels, priority, params, "greening"
+    )
+    assert report["n_shifted"] > flip_report["n_converted"]
+    assert report["n_shifted"] == int(((labels == 6) & priority).sum())
+
+
+def test_the_canopy_shift_leaves_excluded_classes_alone(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    shifted, _ = prediction.canopy_shift_predictors(
+        arrays, labels, np.ones(labels.shape, dtype=bool), canopy_profile, params
+    )
+    water = labels == 0
+    for name in ("NDVI", "NDBI", "built_fraction"):
+        assert shifted[name][water] == pytest.approx(arrays[name][water])
+
+
+def test_the_canopy_shift_leaves_static_predictors_alone(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    shifted, _ = prediction.canopy_shift_predictors(
+        arrays, labels, np.ones(labels.shape, dtype=bool), canopy_profile, params
+    )
+    assert np.array_equal(shifted["elevation_m"], arrays["elevation_m"])
+
+
+def test_the_canopy_shift_leaves_cells_outside_the_priority_zones_alone(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    priority = np.zeros(labels.shape, dtype=bool)
+    priority[6:12] = True
+    shifted, _ = prediction.canopy_shift_predictors(
+        arrays, labels, priority, canopy_profile, params
+    )
+    assert shifted["NDVI"][~priority] == pytest.approx(arrays["NDVI"][~priority])
+
+
+def test_a_zero_fraction_changes_nothing(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    shifted, report = prediction.canopy_shift_predictors(
+        arrays, labels, np.ones(labels.shape, dtype=bool), canopy_profile,
+        params, fraction=0.0,
+    )
+    assert report["fraction"] == 0.0
+    for name, values in arrays.items():
+        assert shifted[name] == pytest.approx(values)
+
+
+def test_a_full_shift_lands_on_the_canopy_centroid(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    shifted, _ = prediction.canopy_shift_predictors(
+        arrays, labels, np.ones(labels.shape, dtype=bool), canopy_profile,
+        params, fraction=1.0,
+    )
+    canopy = canopy_profile.set_index("class_code")
+    built = labels == 6
+    for name in ("NDVI", "NDBI", "built_fraction"):
+        assert shifted[name][built] == pytest.approx(float(canopy.loc[1, name]))
+
+
+def test_the_canopy_shift_rejects_a_fraction_outside_the_unit_interval(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    with pytest.raises(ValueError, match="canopy_increase_fraction"):
+        prediction.canopy_shift_predictors(
+            arrays, labels, np.ones(labels.shape, dtype=bool), canopy_profile,
+            params, fraction=1.5,
+        )
+
+
+def test_the_canopy_shift_rejects_a_profile_without_the_canopy_class(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    thin = canopy_profile[canopy_profile["class_code"] != 1]
+    with pytest.raises(ValueError, match="no canopy class"):
+        prediction.canopy_shift_predictors(
+            arrays, labels, np.ones(labels.shape, dtype=bool), thin, params
+        )
+
+
+def test_the_canopy_shift_rejects_a_mismatched_priority_mask(
+    params: dict[str, Any], canopy_profile: pd.DataFrame
+) -> None:
+    arrays, labels = _canopy_grid(canopy_profile)
+    with pytest.raises(ValueError, match="priority_mask"):
+        prediction.canopy_shift_predictors(
+            arrays, labels, np.ones((3, 3), dtype=bool), canopy_profile, params
+        )
+
+
+# --- the scenario product kind -----------------------------------------------
+
+
+def test_a_scenario_product_needs_no_land_cover_kappa(
+    params: dict[str, Any]
+) -> None:
+    # A counterfactual on OBSERVED predictors involves no land-cover projection,
+    # so there is no Kappa to inherit. This is what lets a greening result
+    # export while the 2030/2036 horizons cannot.
+    assert set(prediction.REQUIRED_METRICS["lst_scenario"]) == {"rmse", "r2"}
+    report = prediction.build_validation_report(
+        "lst_scenario", {"rmse": 1.13, "r2": 0.894}, params, held_out=True
+    )
+    assert prediction.require_validated(report, params)["kind"] == "lst_scenario"
+
+
+def test_a_scenario_product_is_still_held_to_the_blocked_split(
+    params: dict[str, Any]
+) -> None:
+    report = prediction.build_validation_report(
+        "lst_scenario", {"rmse": 1.13, "r2": 0.894}, params, held_out=False
+    )
+    with pytest.raises(prediction.ValidationFailed, match="held-out"):
+        prediction.require_validated(report, params)
+
+
+def test_a_scenario_product_is_still_held_to_the_extrapolation_limit(
+    params: dict[str, Any]
+) -> None:
+    # The canopy shift MOVES predictors, so this is the check that matters most
+    # for it: a shift large enough to leave the training envelope must refuse.
+    report = prediction.build_validation_report(
+        "lst_scenario", {"rmse": 1.13, "r2": 0.894}, params, held_out=True,
+        extrapolation={"fraction": 0.4, "tolerance": 0.05,
+                       "within_tolerance": False},
+    )
+    with pytest.raises(prediction.ValidationFailed, match="extrapolate"):
+        prediction.require_validated(report, params)
+
+
+def test_writing_a_surface_refuses_an_unvalidated_product(
+    params: dict[str, Any], tmp_path: Any
+) -> None:
+    destination = tmp_path / "must_not_exist.tif"
+    with pytest.raises(prediction.ValidationMissing):
+        prediction.write_surface(np.zeros((2, 2)), {}, destination, params, None)
+    assert not destination.exists()
