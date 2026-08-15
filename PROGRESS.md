@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-15 (Phase 6 **run 3: Track A validated, Track B settled as a negative result** — 1075 tests pass, awaiting run 4)_
+_Last updated: 2026-08-15 (Phase 6 **run 4: the guard now reports instead of crashing** — the notebook itself is under test; 1077 tests pass, awaiting run 5)_
 
 ## Status snapshot
 
@@ -12,9 +12,105 @@ _Last updated: 2026-08-15 (Phase 6 **run 3: Track A validated, Track B settled a
 | 3 | UHI metrics (SUHII, UTFVI) | ✅ **done + Colab-verified** (runs 7–9) |
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
-| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 3: Track A VALIDATED, Track B settled as a NEGATIVE RESULT.** Track A: held-out RMSE **1.13 °C**, R² **0.894** on 212 spatial blocks, led by NDBI / built fraction / LCZ. Track B: a Markov-CA on Dynamic World reproduces the *quantity* of change (disagreement 0.003–0.032) and cannot *allocate* it (0.059–0.071), never beating a no-change map across 2 schemes × 2 intervals. A 4-year step raises the figure of merit **34×** (0.002 → 0.074) and 4 years is the longest Dynamic World supports, so the result is settled. Guard now distinguishes a measured failure from an absent one. 1075 tests pass, 15 skip |
+| 6 | Scenario projection (RF + CA-Markov) | 🟡 **run 4: the guard reports instead of crashing.** Track A validated (held-out RMSE **1.13 °C**, R² **0.894**, 212 blocks). Track B a settled negative result: nothing beats a no-change map across 2 schemes × 2 intervals; a 4-year step raises the figure of merit **34×** (0.002 → 0.074) and 4 years is the longest Dynamic World supports. Step 9 now reports a failed validation and **continues**; exports still hard-refuse. `tests/test_notebook06.py` executes the notebook's own cells — the third notebook-only bug reached Colab because the dry-run harness was a parallel copy. 1077 tests pass, 15 skip |
 | 7 | Greening priority (MCDA/AHP) | ⬜ |
 | 8 | Report figures | ⬜ |
+
+### Colab run 4 (2026-08-15) — Step 9 continues through a failure; one stale key left
+
+Every run-3 fix landed. Step 9 now reports a failure and **carries on**, which is what
+run 3 could not do. It then stopped at Step 10 on a `KeyError` I left behind.
+
+#### What worked
+
+**The assess-and-continue split.** Step 9 printed the four-row sensitivity, the boxed
+verdict, and continued:
+
+```
+========================================================================
+*** FAILED VALIDATION: Kappa 0.810 does not beat its no-change baseline of 0.844
+========================================================================
+This is a MEASURED NEGATIVE RESULT, not a crash. The notebook continues so it can
+be documented ...
+Wrote figures/lulc_validation_2025.png
+```
+
+**The exclusion count is honest now.** `2,873 excluded as immutable` on the 4-year
+interval and `1,960` on the 3-year — 28.7 and 19.6 km² of water in a 689 km² district.
+Run 3 reported 58,366, because nodata was reading as class 0 and the count spanned the
+whole raster.
+
+**The 4-year interval leads**, and the numbers reproduce run 3's exactly.
+
+| calibrate | step | scheme | FoM | κ above null |
+|---|---|---|---|---|
+| 2017–2021 → 2025 | 4 yr | ungrouped | 0.0740 | −0.0344 |
+| 2017–2021 → 2025 | 4 yr | grouped | 0.0789 | −0.0346 |
+| 2018–2021 → 2024 | 3 yr | ungrouped | 0.0022 | −0.0010 |
+| 2018–2021 → 2024 | 3 yr | grouped | 0.0029 | −0.0010 |
+
+#### D14 — a stale key in Step 10
+
+```
+KeyError: 'ungrouped'
+    _recode = VALIDATION[PROJECTION_SCHEME]["recode"]
+```
+
+Run 3 re-keyed `VALIDATION` from `scheme` to the `(early, late, target, scheme)` tuple and
+introduced `PRIMARY`. Step 9's four uses were updated; Step 10's one use was not. One line.
+
+#### The real problem: the dry-run harness was a parallel copy
+
+This is the **third** notebook-only bug to reach Colab, and all three are the same shape:
+
+| run | failure | cause |
+|---|---|---|
+| 2 | `NameError` | Step 12 still used `KAPPA` / `NULL_KAPPA` / `FOM` after Step 9 was rewritten around `LULC_METRICS` |
+| 2 | wrong result | Step 10 never passed `grouped=`, so grass and shrub became identity rows and the areas table was mislabelled |
+| 4 | `KeyError` | Step 10 still keyed `VALIDATION` by scheme |
+
+None was reachable by a unit test of `prediction.py` — every function involved was correct.
+And none was reachable by the local harness either, because the harness was a **hand-written
+parallel copy** of the notebook that I kept writing correctly while the notebook drifted.
+
+**`tests/test_notebook06.py` replaces it.** It loads `notebooks/06_prediction.ipynb` and
+executes the real Part 2 and Part 3 cells, verbatim, in one namespace. Faked: `rasterio`
+and `geopandas` (absent locally, and forced even where present so the test behaves
+identically everywhere), the four `prediction.read_*` functions, the files they look for,
+and the area check that is calibrated to the real district. Everything else is the
+notebook's own code.
+
+Verified by re-introducing the run-4 bug into a scratch copy: `cell31: KeyError: 'ungrouped'`,
+exit code 1. It would have caught all three.
+
+A second test pins the run-3 lesson structurally: Step 9 must call `assess_validation` and
+must **not** call `require_validated`, checked on the AST rather than on a substring.
+
+One trap worth recording: registering the fake modules with a bare `sys.modules` assignment
+leaked into the rest of the session and turned every other module's
+`importorskip("rasterio")` into a false positive — 12 tests in `test_trends.py` failed on
+the real rasterio API being absent from the fake. `monkeypatch.setitem` scopes it.
+
+#### S-item status after run 4
+
+| # | Answer | Status |
+|---|---|---|
+| S1, S2, S3, S5, S7, S9, S10 | closed in runs 1–3 | ✅ |
+| S4 | `compare_split_strategies(n_repeats=5)` is in the notebook; not reached in run 4 | 🔄 run 5 |
+| S6 | GHSL cross-check not reached | 🔄 run 5 |
+| S8 | MOLUSCE — not reached | ⬜ |
+
+#### Run 5
+
+**Part 1 can be skipped** — nothing about the exports changed. Steps 10–14 have never run
+end to end in Colab, so that is what run 5 establishes: projected areas, priority zones, a
+non-zero greening conversion count, the extrapolation check (S7 re-confirmed), the GHSL
+cross-check (S6), the guard's deliberate negative test, and the bundle.
+
+**1077 tests pass locally, 15 skip** (up from 1075/15: +2, and the suite now runs the
+notebook itself).
+
+---
 
 ### Colab run 3 (2026-08-14) — both run-2 fixes hold; Track B settles as a negative result
 
