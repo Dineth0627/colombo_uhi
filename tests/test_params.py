@@ -1202,3 +1202,428 @@ def test_validation_interval_years_are_within_dynamic_world_coverage(
     start = int(params["datasets"]["dynamic_world"]["availability"][0][:4])
     for triplet in params["prediction"]["ca_markov"]["validation_intervals"]:
         assert all(int(year) > start for year in triplet), triplet
+
+
+# =============================================================================
+# Phase 7 - greening priority (MCDA / AHP)
+# =============================================================================
+# These tests deliberately DO NOT import colombo_uhi.greening. The AHP weights
+# in params are a regression pin, and a pin checked with the same code that
+# produced it is not a pin. The eigenvector is recomputed here from numpy alone.
+
+
+def _greening_pairwise_matrix(params: dict[str, Any]) -> tuple[Any, list[str]]:
+    """Rebuild the AHP matrix from params using numpy only, for the pins below."""
+    import numpy as np
+
+    names = [str(entry["name"]) for entry in params["greening"]["criteria"]]
+    index = {name: position for position, name in enumerate(names)}
+    matrix = np.ones((len(names), len(names)), dtype=float)
+    for pair, value in params["greening"]["ahp"]["pairwise"].items():
+        left, right = str(pair).split("__")
+        matrix[index[left], index[right]] = float(value)
+        matrix[index[right], index[left]] = 1.0 / float(value)
+    return matrix, names
+
+
+def _greening_eigen(params: dict[str, Any]) -> tuple[Any, list[str], float]:
+    """Principal eigenvector and lambda_max, via numpy.linalg.eig only."""
+    import numpy as np
+
+    matrix, names = _greening_pairwise_matrix(params)
+    values, vectors = np.linalg.eig(matrix)
+    dominant = int(np.argmax(values.real))
+    weights = np.abs(vectors[:, dominant].real)
+    weights = weights / weights.sum()
+    lambda_max = float(np.mean((matrix @ weights) / weights))
+    return weights, names, lambda_max
+
+
+def test_greening_required_subsections(params: dict[str, Any]) -> None:
+    greening = params["greening"]
+    for key in (
+        "method",
+        "level",
+        "levels",
+        "epoch",
+        "source",
+        "sensitivity_source",
+        "scale_m",
+        "criteria",
+        "ahp",
+        "normalisation",
+        "topsis",
+        "comparison",
+        "ablation",
+        "rule_3_30_300",
+        "wetland",
+        "top_n",
+        "outputs",
+        "palettes",
+        "criteria_weights",
+    ):
+        assert key in greening, f"greening.{key} missing"
+
+
+def test_greening_criteria_are_the_five_requested(params: dict[str, Any]) -> None:
+    names = [entry["name"] for entry in params["greening"]["criteria"]]
+    assert names == [
+        "lst_hot",
+        "utfvi_severe_share",
+        "ndvi_deficit",
+        "pop_density",
+        "green_access_deficit",
+    ]
+    assert len(set(names)) == len(names)
+
+
+def test_every_criterion_has_a_direction_and_a_column(params: dict[str, Any]) -> None:
+    for entry in params["greening"]["criteria"]:
+        assert entry["direction"] in ("benefit", "cost"), entry
+        assert isinstance(entry["column"], str) and entry["column"]
+        assert isinstance(entry["label"], str) and entry["label"]
+        assert isinstance(entry["provenance"], str) and entry["provenance"]
+
+
+def test_the_utfvi_criterion_is_a_share_not_a_zone_mean(params: dict[str, Any]) -> None:
+    # rho(LST_C 2020s, ZONE-MEAN UTFVI) = +1.000000 exactly, because UTFVI is
+    # (Ts - Tmean)/Tmean with a SCALAR Tmean: a zone mean is an affine transform
+    # of a zone-mean LST. Using it as a second criterion would give heat its
+    # weight twice and nothing would look wrong.
+    entry = next(
+        c for c in params["greening"]["criteria"] if c["name"] == "utfvi_severe_share"
+    )
+    assert entry["column"] == "utfvi_severe_share"
+    assert entry["severe_labels"] == ["Bad", "Worse", "Worst"]
+    labels = params["uhi"]["utfvi"]["labels"]
+    for label in entry["severe_labels"]:
+        assert label in labels, f"{label} is not a configured UTFVI class"
+
+
+def test_greening_pairwise_covers_exactly_the_unordered_criterion_pairs(
+    params: dict[str, Any],
+) -> None:
+    import itertools
+
+    names = [entry["name"] for entry in params["greening"]["criteria"]]
+    expected = {frozenset(pair) for pair in itertools.combinations(names, 2)}
+    given = [str(key).split("__") for key in params["greening"]["ahp"]["pairwise"]]
+    assert all(len(pair) == 2 for pair in given), given
+    assert len(given) == len(expected) == 10
+    assert {frozenset(pair) for pair in given} == expected
+
+
+def test_greening_pairwise_values_are_positive_and_saaty_scaled(
+    params: dict[str, Any],
+) -> None:
+    # Every judgement names the MORE important criterion first, so every value is
+    # >= 1 and each reciprocal is derived as exactly 1/value. That makes the
+    # matrix reciprocal by construction rather than by rounding.
+    for pair, value in params["greening"]["ahp"]["pairwise"].items():
+        assert 1 <= float(value) <= 9, f"{pair} = {value} is off the Saaty 1-9 scale"
+
+
+def test_greening_ahp_weights_reproduce_the_pinned_reference(
+    params: dict[str, Any],
+) -> None:
+    weights, names, _ = _greening_eigen(params)
+    reference = params["greening"]["ahp"]["derived_weights_reference"]
+    assert set(reference) == set(names)
+    for name, expected in reference.items():
+        actual = float(weights[names.index(name)])
+        assert actual == pytest.approx(float(expected), abs=5e-5), (
+            f"{name}: recomputed {actual:.6f} against pinned {expected}. The "
+            "pairwise judgements were edited; update derived_weights_reference "
+            "deliberately."
+        )
+
+
+def test_greening_ahp_consistency_reproduces_the_pinned_reference(
+    params: dict[str, Any],
+) -> None:
+    _, names, lambda_max = _greening_eigen(params)
+    size = len(names)
+    index = (lambda_max - size) / (size - 1)
+    random_index = float(params["greening"]["ahp"]["random_index"][size])
+    ratio = index / random_index
+
+    pinned = params["greening"]["ahp"]["derived_consistency"]
+    assert lambda_max == pytest.approx(pinned["lambda_max"], abs=5e-7)
+    assert index == pytest.approx(pinned["consistency_index"], abs=5e-7)
+    assert ratio == pytest.approx(pinned["consistency_ratio"], abs=5e-7)
+
+
+def test_the_shipped_judgements_are_consistent(params: dict[str, Any]) -> None:
+    ratio = float(params["greening"]["ahp"]["derived_consistency"]["consistency_ratio"])
+    maximum = float(params["greening"]["ahp"]["consistency_ratio_max"])
+    assert ratio <= maximum, (
+        f"the shipped pairwise matrix has CR {ratio:.4f} > {maximum}. It cannot "
+        "produce a priority table until the judgements are revised."
+    )
+
+
+def test_greening_ahp_weights_are_not_degenerate(params: dict[str, Any]) -> None:
+    # A matrix of all 1s is PERFECTLY consistent (CR = 0) and has said nothing.
+    # A CR near zero must never be readable as "the judgements were meaningful".
+    reference = params["greening"]["ahp"]["derived_weights_reference"]
+    spread = max(reference.values()) - min(reference.values())
+    assert spread >= float(params["greening"]["ahp"]["min_weight_spread"])
+
+
+def test_saaty_random_index_table(params: dict[str, Any]) -> None:
+    expected = {
+        1: 0.00,
+        2: 0.00,
+        3: 0.58,
+        4: 0.90,
+        5: 1.12,
+        6: 1.24,
+        7: 1.32,
+        8: 1.41,
+        9: 1.45,
+        10: 1.49,
+    }
+    assert params["greening"]["ahp"]["random_index"] == expected
+    assert params["greening"]["ahp"]["random_index_source"].strip()
+
+
+def test_greening_eigen_method_is_power_iteration(params: dict[str, Any]) -> None:
+    ahp = params["greening"]["ahp"]
+    assert ahp["eigen_method"] == "power_iteration"
+    assert ahp["power_iteration"]["max_iter"] >= 100
+    assert 0 < float(ahp["power_iteration"]["tol"]) < 1e-6
+
+
+def test_ahp_hierarchy_partitions_the_criteria(params: dict[str, Any]) -> None:
+    names = {entry["name"] for entry in params["greening"]["criteria"]}
+    grouped: list[str] = []
+    for members in params["greening"]["ahp"]["hierarchy"].values():
+        grouped.extend(members)
+    assert sorted(grouped) == sorted(names)
+    assert len(grouped) == len(set(grouped)), "a criterion sits in two groups"
+
+
+def test_greening_criteria_weights_stays_null(params: dict[str, Any]) -> None:
+    # Weights are DERIVED from ahp.pairwise and from nowhere else. A hand-set
+    # vector here would let the AHP be reverse-engineered from a desired answer,
+    # which is the method's commonest real-world abuse.
+    assert params["greening"]["criteria_weights"] is None
+
+
+def test_greening_normalisation_and_sensitivity(params: dict[str, Any]) -> None:
+    normalisation = params["greening"]["normalisation"]
+    assert normalisation["method"] in ("percentile_rank", "min_max", "z_score")
+    assert normalisation["method"] in normalisation["sensitivity"]
+    assert len(normalisation["sensitivity"]) >= 2, (
+        "[CLAUDE.md caveat 5] one normalisation is a single unqualified number"
+    )
+
+
+def test_greening_missing_data_policy(params: dict[str, Any]) -> None:
+    missing = params["greening"]["normalisation"]["missing"]
+    assert missing["policy"] in ("redistribute_and_flag", "insufficient")
+    assert 0 < float(missing["max_missing_weight"]) <= 1
+    assert int(missing["min_pixels"]) >= 1
+
+
+def test_the_land_coverage_floor_matches_the_phase5_floor_it_corrects(
+    params: dict[str, Any],
+) -> None:
+    # The two must differ only in DENOMINATOR - land area rather than polygon
+    # area - so that a change of status is attributable to the fix and not to a
+    # quietly moved threshold.
+    assert float(
+        params["greening"]["normalisation"]["missing"]["min_land_observed_fraction"]
+    ) == float(params["spatial_stats"]["landscape"]["min_observed_fraction"])
+
+
+def test_topsis_uses_its_own_normalisation_and_is_also_run_on_ranks(
+    params: dict[str, Any],
+) -> None:
+    topsis = params["greening"]["topsis"]
+    assert topsis["normalisation"] == "vector", (
+        "feeding TOPSIS percentile ranks makes it a different method"
+    )
+    assert topsis["also_on_ranks"] is True, (
+        "without a second run on ranks, a low AHP-vs-TOPSIS correlation "
+        "conflates METHOD with NORMALISATION and neither can be blamed"
+    )
+
+
+def test_the_ablation_has_a_single_criterion_baseline(params: dict[str, Any]) -> None:
+    ablation = params["greening"]["ablation"]
+    names = {entry["name"] for entry in params["greening"]["criteria"]}
+    assert ablation["enabled"] is True
+    assert ablation["baseline_single_criterion"] in names
+    assert 0 < float(ablation["warn_rho_above"]) <= 1
+    assert 0 < float(ablation["warn_pc1_above"]) <= 1
+
+
+def test_the_circularity_reference_is_the_phase5_interim_table(
+    params: dict[str, Any],
+) -> None:
+    reference = repo_root() / params["greening"]["ablation"]["circularity_reference"]
+    assert reference.is_file(), f"{reference} is not committed"
+
+
+def test_the_3_30_300_constants_are_the_rules_own_numbers(
+    params: dict[str, Any],
+) -> None:
+    # Pinned so that a tidy-up cannot redefine the rule the report cites.
+    rule = params["greening"]["rule_3_30_300"]
+    assert rule["canopy"]["target_pct"] == 30
+    assert rule["green_space"]["min_patch_ha"] == 0.5
+    assert rule["green_space"]["service_distance_m"] == 300
+
+
+def test_canopy_is_trees_only_and_a_subset_of_green_space(
+    params: dict[str, Any],
+) -> None:
+    rule = params["greening"]["rule_3_30_300"]
+    canopy = set(rule["canopy"]["class_codes"])
+    green = set(rule["green_space"]["class_codes"])
+    assert canopy == {1}, "canopy is the Dynamic World Trees class, nothing else"
+    assert canopy < green
+    assert rule["canopy"]["denominator"] == "observed_land"
+
+
+def test_green_space_classes_match_the_phase5_landscape_definition(
+    params: dict[str, Any],
+) -> None:
+    assert (
+        params["greening"]["rule_3_30_300"]["green_space"]["class_codes"]
+        == params["spatial_stats"]["landscape"]["green_classes"]["dynamic_world"]
+    )
+    assert (
+        params["greening"]["rule_3_30_300"]["green_space"]["connectivity"]
+        == params["spatial_stats"]["landscape"]["connectivity"]
+    )
+
+
+def test_the_300m_rule_carries_a_detour_variant(params: dict[str, Any]) -> None:
+    # Euclidean distance overstates walking access everywhere; the detour column
+    # is what bounds the error rather than merely admitting it.
+    green_space = params["greening"]["rule_3_30_300"]["green_space"]
+    assert float(green_space["detour_ratio"]) > 1.0
+    assert green_space["weight_by"] == "population"
+    assert green_space["also_area_share"] is True
+
+
+def test_the_three_trees_component_never_enters_a_score(params: dict[str, Any]) -> None:
+    trees = params["greening"]["rule_3_30_300"]["trees_in_view"]
+    assert trees["status"] == "not_remotely_sensable"
+    assert trees["enters_score"] is False
+
+
+def test_the_compliance_palette_has_five_categories(params: dict[str, Any]) -> None:
+    # Five, never a boolean: the "3" is unmeasured, and a pass/fail flag would
+    # imply it had been checked.
+    compliance = params["greening"]["palettes"]["compliance"]
+    assert set(compliance) == {
+        "both_30_and_300",
+        "canopy_only",
+        "access_only",
+        "neither",
+        "not_assessable",
+    }
+
+
+def test_wetland_sources_are_all_free_and_configured(params: dict[str, Any]) -> None:
+    wetland = params["greening"]["wetland"]
+    known = {
+        "dw_flooded_vegetation",
+        "worldcover_wetland",
+        "gsw_seasonal",
+        "wdpa",
+        "asset",
+    }
+    assert set(wetland["sources"]) <= known
+    assert len(wetland["sources"]) >= 2, "a single wetland proxy is not a sensitivity"
+    for source in wetland["sources"]:
+        assert source in wetland["source_definitions"], f"{source} has no definition"
+
+
+def test_the_gsw_wetland_proxy_excludes_permanent_water(params: dict[str, Any]) -> None:
+    # Excluding 12 months is what makes this a WETLAND layer rather than a
+    # second water mask.
+    gsw = params["greening"]["wetland"]["source_definitions"]["gsw_seasonal"]
+    assert gsw["band"] == params["datasets"]["surface_water"]["band_seasonality"]
+    assert int(gsw["min_months"]) >= 1
+    assert int(gsw["max_months"]) <= 11
+
+
+def test_the_wdpa_source_is_scoped_to_sri_lanka(params: dict[str, Any]) -> None:
+    wdpa = params["greening"]["wetland"]["source_definitions"]["wdpa"]
+    assert wdpa["id"] == "WCMC/WDPA/current/polygons"
+    assert wdpa["iso3_value"] == "LKA"
+    assert wdpa["note"].strip()
+
+
+def test_the_optional_asset_hooks_ship_null(params: dict[str, Any]) -> None:
+    # Both are hooks, not requirements. While null the analysis runs on free
+    # data and says so; set, they upgrade a product from proxy to authoritative.
+    assert params["greening"]["wetland"]["asset"] is None
+    assert params["greening"]["rule_3_30_300"]["public_green_asset"] is None
+
+
+def test_wetland_adjacency_is_reported_at_several_distances(
+    params: dict[str, Any],
+) -> None:
+    adjacency = params["greening"]["wetland"]["adjacency"]
+    assert adjacency["method"] in ("buffer", "queen_neighbour")
+    assert float(adjacency["distance_m"]) in {
+        float(value) for value in adjacency["distance_sensitivity_m"]
+    }
+    assert len(adjacency["distance_sensitivity_m"]) >= 3
+    assert adjacency["distance_sensitivity_m"] == sorted(
+        adjacency["distance_sensitivity_m"]
+    )
+    assert adjacency["also_queen_neighbour"] is True
+
+
+def test_greening_grid_matches_the_phase5_grid(params: dict[str, Any]) -> None:
+    assert params["greening"]["scale_m"] == params["spatial_stats"]["epoch_scale_m"]
+    assert params["greening"]["levels"] == params["spatial_stats"]["levels"]
+    assert params["greening"]["level"] in params["greening"]["levels"]
+    assert params["greening"]["epoch"] in params["uhi"]["utfvi"]["epochs"]
+
+
+def test_greening_landcover_year_was_measured_as_usable(params: dict[str, Any]) -> None:
+    # Phase 5 measured Dynamic World 2016 at 10.5 % coverage; a greening
+    # recommendation cannot rest on a year the classifier barely saw.
+    assert (
+        params["greening"]["landcover_year"]
+        in params["spatial_stats"]["landscape"]["dynamic_world_years"]
+    )
+    assert (
+        params["greening"]["landcover_scale_m"]
+        == params["spatial_stats"]["landscape"]["raster_scale_m"]
+    )
+
+
+def test_greening_sources_are_configured_lst_series(params: dict[str, Any]) -> None:
+    keys = {entry["key"] for entry in params["uhi"]["suhii"]["sources"]}
+    assert params["greening"]["source"] in keys
+    assert params["greening"]["sensitivity_source"] in keys
+    assert params["greening"]["sensitivity_source"] != params["greening"]["source"]
+
+
+def test_greening_top_n_matches_the_phase6_priority_set(params: dict[str, Any]) -> None:
+    # Same size as prediction.priority_zones.top_n, so Phase 6's -0.84 degC
+    # counterfactual is comparable against a same-sized set.
+    assert params["greening"]["top_n"] == params["prediction"]["priority_zones"]["top_n"]
+    assert (
+        params["greening"]["top_n"] <= params["aoi"]["expected_counts"]["gn_divisions"]
+    )
+    assert params["greening"]["report_score_gap_at_cut"] is True
+
+
+def test_greening_output_names_are_unique(params: dict[str, Any]) -> None:
+    names = list(params["greening"]["outputs"].values())
+    assert len(set(names)) == len(names), f"two products share a filename: {names}"
+
+
+def test_phase7_caveats_present(params: dict[str, Any]) -> None:
+    for key in ("euclidean_not_network", "mcda_weights_are_judgements"):
+        assert key in params["caveats"], f"caveats.{key} missing"
+        assert params["caveats"][key].strip()

@@ -19,12 +19,25 @@ Three deliverables:
    land-cover product is exported, because a validation guard refuses it.
    Deliverable 2 therefore carries a stated, quantified limitation rather than
    an unvalidated map.
-3. **Urban greening priority recommendations** — MCDA/AHP weighted overlay
-   (Phase 7). Phase 6 already delivers the quantitative half as a **validated
-   greening counterfactual**: shifting 27.7 km² of priority-zone surface 20 %
-   toward the observed canopy signature implies **−0.84 °C** mean LST inside
-   those zones. It rests on the validated random forest alone — no land-cover
-   projection is involved — and it assumes the planting happens.
+3. **Urban greening priority recommendations** — an MCDA/AHP weighted overlay
+   (Phase 7) ranking all 557 GN divisions on five observed criteria: surface
+   heat, the share of the zone in severe UTFVI classes, vegetation deficit,
+   population density, and green-space access deficit. Weights come from a
+   pairwise comparison matrix with a consistency ratio of **0.0081** against
+   Saaty's 0.10 threshold; the ranking is cross-checked against an independent
+   **TOPSIS** ranking, a **3-30-300** assessment, and the Colombo Wetland
+   Complex. Phase 6 supplies the quantitative half as a **validated greening
+   counterfactual**: shifting 27.7 km² of priority-zone surface 20 % toward the
+   observed canopy signature implies **−0.84 °C** mean LST inside those zones.
+   It rests on the validated random forest alone — no land-cover projection is
+   involved — and it assumes the planting happens.
+
+   Two things about Phase 7 must travel with its output. The **weights are
+   judgements, not measurements** — the consistency ratio tests whether they are
+   self-consistent, never whether they are right. And the **criteria are
+   near-collinear over Colombo** (`rho(LST, green fraction) = −0.9147`), so a
+   leave-one-out ablation against a heat-only ranking, not the weights, is what
+   says how much the multi-criteria method actually adds.
 
 > ⚠️ **This project measures Land Surface Temperature, not air temperature.**
 > Surface UHI can be roughly 2× the canopy-air UHI. No output may be labelled
@@ -83,8 +96,10 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 │   │                        #           MAUP, landscape metrics
 │   ├── prediction.py        # Phase 6 — RF regression, blocked splits, CA-Markov,
 │   │                        #           scenarios, and the validation export guard
-│   └── greening.py          # stub — Phase 7
-├── notebooks/               # 00–06 written + Colab-verified; 07–08 are stubs
+│   └── greening.py          # Phase 7 — AHP (power iteration + CR), TOPSIS, criterion
+│                            #           prep, 3-30-300, wetland cross, guarded writers
+├── notebooks/               # 00–06 written + Colab-verified; 07 written, awaiting Colab;
+│                            # 08 is a stub
 ├── docs/
 │   └── molusce_handoff.md   # Phase 6 — CA-Markov handoff to MOLUSCE in QGIS
 ├── data/
@@ -106,7 +121,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 | 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | ✅ done + Colab-verified |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR, MAUP, landscape metrics | ✅ done + Colab-verified |
 | 6 | `06_prediction` | RF + CA-Markov scenario projection, spatially blocked validation, greening counterfactual, MOLUSCE handoff | ✅ done + Colab-verified |
-| 7 | `07_greening_priority` | MCDA/AHP overlay | ⬜ |
+| 7 | `07_greening_priority` | MCDA/AHP weighted overlay (CR 0.0081), TOPSIS cross-check, 3-30-300 compliance, Ramsar wetland cross, ranked priority table | 🔄 **written, awaiting Colab** |
 | 8 | `08_figures_for_report` | final figures | ⬜ |
 
 ## Running tests locally

@@ -1924,11 +1924,551 @@ prediction:
                                       # and report the fraction-weighted area separately and
                                       # labelled as the different quantity it is.
 
+# =============================================================================
+# GREENING PRIORITY (Phase 7) — deliverable (3)
+# =============================================================================
+# A multi-criteria ranking of GN divisions for greening investment. NOTHING here
+# is a prediction: every criterion is an OBSERVED 2020s quantity.
+#
+# [DECISION 2026-08-17] No projected surface enters a criterion. Track B never
+# beat a no-change map (PROGRESS.md, Phase 6), so a criterion drawn from
+# projected_lst_by_gn or a projected land cover would inherit a model with no
+# demonstrated allocation skill. tests/test_notebook07.py enforces this on the
+# notebook's AST, not by convention.
+#
+# *** THE COLLINEARITY WARNING IS THE MOST IMPORTANT PART OF THIS SECTION. ***
+# [MEASURED 2026-08-17, from the committed Phase 5 outputs, n=557 GN divisions]
+#     rho(LST_C 2020s, Dynamic World green fraction 2024) = -0.9147
+#     rho(LST_C 2020s, Gi* z)                             = +0.9576
+#     rho(LST_C 2020s, ZONE-MEAN UTFVI)                   = +1.000000  (exactly)
+#     rho(Phase-5 interim priority score, LST_C 2020s)    = +0.9829
+#
+# The third is ARITHMETIC, not coincidence: UTFVI = (Ts - Tmean)/Tmean with a
+# SCALAR Tmean (uhi.utfvi.reference: per_year_aoi_mean), so a zone-mean UTFVI is
+# an affine transform of a zone-mean LST. That is why the UTFVI criterion below
+# is the SEVERE-CLASS SHARE and not the zone mean - a within-zone distributional
+# property the mean cannot reproduce.
+#
+# "High LST" and "low vegetation" are very nearly ONE variable in this city. A
+# five-criterion MCDA over five near-identical variables produces a ranking
+# indistinguishable from sorting by LST, wearing the authority of a
+# multi-criteria method. `greening.ablation` exists to MEASURE what is left
+# after that, and the notebook must print the answer whether or not it flatters
+# the method.
 greening:
-  method: "mcda_weighted_overlay"     # [CLAUDE.md] MCDA / AHP weighted overlay
+  method: "mcda_ahp_weighted_overlay"   # [CLAUDE.md] MCDA / AHP weighted overlay
+  level: "gn"                           # primary unit of analysis
+  levels: ["gn", "ds"]                  # [CLAUDE.md caveat 5] the MAUP pair, always both.
+                                        # Must equal spatial_stats.levels; a test pins that.
+                                        # NOTE at DS level n=13, so a top_n cut has no meaning
+                                        # there - the DS run reports rank correlation only.
+  epoch: "2020s"                        # key from uhi.utfvi.epochs
+  source: "landsat_dry"                 # *** THE POOLED L5+L7+L8+L9 SERIES, DELIBERATELY. ***
+                                        # Phase 4 forbids fitting a TREND across this series
+                                        # (L5-L7 = +1.78 degC, L7-L8 = -2.48 degC). Every Phase 7
+                                        # criterion is a WITHIN-EPOCH LEVEL, not a trend, and the
+                                        # ranking is over zones within one epoch - so a spatially
+                                        # uniform sensor step shifts every zone equally and
+                                        # cancels out of the ranking, exactly as it cancels in
+                                        # SUHII and in Phase 5's Gi*. See caveats.within_epoch_only.
+                                        # This is an ARGUMENT, so it is also MEASURED:
+  sensitivity_source: "landsat_oli_dry" # the whole ranking re-runs on the single-sensor L8+L9
+                                        # series and the rank correlation is reported. If the
+                                        # ranking MOVES, the argument above is wrong for a level
+                                        # criterion and the single-sensor ranking is what
+                                        # publishes.
+  scale_m: 100                          # must equal spatial_stats.epoch_scale_m (a test pins it),
+                                        # so the criterion means land on the same grid as every
+                                        # Phase 4/5 product
+  landcover_scheme: "dynamic_world"     # landcover.SCHEMES key
+  landcover_year: 2024                  # [DEFAULT — Phase 7] the latest year Phase 5 measured as
+                                        # usable; a greening RECOMMENDATION must rest on CURRENT
+                                        # conditions. Must be in
+                                        # spatial_stats.landscape.dynamic_world_years. Notebook
+                                        # Step 2 re-probes coverage before this is trusted.
+  landcover_scale_m: 10                 # native DW/WorldCover grid; matches
+                                        # spatial_stats.landscape.raster_scale_m. Patch geometry
+                                        # and service areas are SCALE DEPENDENT, so this value is
+                                        # quoted with every 3-30-300 number.
+  population_scale_m: 100               # WorldPop native. The 300 rule counts RESIDENTS, so the
+                                        # 10 m service mask is block-averaged onto this grid.
+  min_scored_fraction: 0.80             # refuse to publish a ranking if fewer than this share of
+                                        # zones produced a score at all
+
+  # ---- The five criteria ----------------------------------------------------
+  # `direction` is applied EXACTLY ONCE, in greening.prepare_criteria, after
+  # which higher ALWAYS means higher priority. TOPSIS then treats every column
+  # as a benefit. That kills a whole class of sign bugs, and the equivalence
+  # (negate-then-max == leave-then-min) is pinned by a test.
+  criteria:
+    - name: "lst_hot"
+      direction: "benefit"              # HIGH land surface temperature -> HIGH priority
+      column: "LST_C"
+      pixels_column: "LST_C_pixels"
+      label: "Land surface temperature (2020s dry-season mean)"
+      provenance: "spatial_stats.zone_covariate_table, epoch 2020s"
+      # [CLAUDE.md caveat 1] This is LAND SURFACE TEMPERATURE, not air temperature
+      # and not "the temperature felt by residents". Never relabel it on a figure,
+      # in a column name, or in the report.
+    - name: "utfvi_severe_share"
+      direction: "benefit"              # a LARGER share of the zone in severe classes -> HIGHER
+      column: "utfvi_severe_share"
+      pixels_column: "utfvi_severe_share_pixels"
+      severe_labels: ["Bad", "Worse", "Worst"]   # resolved through
+                                        # uhi_metrics.utfvi_class_labels, so editing
+                                        # uhi.utfvi.labels cannot silently redefine this
+                                        # criterion to mean something else
+      label: "Share of zone in UTFVI Bad/Worse/Worst"
+      provenance: "greening.utfvi_shares_by_zone"
+      # *** NOT the zone-mean UTFVI. *** rho(LST, zone-mean UTFVI) = +1.000000
+      # exactly, so using the mean would give heat its weight twice and nothing
+      # would look wrong. The SHARE is a distributional property: it says how much
+      # of the zone sits in the tail, which a mean cannot express.
+      # [caveats.within_epoch_only] A high severe share means "hotter than TODAY'S
+      # district average", not "hot in absolute terms". A uniformly warming city
+      # shows no change in this criterion at all.
+    - name: "ndvi_deficit"
+      direction: "cost"                 # LOW NDVI -> HIGH priority
+      column: "NDVI"
+      pixels_column: "NDVI_pixels"
+      label: "Vegetation deficit (inverse NDVI)"
+      provenance: "spatial_stats.zone_covariate_table, epoch 2020s"
+    - name: "pop_density"
+      direction: "benefit"              # MORE people exposed -> HIGHER priority
+      column: "pop_density"
+      pixels_column: "pop_density_pixels"
+      label: "Population density (WorldPop 2020, people/km2)"
+      provenance: "spatial_stats.population_density"
+      # WorldPop ENDS 2020 (datasets.worldpop). The year travels in the label and
+      # must never be relabelled 2025. WorldPop is itself a MODELLED surface built
+      # partly FROM built-up area, so it is not independent of LST - a third route
+      # into the collinearity warned about above. greening.ablation measures it.
+    - name: "green_access_deficit"
+      direction: "cost"                 # FEWER residents within 300 m of green -> HIGHER
+      column: "pop_within_300m_pct"
+      pixels_column: null               # derived from rasters, not from a zonal reduction
+      label: "Residents beyond 300 m of a green space >= 0.5 ha (3-30-300)"
+      provenance: "greening.served_population_by_zone"
+
+  # ---- AHP ------------------------------------------------------------------
   ahp:
-    consistency_ratio_max: 0.1        # [DEFAULT — standard Saaty threshold; confirm in Phase 7]
-  criteria_weights: null              # [Phase 7] filled after AHP pairwise comparison
+    consistency_ratio_max: 0.1          # [Saaty 1980] the standard threshold
+    eigen_method: "power_iteration"     # [DECISION 2026-08-17] A positive reciprocal matrix is
+                                        # EXACTLY the Perron-Frobenius case - a simple, real,
+                                        # strictly dominant eigenvalue with a strictly positive
+                                        # eigenvector - so power iteration converges
+                                        # unconditionally to the one eigenvector that matters.
+                                        # numpy.linalg.eig returns COMPLEX values in ARBITRARY
+                                        # order and needs argmax/abs/sign fixes to select from,
+                                        # none of which RAISE when they pick the wrong one.
+                                        # np.linalg.eig IS used - in tests/test_greening.py, as
+                                        # the independent implementation power iteration is
+                                        # checked against. That is its right place.
+    power_iteration:
+      max_iter: 1000
+      tol: 1.0e-12
+    random_index:                       # [Saaty, The Analytic Hierarchy Process, McGraw-Hill,
+      1: 0.00                           # 1980] Mean consistency index of 500 randomly generated
+      2: 0.00                           # reciprocal matrices of each order. Reproduced in Saaty
+      3: 0.58                           # (1990) Eur. J. Oper. Res. 48(1):9-26.
+      4: 0.90                           # NOT INTERPOLATABLE: greening.random_index RAISES for
+      5: 1.12                           # n > 10 rather than extrapolating a published constant.
+      6: 1.24
+      7: 1.32
+      8: 1.41
+      9: 1.45
+      10: 1.49
+    random_index_source: >-
+      Saaty, T.L. (1980) The Analytic Hierarchy Process. McGraw-Hill. Mean
+      consistency index of 500 randomly generated reciprocal matrices per order;
+      reproduced in Saaty (1990) Eur. J. Oper. Res. 48(1):9-26.
+    min_weight_spread: 0.02             # *** A MATRIX OF ALL 1s IS PERFECTLY CONSISTENT (CR = 0)
+                                        # AND HAS SAID NOTHING. *** A CR near zero can be evidence
+                                        # that NO judgement was made rather than that a good one
+                                        # was. greening.require_consistent refuses below this
+                                        # max-minus-min weight spread, so "CR passed" can never
+                                        # be read as "the judgements were meaningful".
+    pairwise:
+      # a_ij = how many times more important criterion i is than criterion j, on
+      # Saaty's 1-9 scale. Written as NAMED PAIRS `i__j`, never as a nested list:
+      # a reordering of `criteria` above cannot silently reattach a judgement to
+      # the wrong pair, and a missing or duplicated pair RAISES instead of
+      # quietly producing plausible-looking weights for the wrong question.
+      #
+      # Every value is >= 1 - the MORE important criterion is always named first -
+      # so greening.pairwise_matrix derives each reciprocal as exactly 1/value and
+      # the matrix is reciprocal by construction rather than by rounding.
+      # Reciprocals are therefore never listed. Exactly C(5,2) = 10 entries; a
+      # test asserts the set equals the unordered pairs of `criteria`.
+      #
+      # [DECISION 2026-08-17] THESE JUDGEMENTS ARE THE ANALYST'S, argued from the
+      # urban-heat literature and from this project's own measurements. They were
+      # NOT elicited from stakeholders. The report must say so. AHP's commonest
+      # real-world abuse is adjusting judgements until the top-N contains the
+      # expected divisions, which is why the rationale for each pair is recorded
+      # here and `derived_weights_reference` below makes any edit visible in a
+      # test diff.
+      lst_hot__utfvi_severe_share: 4    # LST is the measured quantity; the UTFVI severe share is
+                                        # DERIVED from it and adds only the shape of the
+                                        # within-zone tail. Deliberately demoted so that heat is
+                                        # not counted twice through the back door.
+      lst_hot__ndvi_deficit: 2          # heat is the PROBLEM, vegetation deficit is the LEVER.
+                                        # A slight edge to the problem being solved.
+      lst_hot__pop_density: 1           # EQUAL, and deliberately so. Greening that cools nobody
+                                        # is not a priority, and heat with nobody in it is not
+                                        # a priority either. Neither dominates.
+      lst_hot__green_access_deficit: 3  # heat is a health OUTCOME; park access is a PROVISION
+                                        # STANDARD. Moderate edge to the outcome.
+      ndvi_deficit__utfvi_severe_share: 3   # the lever outranks a derived restatement of the
+                                        # problem
+      pop_density__utfvi_severe_share: 4    # exposure outranks it for the same reason
+      green_access_deficit__utfvi_severe_share: 2
+      pop_density__ndvi_deficit: 2      # people edge out the lever: where to plant is decided by
+                                        # who benefits, not only by where there is room
+      ndvi_deficit__green_access_deficit: 2  # canopy ANYWHERE beats a park-provision standard in
+                                        # a city with 0.63 % vacant land (Phase 6). There is no
+                                        # reservoir on which to build new parks; there is room
+                                        # for street trees.
+      pop_density__green_access_deficit: 3
+    derived_weights_reference:          # [COMPUTED 2026-08-17] *** NOT AN INPUT - A REGRESSION
+      lst_hot: 0.3192                   # PIN. *** test_params rebuilds the matrix from `pairwise`
+      utfvi_severe_share: 0.0683        # above, recomputes the principal eigenvector, and asserts
+      ndvi_deficit: 0.1840              # it matches these to 4 dp. Edit a judgement and the test
+      pop_density: 0.3192               # tells you exactly how far every weight moved.
+      green_access_deficit: 0.1093
+      # Row geometric means agree to within 0.0005 (0.3197 / 0.0680 / 0.1836 /
+      # 0.3197 / 0.1091), which is itself evidence of consistency.
+      # THE HEAT BLOC (lst_hot + utfvi_severe_share) IS 0.3875. Stated openly so
+      # the double-counting question is answered in the report rather than hidden.
+    derived_consistency:                # [COMPUTED 2026-08-17] pinned to 6 dp
+      lambda_max: 5.036357
+      consistency_index: 0.009089
+      consistency_ratio: 0.008115       # -> PASSES 0.1 with a factor of ~12 to spare
+    hierarchy:                          # [SENSITIVITY ONLY - never the headline] The textbook
+      thermal: ["lst_hot", "utfvi_severe_share"]     # answer to the collinearity above: group the
+      vegetation: ["ndvi_deficit"]                   # two heat criteria under one parent so the
+      exposure: ["pop_density"]                      # heat bloc gets the weight the analyst
+      accessibility: ["green_access_deficit"]        # INTENDED rather than the weight the flat
+                                        # list happens to give it. Reported BESIDE the flat
+                                        # weights, never instead of them.
+
+  # ---- Normalisation and missing data ---------------------------------------
+  normalisation:
+    method: "percentile_rank"           # [DECISION 2026-08-17] Same normalisation as
+                                        # prediction.interim_priority_zones, so the Phase-5 ->
+                                        # Phase-7 difference is attributable to WEIGHTS AND
+                                        # CRITERIA and not to a normalisation change - which is
+                                        # the only way the circularity report below means
+                                        # anything.
+                                        #
+                                        # min_max REJECTED as primary: pop_density spans ~3 orders
+                                        # of magnitude across Colombo's GN divisions, so a single
+                                        # Pettah-like outlier pushes ~550 divisions into the
+                                        # bottom decile of the RANGE and the criterion degenerates
+                                        # into an on/off switch.
+                                        # z_score REJECTED: unbounded, so a weighted sum is
+                                        # dominated by whichever criterion has the fattest tail
+                                        # and the AHP weights stop meaning what they say.
+                                        # Percentile rank bounds every criterion to (0, 1] with an
+                                        # identical uniform marginal, which is what makes "LST
+                                        # carries 0.319 of the weight" a TRUE statement.
+                                        #
+                                        # THE COST, STATED: rank normalisation discards MAGNITUDE.
+                                        # A division 0.1 degC hotter than the next gets a full
+                                        # rank step, the same as one 3 degC hotter. Hence:
+    sensitivity: ["percentile_rank", "min_max"]   # [CLAUDE.md caveat 5] BOTH are run and the rank
+                                        # correlation between them is reported. If they disagree,
+                                        # the normalisation is deciding the answer - and THAT is
+                                        # the result, not a nuisance to be tuned away.
+    missing:
+      policy: "redistribute_and_flag"   # *** NEVER na_option="bottom". *** A division with no
+                                        # NDVI because it sat under cloud is not thereby a
+                                        # low-priority division, and sinking it silently is a
+                                        # wrong answer that never announces itself.
+                                        # prediction.interim_priority_zones DID use
+                                        # na_option="bottom"; tolerable for an interim proxy, not
+                                        # for a published recommendation. A test asserts the
+                                        # string appears nowhere in greening.py.
+                                        # The policy: redistribute the absent criterion's weight
+                                        # proportionally across those present, flag the zone with
+                                        # `incomplete_criteria` and `missing_weight`, and above
+                                        # max_missing_weight refuse to score it at all.
+      max_missing_weight: 0.5           # above this share of weight missing: score = NaN,
+                                        # status = insufficient_data
+      min_pixels: 10                    # [CLAUDE.md caveat 2] a GN mean over 4 cloud-free 100 m
+                                        # pixels is NOT the same datum as one over 4000.
+                                        # Sammanthranapura is 0.18 km2 - about 18 cells at 100 m
+                                        # before any cloud loss. Below this the criterion is NaN
+                                        # for that zone, not silently averaged from nothing.
+      min_land_observed_fraction: 0.90  # *** READ THIS WITH spatial_stats.landscape
+                                        # .min_observed_fraction, WHICH IT CORRECTS. ***
+                                        #
+                                        # [MEASURED 2026-08-17] 22 of 557 GN divisions fall below
+                                        # the Phase-5 floor. But the IDENTICAL observed_fraction
+                                        # appears for Dynamic World 2018, Dynamic World 2024 AND
+                                        # WorldCover 2021 in 552 of 557 zones. Three classifiers,
+                                        # three dates, one number: it is NOT measuring classifier
+                                        # coverage, it is measuring the POLYGON ENCLOSING WATER.
+                                        #
+                                        #   LK1103120 Fort         7.46 km2 polygon / 131 ha land
+                                        #   LK1103115 Pettah       0.92 km2 polygon /  72 ha land
+                                        #   LK1103035 Lunupokuna   1.37 km2 polygon / 117 ha land
+                                        #
+                                        # Fort's COD-AB polygon IS the Colombo Port outer harbour
+                                        # (CLAUDE.md's 6.89 km2). Excluding on the RAW flag
+                                        # deletes PETTAH and LUNUPOKUNA from the interim top-60 -
+                                        # dense, hot, treeless CMC-core divisions, which is
+                                        # exactly what a greening priority list exists to find.
+                                        # The analysis would silently drop the worst-affected
+                                        # neighbourhoods and return a clean-looking list of
+                                        # suburbs.
+                                        #
+                                        # So Phase 7 recomputes coverage against LAND area
+                                        # (aoi.static_water_mask) and gates on THAT. The raw
+                                        # Phase-5 flag travels beside it in every output row, and
+                                        # the count of zones that change status is printed.
+                                        # Kept numerically equal to the Phase-5 floor so the two
+                                        # differ only in DENOMINATOR; a test pins the equality.
+      exclude_below_floor_from_top_n: true   # flagged zones are RANKED in the full table and
+                                        # excluded from the exported top-N, with their count and
+                                        # names printed rather than dropped in silence
+    winsorise_pct: [0, 100]             # no clipping by default
+
+  # ---- TOPSIS (the alternative ranking method) ------------------------------
+  topsis:
+    normalisation: "vector"             # x_ij / sqrt(sum_i x_ij^2) - the method's OWN definition
+                                        # (Hwang & Yoon 1981). Feeding it percentile ranks would
+                                        # make it a different method wearing the same name.
+    also_on_ranks: true                 # [DECISION 2026-08-17] run TOPSIS a SECOND time on the
+                                        # percentile ranks. Without this a low AHP-vs-TOPSIS
+                                        # correlation conflates METHOD with NORMALISATION and
+                                        # neither can be blamed. Three rankings -> three rho ->
+                                        # the decomposition is explicit.
+    distance: "euclidean"
+    tie_tolerance: 1.0e-12
+    # RANK REVERSAL: the ideal and anti-ideal solutions are drawn from the
+    # alternative SET, so removing one division can reverse the order of two
+    # others. TOPSIS is therefore RE-RUN on the retained set whenever zones are
+    # dropped (below-floor exclusions, insufficient_data), never sub-selected
+    # from an earlier run. greening.compare_rankings REFUSES mismatched zone sets
+    # and names this as the reason.
+
+  # ---- Ranking comparison ---------------------------------------------------
+  comparison:
+    method: "spearman"                  # [CLAUDE.md] the requested robustness check
+    also_kendall: true                  # tau-b beside rho: rho is more sensitive to large moves
+                                        # by a few zones, tau to the overall concordance
+    top_n_overlap: true                 # count and Jaccard of the two top-N sets - the number a
+                                        # policy reader actually cares about
+    max_rank_shift_rows: 20             # how many biggest movers to tabulate
+
+  # ---- Robustness: what the MCDA actually contains --------------------------
+  ablation:
+    enabled: true
+    baseline_single_criterion: "lst_hot"
+    warn_rho_above: 0.95                # If the full five-criterion ranking correlates with a
+                                        # LST-ONLY ranking above this, then the honest headline is
+                                        # "the MCDA reproduces a ranking by LST" and the notebook
+                                        # PRINTS it. Given rho(LST, green fraction) = -0.91
+                                        # measured on this district, expect it to be close.
+                                        # Reporting that IS the science; suppressing it would be
+                                        # the failure.
+    warn_pc1_above: 0.60                # PC1's share of variance in the criterion correlation
+                                        # matrix. Above this the MCDA is effectively
+                                        # one-dimensional and the weights are largely decorative.
+    circularity_reference: "data/outputs/greening_priority_zones_interim.csv"
+                                        # [DECISION 2026-08-17] Phase 5's interim proxy ranks on
+                                        # gi_star_hot / lst_2020s / ndvi_inverse. THREE of Phase
+                                        # 7's five criteria overlap it, and rho(interim score,
+                                        # LST) is already +0.9829. The two rankings WILL agree,
+                                        # and that agreement is NOT VALIDATION - it is the same
+                                        # inputs reweighted. greening.circularity_report labels it
+                                        # NOT_INDEPENDENT and lists the shared criteria by name.
+                                        # Worse: Phase 6's -0.84 degC counterfactual was computed
+                                        # INSIDE the Phase-5 zones, so quoting it as evidence for
+                                        # Phase 7's zones would close the loop entirely.
+
+  # ---- The 3-30-300 rule ----------------------------------------------------
+  # Konijnendijk's rule: 3 trees visible from every home, 30 % canopy in every
+  # neighbourhood, 300 m to the nearest public green space >= 0.5 ha.
+  rule_3_30_300:
+    canopy:
+      target_pct: 30                    # [Konijnendijk] THE RULE'S OWN NUMBER. Pinned by
+                                        # test_params so a tidy-up cannot redefine the rule.
+      class_codes: [1]                  # Dynamic World "Trees" ONLY - deliberately NOT
+                                        # spatial_stats.landscape.green_classes. Canopy is canopy:
+                                        # grass, shrub and flooded vegetation are green space but
+                                        # they are not tree cover, and the 30 % target is a CANOPY
+                                        # target.
+      denominator: "observed_land"      # NOT the polygon. Using the polygon would make Fort read
+                                        # as treeless because 82 % of it is harbour.
+      note: >-
+        This is the TREE-CLASS SHARE of a 10 m modal classification, not crown
+        cover from a canopy-height model. It counts a 10 m cell as fully canopy or
+        not at all. Quote it as "Dynamic World tree-class share", never as
+        "canopy cover".
+    green_space:
+      min_patch_ha: 0.5                 # [Konijnendijk] PINNED. At 10 m this is 50 cells, and the
+                                        # boundary is INCLUSIVE - exactly 0.5 ha qualifies.
+      class_codes: [1, 2, 3, 5]         # matches spatial_stats.landscape.green_classes
+                                        # .dynamic_world exactly (a test pins the equality).
+                                        # Crops (4) excluded: agricultural land is not urban green
+                                        # space for a greening-priority purpose.
+      connectivity: 8                   # matches spatial_stats.landscape.connectivity. A
+                                        # DIFFERENT value here than there would be its own trap,
+                                        # so the FRAGSTATS default stays.
+      connectivity_sensitivity: 4       # *** 8-connectivity can fuse two 0.3 ha gardens into one
+                                        # 0.6 ha "park" through a single diagonal pixel. *** The
+                                        # qualifying-patch count is reported under BOTH.
+      service_distance_m: 300           # [Konijnendijk] PINNED.
+      distance_metric: "euclidean"
+      detour_ratio: 1.3                 # *** THE RULE IS ABOUT WALKING DISTANCE. *** A straight
+                                        # line ignores the Kelani River, Beira Lake, the coastal
+                                        # railway and long walled compounds, so Euclidean
+                                        # OVERSTATES access everywhere by an unknown amount.
+                                        # 300 / 1.3 = 231 m is reported as rule_300_pass_detour
+                                        # BESIDE the plain result; the gap between the two columns
+                                        # is the size of the problem. See
+                                        # caveats.euclidean_not_network.
+                                        # A true isochrone needs an OSM graph and osmnx/networkx;
+                                        # [DECISION 2026-08-17] not taken, to keep the phase
+                                        # dependency-free and offline-testable.
+      weight_by: "population"           # the rule counts RESIDENCES, so the headline number is
+                                        # population-weighted
+      also_area_share: true             # area share reported beside it [CLAUDE.md caveat 5]
+      public_only: false                # *** A KNOWN OVERSTATEMENT, NOT AN OVERSIGHT. *** The
+                                        # rule says PUBLIC green space. Dynamic World cannot
+                                        # distinguish a public park from a private garden, a
+                                        # military cantonment or the Colombo Golf Club. All of
+                                        # them count as accessible here, so every compliance
+                                        # number is an UPPER BOUND, and in a city with substantial
+                                        # institutional and military land this could invert the
+                                        # map in exactly the affluent divisions that need it
+                                        # least. THIS IS THE LARGEST UNQUANTIFIED ERROR IN THE
+                                        # PHASE. No free Earth Engine layer resolves it.
+    public_green_asset: null            # [USER ASSET HOOK] Earth Engine table asset id of an OSM
+                                        # leisure=park / landuse=recreation_ground extract
+                                        # (Geofabrik or Overpass, both free). While null the
+                                        # 300 rule runs unrestricted and the upper-bound caveat
+                                        # stands; when set, it runs a SECOND time restricted to
+                                        # this layer and BOTH numbers are reported. Same pattern
+                                        # as aoi.assets.gn_divisions - requesting it explicitly
+                                        # while null raises with upload instructions.
+    trees_in_view:
+      status: "not_remotely_sensable"   # *** THE "3" CANNOT BE MEASURED FROM SPACE. *** It needs
+                                        # window orientations and individual tree stems. Reporting
+                                        # it as passed, as failed, or dropping it silently would
+                                        # all be wrong. It is reported as UNMEASURED, which is
+                                        # itself a result, and the compliance verdict has FIVE
+                                        # categories rather than a boolean so that no output can
+                                        # imply the "3" was checked.
+      proxy_radius_m: 30                # the proxy: share of BUILT 10 m cells with at least one
+      proxy_min_tree_cells: 1           # canopy cell within this radius. Reported as
+                                        # rule_3_proxy_pct, always beside rule_3_status.
+      enters_score: false               # *** NEVER enters the MCDA or the compliance verdict. ***
+                                        # Pinned by a test that greps the criterion set.
+
+  # ---- The Colombo Wetland Complex cross ------------------------------------
+  wetland:
+    # Colombo is a Ramsar WETLAND CITY, accredited 2018 - an accreditation of the
+    # CITY, not a Ramsar SITE designation, so there is no Ramsar polygon to
+    # download. [VERIFIED 2026-08-17] No official Colombo Wetland Complex boundary
+    # exists in any free dataset. The union below is the honest substitute, and
+    # every zone's status carries WHICH sources fired for it.
+    sources: ["dw_flooded_vegetation", "worldcover_wetland", "gsw_seasonal", "wdpa"]
+    source_definitions:
+      dw_flooded_vegetation:
+        dataset: "dynamic_world"        # datasets.dynamic_world
+        class_codes: [3]                # landcover.dynamic_world.classes: "Flooded vegetation"
+      worldcover_wetland:
+        dataset: "worldcover_2021"      # datasets.worldcover_2021
+        class_codes: [90, 95]           # landcover.worldcover.classes: herbaceous wetland,
+                                        # mangroves
+      gsw_seasonal:
+        dataset: "surface_water"        # datasets.surface_water
+        band: "seasonality"             # [GEE catalog] datasets.surface_water.band_seasonality:
+                                        # months per year with water present
+        min_months: 1                   # seasonally inundated ...
+        max_months: 11                  # ... but NOT permanently, which is a lake and not a
+                                        # marsh. *** Excluding 12 is what makes this a WETLAND
+                                        # proxy rather than a second water mask. ***
+      wdpa:
+        id: "WCMC/WDPA/current/polygons"  # [GEE catalog, VERIFIED 2026-08-17: availability
+                                        # 2017-07-01 to 2030-01-01; schema carries WDPAID,
+                                        # WDPA_PID, PA_DEF, NAME, ORIG_NAME, DESIG, DESIG_ENG,
+                                        # DESIG_TYPE (national|regional|international|not
+                                        # applicable), IUCN_CAT, ISO3]
+        iso3_property: "ISO3"
+        iso3_value: "LKA"
+        name_property: "NAME"           # printed by the notebook probe so the analyst can SEE
+        designation_property: "DESIG_ENG"   # which areas were found before trusting the layer
+        note: >-
+          Captures LEGALLY DECLARED protected areas (e.g. the Bellanwila-Attidiya
+          sanctuary) and NOT the full Colombo Wetland Complex, because Colombo's
+          2018 accreditation is a Wetland CITY accreditation rather than a Ramsar
+          Site designation. Treat WDPA as the strongest single line of evidence
+          here and simultaneously the least complete.
+    asset: null                         # [USER ASSET HOOK] Earth Engine table asset id of the
+                                        # official boundary from the Colombo Wetland Management
+                                        # Strategy / the 2018 Wetland City accreditation (SLLRDC,
+                                        # UDA, or the Metro Colombo Urban Development Project), if
+                                        # one can be obtained. Same pattern as
+                                        # aoi.assets.gn_divisions: while null the source is
+                                        # SKIPPED WITH A PRINTED NOTE, and requesting it
+                                        # explicitly raises with upload instructions. With it set,
+                                        # the wetland cross becomes authoritative rather than a
+                                        # union of remote-sensing proxies.
+    min_patch_ha: 0.5                   # drop speckle before any adjacency test
+    adjacency:
+      method: "buffer"                  # "buffer" (metric) or "queen_neighbour" (topological)
+      distance_m: 500                   # ARBITRARY, and treated as such - reported at all three
+      distance_sensitivity_m: [250, 500, 1000]   # values as three columns, never one
+      also_queen_neighbour: true        # a SECOND, threshold-free definition reusing the
+                                        # already-tested spatial_stats.contiguity_neighbours.
+                                        # Where the two definitions disagree is itself reported.
+    within_pct_threshold: 1.0           # a zone with >= this % of its land in wetland is "within"
+
+  # ---- Output ---------------------------------------------------------------
+  top_n: 60                             # of 557 GN divisions (~11 %). Matches
+                                        # prediction.priority_zones.top_n deliberately, so Phase
+                                        # 6's -0.84 degC counterfactual over 27.7 km2 is
+                                        # comparable against a SAME-SIZED set.
+  report_score_gap_at_cut: true         # *** A TOP-60 IS MEANINGLESS IF RANK 60 AND RANK 61
+                                        # DIFFER IN THE FOURTH DECIMAL. *** With five
+                                        # rank-normalised criteria the score distribution is
+                                        # smooth, so the gap at the cut and the number of zones
+                                        # tied across it are printed and carried in the CSV. The
+                                        # report quotes the SCORE, not only the rank.
+  outputs:
+    ranked_table: "greening_priority_gn"
+    top_table: "greening_priority_top_gn"
+    ahp_table: "greening_ahp_weights"
+    compliance_table: "greening_3_30_300_gn"
+    wetland_table: "greening_wetland_cross_gn"
+    ablation_table: "greening_criterion_ablation"
+    comparison_table: "greening_ahp_vs_topsis"
+  palettes:
+    priority: ["f7f7f7", "fddbc7", "fdae61", "f46d43", "d73027", "a50026"]
+                                        # low -> high priority. Warm ramp, consistent with
+                                        # trends.slope_vis and prediction.palettes.
+    compliance:                         # FIVE categories - see rule_3_30_300.trees_in_view
+      both_30_and_300: "1a9850"
+      canopy_only: "a6d96a"
+      access_only: "fee08b"
+      neither: "d73027"
+      not_assessable: "bdbdbd"
+    wetland_status:
+      within: "2c7fb8"
+      adjacent: "7fcdbb"
+      neither: "f0f0f0"
+    wetland_hatch: "///"                # must differ from spatial_stats.palettes'
+                                        # underpowered hatch: one says "policy lever here", the
+                                        # other says "we could not have seen otherwise"
+  criteria_weights: null                # *** STAYS NULL FOREVER. *** Weights are DERIVED from
+                                        # ahp.pairwise and from nowhere else. A hand-set vector
+                                        # here would let the AHP be reverse-engineered from a
+                                        # desired answer, which is the method's commonest abuse.
+                                        # test_params asserts this key is null.
 
 # --- Exports ------------------------------------------------------------------
 exports:
@@ -2045,3 +2585,21 @@ caveats:
     aggregation; reading it as an individual-level or pixel-level relationship
     is the ecological fallacy. The same analysis at DS level gives different
     numbers by construction, which is why both are reported.
+  euclidean_not_network: >-
+    The 300 m of the 3-30-300 rule is a WALKING distance. These service areas
+    are straight-line, so they ignore the Kelani River, Beira Lake, the coastal
+    railway and walled compounds, and therefore OVERSTATE access everywhere by
+    an unknown amount. Each result is reported beside a 231 m variant (a 1.3
+    detour ratio); the gap between the two is the size of the uncertainty.
+    Green space is also counted whether it is public or private, so compliance
+    is an UPPER BOUND, and the '3 trees from every window' component cannot be
+    measured from satellite data at all and is reported as unmeasured.
+  mcda_weights_are_judgements: >-
+    The AHP criterion weights are JUDGEMENTS, not measurements. They were argued
+    by the analyst from the literature and from this project's own measurements,
+    not elicited from stakeholders, and a different defensible set of judgements
+    gives a different ranking. The consistency ratio tests only whether the
+    judgements are self-consistent, never whether they are right. The criteria
+    are also strongly intercorrelated over Colombo, so the leave-one-out
+    ablation - not the weights - is what says how much the method adds over
+    ranking by land surface temperature alone.

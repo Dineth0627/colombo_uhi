@@ -13,6 +13,7 @@ Design notes:
 
 from __future__ import annotations
 
+import math
 import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
@@ -3175,6 +3176,1074 @@ def plot_scenario_difference(
     return _save_figure(
         build_scenario_difference_figure(
             difference, params, report, max_degc=max_degc, title=title
+        ),
+        out_path,
+    )
+
+
+# =============================================================================
+# Phase 7 - greening priority figures
+# =============================================================================
+# Every builder here calls `greening.require_consistent` inside a try/except and,
+# on failure, STAMPS the figure and draws it anyway. That is Phase 6's
+# post-run-3 behaviour: a figure showing that judgements failed is exactly what
+# the report needs, and refusing to draw it throws the evidence away. What no
+# path allows is a priority figure silent about its consistency ratio.
+
+#: Caveats every Phase 7 figure carries.
+GREENING_CAVEATS: tuple[str, ...] = (
+    "lst_not_air_temp",
+    "zonal_not_pixel",
+    "sensitivity_reporting",
+    "mcda_weights_are_judgements",
+)
+
+
+def greening_failure_headline(
+    report: Mapping[str, Any] | None, params: dict[str, Any]
+) -> str | None:
+    """One-line banner when AHP judgements were computed and failed.
+
+    The Phase 6 counterpart, :func:`failure_headline`, reads a *validation*
+    report. This reads an *AHP* report, and the two failures are different
+    things: one says a model has no demonstrated skill, the other says a set of
+    judgements is not self-consistent.
+
+    Args:
+        report: The mapping :func:`colombo_uhi.greening.ahp_weights` returned.
+        params: Parsed params mapping.
+
+    Returns:
+        The headline, or ``None`` when the judgements pass or no report exists.
+    """
+    from colombo_uhi import greening
+
+    if report is None:
+        return None
+    try:
+        greening.require_consistent(report, params)
+    except greening.InconsistentJudgements as failure:
+        ratio = float(report.get("consistency_ratio", float("nan")))
+        maximum = float(report.get("consistency_ratio_max", float("nan")))
+        # A failing consistency ratio LEADS, even when the matrix is also
+        # degenerate. The two can co-occur - a perfect 3-cycle at equal strength
+        # is symmetric, so it scores a huge CR *and* returns equal weights - and
+        # of the two, "these judgements contradict each other" is the
+        # substantive finding. Degeneracy is the interesting failure only when
+        # the ratio PASSES, which is the trap it exists to catch: a CR near zero
+        # reading as "the judgements were good" when it means none were made.
+        if math.isfinite(ratio) and ratio > maximum:
+            return f"*** INCONSISTENT JUDGEMENTS (CR = {ratio:.3f} > {maximum:.3f}) ***"
+        if report.get("degenerate"):
+            return (
+                "*** NO JUDGEMENT WAS MADE: the pairwise weights are effectively "
+                f"equal (spread {float(report.get('weight_spread', 0.0)):.4f}) ***"
+            )
+        return f"*** INCONSISTENT JUDGEMENTS: {failure} ***"
+    except ValueError:
+        return None
+    return None
+
+
+def greening_caption(
+    report: Mapping[str, Any] | None,
+    params: dict[str, Any],
+    keys: Sequence[str] = GREENING_CAVEATS,
+    extra: str = "",
+) -> str:
+    """Assemble the footer for a greening-priority figure.
+
+    Args:
+        report: The mapping :func:`colombo_uhi.greening.ahp_weights` returned.
+        params: Parsed params mapping.
+        keys: Caveat keys from ``caveats``.
+        extra: Figure-specific lines appended below.
+
+    Returns:
+        The caveat footer, a line stating the consistency ratio and the
+        normalisation, and ``extra``. When the judgements failed, the failure
+        banner leads the whole footer.
+    """
+    caveats = caveat_footer(params, list(keys))
+
+    if report is not None:
+        ratio = float(report.get("consistency_ratio", float("nan")))
+        maximum = float(report.get("consistency_ratio_max", float("nan")))
+        verdict = "PASSES" if report.get("consistent") else "FAILS"
+        summary = (
+            f"- AHP consistency ratio {ratio:.4f} against a {maximum:.2f} "
+            f"threshold ({verdict}); criteria normalised by "
+            f"{params['greening']['normalisation']['method']}."
+        )
+    else:
+        summary = ""
+
+    banner = greening_failure_headline(report, params)
+    parts = [banner, summary, caveats] if banner else [caveats, summary]
+    if extra:
+        parts.append(extra.strip("\n"))
+    return "\n".join(part for part in parts if part)
+
+
+def _greening_suptitle(
+    figure: Any,
+    title: str,
+    report: Mapping[str, Any] | None,
+    params: dict[str, Any],
+    fontsize: int = 12,
+) -> None:
+    """Set the figure title, marking failed judgements inside it."""
+    if greening_failure_headline(report, params) is None:
+        figure.suptitle(title, fontsize=fontsize)
+        return
+    figure.suptitle(
+        f"{title}   [INCONSISTENT JUDGEMENTS]", fontsize=fontsize, color="#b2182b"
+    )
+
+
+def priority_palette(params: dict[str, Any]) -> list[str]:
+    """The greening-priority colour ramp, hex prefixed with ``#``.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        Colours from low to high priority.
+    """
+    return [
+        "#" + str(colour).lstrip("#")
+        for colour in params["greening"]["palettes"]["priority"]
+    ]
+
+
+def compliance_palette(params: dict[str, Any]) -> dict[str, str]:
+    """The 3-30-300 compliance palette, hex prefixed with ``#``.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        Mapping of compliance category to colour. Five entries, never two: the
+        "3" of the rule is unmeasured, and a two-colour pass/fail legend would
+        imply it had been checked.
+    """
+    return {
+        str(key): "#" + str(value).lstrip("#")
+        for key, value in params["greening"]["palettes"]["compliance"].items()
+    }
+
+
+def build_greening_priority_map_figure(
+    zones: Any,
+    ranked: "pd.DataFrame",
+    params: dict[str, Any],
+    ahp_report: Mapping[str, Any] | None = None,
+    score_column: str = "score_ahp",
+    title: str | None = None,
+) -> Any:
+    """Build the greening-priority choropleth.
+
+    Two hatches, deliberately different, because they say opposite things: a
+    wetland-adjacent division is a **policy opportunity**, and a below-coverage
+    division is one the data could not see properly. Conflating them on one
+    figure would be worse than omitting both.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` with ``zone_id`` and geometry.
+        ranked: The priority table.
+        params: Parsed params mapping.
+        ahp_report: The mapping :func:`colombo_uhi.greening.ahp_weights` returned.
+        score_column: Score to colour by.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty or the score column is absent.
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    if ranked.empty:
+        raise ValueError("the priority frame is empty; there is nothing to map")
+    if score_column not in ranked.columns:
+        raise ValueError(
+            f"no {score_column!r} column; the frame has {sorted(ranked.columns)}"
+        )
+
+    columns = [
+        column
+        for column in (
+            "zone_id",
+            score_column,
+            "priority",
+            "wetland_policy_flag",
+            "below_land_coverage_floor",
+            "status",
+        )
+        if column in ranked.columns
+    ]
+    frame = zones.copy()
+    frame["zone_id"] = frame["zone_id"].astype(str)
+    merged = frame.merge(
+        ranked[columns].assign(zone_id=ranked["zone_id"].astype(str)),
+        on="zone_id",
+        how="left",
+    )
+
+    extra = (
+        "- Outlined divisions are the exported top-N priority set. Divisions "
+        "hatched '///' are within or beside mapped wetland, where wetland "
+        "protection is an existing policy instrument; divisions hatched 'xxx' "
+        "fell below the land-coverage floor and are ranked but NOT exported."
+    )
+    footer = greening_caption(ahp_report, params, extra=extra)
+    figure, axes, height, reserved = _map_figure(merged, footer, legend_inches=0.55)
+
+    colours = priority_palette(params)
+    from matplotlib.colors import LinearSegmentedColormap
+
+    cmap = LinearSegmentedColormap.from_list("greening_priority", colours)
+    merged.plot(
+        ax=axes,
+        column=score_column,
+        cmap=cmap,
+        edgecolor="#ffffff",
+        linewidth=0.15,
+        missing_kwds={"color": "#f0f0f0", "edgecolor": "#ffffff", "linewidth": 0.15},
+        legend=True,
+        legend_kwds={
+            "label": "Greening priority score (higher = higher priority)",
+            "orientation": "horizontal",
+            "shrink": 0.6,
+            "pad": 0.02,
+            "fraction": 0.035,
+        },
+    )
+    axes.set_aspect("equal")
+    axes.set_xticks([])
+    axes.set_yticks([])
+    for spine in axes.spines.values():
+        spine.set_visible(False)
+
+    handles: list[Any] = []
+    if "priority" in merged.columns:
+        selected = merged["priority"].fillna(False).astype(bool)
+        if bool(selected.any()):
+            merged[selected.to_numpy()].plot(
+                ax=axes, facecolor="none", edgecolor="#111111", linewidth=0.9
+            )
+            handles.append(
+                Line2D([], [], color="#111111", linewidth=1.2, label="Top-N priority")
+            )
+    if "wetland_policy_flag" in merged.columns:
+        wetland = merged["wetland_policy_flag"].fillna(False).astype(bool)
+        if bool(wetland.any()):
+            merged[wetland.to_numpy()].plot(
+                ax=axes,
+                facecolor="none",
+                edgecolor="#2c7fb8",
+                linewidth=0.3,
+                hatch=str(params["greening"]["palettes"]["wetland_hatch"]),
+            )
+            handles.append(
+                Patch(
+                    facecolor="none",
+                    edgecolor="#2c7fb8",
+                    hatch="///",
+                    label="Within / beside wetland",
+                )
+            )
+    if "below_land_coverage_floor" in merged.columns:
+        floored = merged["below_land_coverage_floor"].fillna(False).astype(bool)
+        if bool(floored.any()):
+            merged[floored.to_numpy()].plot(
+                ax=axes,
+                facecolor="none",
+                edgecolor="#666666",
+                linewidth=0.3,
+                hatch="xxx",
+            )
+            handles.append(
+                Patch(
+                    facecolor="none",
+                    edgecolor="#666666",
+                    hatch="xxx",
+                    label="Below land-coverage floor",
+                )
+            )
+    if handles:
+        axes.legend(
+            handles=handles,
+            fontsize=7.5,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.06),
+            frameon=False,
+            ncol=3,
+        )
+
+    _greening_suptitle(
+        figure,
+        title or "Greening priority by GN division (AHP weighted overlay)",
+        ahp_report,
+        params,
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_greening_priority_map(
+    zones: Any,
+    ranked: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    ahp_report: Mapping[str, Any] | None = None,
+    score_column: str = "score_ahp",
+    title: str | None = None,
+) -> Path:
+    """Write the priority map. See :func:`build_greening_priority_map_figure`."""
+    return _save_figure(
+        build_greening_priority_map_figure(
+            zones, ranked, params, ahp_report, score_column=score_column, title=title
+        ),
+        out_path,
+    )
+
+
+def build_ahp_weights_figure(
+    ahp_frame: "pd.DataFrame",
+    ahp_report: Mapping[str, Any],
+    params: dict[str, Any],
+    matrix: Any = None,
+    names: Sequence[str] | None = None,
+    title: str | None = None,
+) -> Any:
+    """Build the AHP weights figure: the judgements, the weights, and the CR.
+
+    The pairwise matrix is drawn on a **logarithmic** colour scale, because the
+    Saaty scale is multiplicative: 9 and 1/9 are equally far from 1, and a linear
+    ramp would make "nine times more important" look eight units away from equal
+    while "one ninth" looked like almost nothing.
+
+    Args:
+        ahp_frame: Output of :func:`colombo_uhi.greening.build_ahp_frame`.
+        ahp_report: The mapping :func:`colombo_uhi.greening.ahp_weights` returned.
+        params: Parsed params mapping.
+        matrix: Optional pairwise matrix to draw as a heatmap.
+        names: Criterion names in matrix order.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the weights frame is empty.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import LogNorm
+    from matplotlib.figure import Figure
+
+    if ahp_frame.empty:
+        raise ValueError("the AHP frame is empty; there are no weights to draw")
+
+    extra = (
+        "- The pairwise matrix is drawn on a LOGARITHMIC colour scale: the "
+        "Saaty scale is multiplicative, so 9 and 1/9 are equally far from 1. "
+        "- Row geometric means are overlaid on the weight bars; the two "
+        "agreeing is itself evidence of consistency."
+    )
+    footer = greening_caption(ahp_report, params, extra=extra)
+    reserved = footer_inches(footer)
+    height = 4.4 + reserved
+    figure = Figure(figsize=(11.0, height))
+    FigureCanvasAgg(figure)
+
+    panels = 2 if matrix is not None else 1
+    axes_list = figure.subplots(1, panels, squeeze=False)[0]
+
+    if matrix is not None:
+        heat_axes = axes_list[0]
+        values = np.asarray(matrix, dtype=float)
+        labels = (
+            [str(name) for name in names]
+            if names is not None
+            else list(ahp_report.get("names", range(values.shape[0])))
+        )
+        image = heat_axes.imshow(
+            values, cmap="PuOr_r", norm=LogNorm(vmin=1 / 9, vmax=9.0)
+        )
+        heat_axes.set_xticks(range(len(labels)))
+        heat_axes.set_yticks(range(len(labels)))
+        heat_axes.set_xticklabels(
+            [label.replace("_", "\n") for label in labels], fontsize=7
+        )
+        heat_axes.set_yticklabels(
+            [label.replace("_", " ") for label in labels], fontsize=7
+        )
+        for row in range(values.shape[0]):
+            for col in range(values.shape[1]):
+                entry = values[row, col]
+                text = f"{entry:.0f}" if entry >= 1 else f"1/{1 / entry:.0f}"
+                heat_axes.text(
+                    col,
+                    row,
+                    text,
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    color="#222222",
+                )
+        heat_axes.set_title(
+            "Pairwise judgements (row is how many times\nmore important than column)",
+            fontsize=9,
+        )
+        figure.colorbar(image, ax=heat_axes, fraction=0.046, pad=0.04)
+
+    bar_axes = axes_list[-1]
+    order = ahp_frame.iloc[::-1]
+    positions = np.arange(len(order))
+    bar_axes.barh(
+        positions, order["weight"], color="#4575b4", edgecolor="#274b6d", height=0.62
+    )
+    if "weight_geometric" in order.columns:
+        bar_axes.scatter(
+            order["weight_geometric"],
+            positions,
+            marker="|",
+            s=180,
+            color="#d73027",
+            zorder=3,
+            label="Row geometric mean",
+        )
+        bar_axes.legend(fontsize=7, frameon=False, loc="lower right")
+    bar_axes.set_yticks(positions)
+    bar_axes.set_yticklabels(
+        [str(name).replace("_", " ") for name in order["criterion"]], fontsize=8
+    )
+    for position, weight in zip(positions, order["weight"]):
+        bar_axes.text(
+            float(weight) + 0.006, position, f"{float(weight):.3f}", fontsize=7.5,
+            va="center",
+        )
+    bar_axes.set_xlim(0, float(ahp_frame["weight"].max()) * 1.28)
+    bar_axes.set_xlabel("Criterion weight (principal eigenvector)", fontsize=8.5)
+    bar_axes.set_title("Derived weights", fontsize=9)
+    for spine in ("top", "right"):
+        bar_axes.spines[spine].set_visible(False)
+
+    ratio = float(ahp_report["consistency_ratio"])
+    maximum = float(ahp_report["consistency_ratio_max"])
+    passed = bool(ahp_report.get("consistent")) and not bool(
+        ahp_report.get("degenerate")
+    )
+    banner = (
+        f"lambda_max = {float(ahp_report['lambda_max']):.4f}    "
+        f"CI = {float(ahp_report['consistency_index']):.4f}    "
+        f"RI = {float(ahp_report['random_index']):.2f}    "
+        f"CR = {ratio:.4f}  ({'PASS' if passed else 'INCONSISTENT'} at {maximum:.2f})"
+    )
+    figure.text(
+        0.5,
+        (reserved + 0.12) / height,
+        banner,
+        ha="center",
+        fontsize=8.5,
+        color="#1a9850" if passed else "#b2182b",
+        weight="bold" if not passed else "normal",
+    )
+
+    _greening_suptitle(
+        figure,
+        title or "AHP criterion weights and consistency",
+        ahp_report,
+        params,
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    figure.tight_layout(rect=(0, (reserved + 0.3) / height, 1, 0.93))
+    return figure
+
+
+def plot_ahp_weights(
+    ahp_frame: "pd.DataFrame",
+    ahp_report: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    matrix: Any = None,
+    names: Sequence[str] | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the AHP weights figure. See :func:`build_ahp_weights_figure`."""
+    return _save_figure(
+        build_ahp_weights_figure(
+            ahp_frame, ahp_report, params, matrix=matrix, names=names, title=title
+        ),
+        out_path,
+    )
+
+
+def build_ranking_comparison_figure(
+    left: "pd.DataFrame",
+    right: "pd.DataFrame",
+    comparison: Mapping[str, Any],
+    params: dict[str, Any],
+    left_name: str = "AHP weighted overlay",
+    right_name: str = "TOPSIS",
+    left_rank: str = "rank_ahp",
+    right_rank: str = "rank_topsis",
+    shifts: "pd.DataFrame | None" = None,
+    ahp_report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+) -> Any:
+    """Build the AHP-vs-TOPSIS rank comparison.
+
+    Args:
+        left: First ranking.
+        right: Second ranking.
+        comparison: Output of :func:`colombo_uhi.greening.compare_rankings`.
+        params: Parsed params mapping.
+        left_name: Label for the first method.
+        right_name: Label for the second.
+        left_rank: Rank column in ``left``.
+        right_rank: Rank column in ``right``.
+        shifts: Optional biggest-mover table to label.
+        ahp_report: AHP report, for the footer.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If either ranking is empty.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if left.empty or right.empty:
+        raise ValueError("a ranking is empty; there is nothing to compare")
+
+    merged = left[["zone_id", left_rank]].merge(
+        right[["zone_id", right_rank]], on="zone_id", how="inner"
+    )
+    top_n = int(comparison.get("top_n", params["greening"]["top_n"]))
+
+    extra = (
+        "- Rank agreement is a ROBUSTNESS check, not a validation: two methods "
+        "run on the same five criteria agreeing tells you the ranking is stable "
+        "under the method, not that the criteria are the right ones."
+    )
+    footer = greening_caption(ahp_report, params, extra=extra)
+    reserved = footer_inches(footer)
+    height = 5.2 + reserved
+    figure = Figure(figsize=(9.0, height))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+
+    axes.axvspan(0.5, top_n + 0.5, color="#fdae61", alpha=0.13, zorder=0)
+    axes.axhspan(0.5, top_n + 0.5, color="#fdae61", alpha=0.13, zorder=0)
+    limit = int(max(merged[left_rank].max(), merged[right_rank].max()))
+    axes.plot([1, limit], [1, limit], color="#999999", linewidth=0.8, zorder=1)
+    axes.scatter(
+        merged[left_rank], merged[right_rank], s=12, color="#2166ac", alpha=0.7, zorder=2
+    )
+
+    if shifts is not None and not shifts.empty:
+        for _, row in shifts.head(8).iterrows():
+            axes.annotate(
+                str(row["zone_id"]),
+                (float(row[left_rank]), float(row[right_rank])),
+                fontsize=6.5,
+                color="#b2182b",
+                xytext=(3, 3),
+                textcoords="offset points",
+            )
+
+    axes.set_xlabel(f"{left_name} rank", fontsize=9)
+    axes.set_ylabel(f"{right_name} rank", fontsize=9)
+    axes.invert_xaxis()
+    axes.invert_yaxis()
+    for spine in ("top", "right"):
+        axes.spines[spine].set_visible(False)
+
+    lines = [
+        f"Spearman rho = {float(comparison['spearman_rho']):.4f}",
+    ]
+    if "kendall_tau" in comparison:
+        lines.append(f"Kendall tau = {float(comparison['kendall_tau']):.4f}")
+    if "top_n_overlap" in comparison:
+        lines.append(
+            f"Top-{top_n} overlap = {int(comparison['top_n_overlap'])} "
+            f"(Jaccard {float(comparison['top_n_jaccard']):.3f})"
+        )
+    lines.append(f"Median |rank shift| = {float(comparison['median_abs_shift']):.1f}")
+    lines.append(f"Max |rank shift| = {float(comparison['max_abs_shift']):.0f}")
+    axes.text(
+        0.02,
+        0.02,
+        "\n".join(lines),
+        transform=axes.transAxes,
+        fontsize=8,
+        va="bottom",
+        ha="left",
+        bbox={"facecolor": "#ffffff", "edgecolor": "#cccccc", "boxstyle": "round,pad=0.4"},
+    )
+
+    _greening_suptitle(
+        figure,
+        title or f"{left_name} against {right_name}",
+        ahp_report,
+        params,
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    figure.tight_layout(rect=(0, reserved / height, 1, 0.94))
+    return figure
+
+
+def plot_ranking_comparison(
+    left: "pd.DataFrame",
+    right: "pd.DataFrame",
+    comparison: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    left_name: str = "AHP weighted overlay",
+    right_name: str = "TOPSIS",
+    left_rank: str = "rank_ahp",
+    right_rank: str = "rank_topsis",
+    shifts: "pd.DataFrame | None" = None,
+    ahp_report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the ranking comparison. See :func:`build_ranking_comparison_figure`."""
+    return _save_figure(
+        build_ranking_comparison_figure(
+            left,
+            right,
+            comparison,
+            params,
+            left_name=left_name,
+            right_name=right_name,
+            left_rank=left_rank,
+            right_rank=right_rank,
+            shifts=shifts,
+            ahp_report=ahp_report,
+            title=title,
+        ),
+        out_path,
+    )
+
+
+def build_compliance_map_figure(
+    zones: Any,
+    compliance: "pd.DataFrame",
+    params: dict[str, Any],
+    ahp_report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+) -> Any:
+    """Build the 3-30-300 compliance map.
+
+    Five categories, never a pass/fail pair. The "3" of the rule - three trees
+    visible from every home - cannot be measured from satellite data at all, so a
+    two-colour legend would imply it had been checked.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` with ``zone_id`` and geometry.
+        compliance: Output of :func:`colombo_uhi.greening.compliance_3_30_300`.
+        params: Parsed params mapping.
+        ahp_report: AHP report, for the footer.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the compliance frame is empty or has no verdict column.
+    """
+    from colombo_uhi import greening as greening_module
+
+    if compliance.empty:
+        raise ValueError("the compliance frame is empty; there is nothing to map")
+    if "compliance" not in compliance.columns:
+        raise ValueError(
+            f"no 'compliance' column; the frame has {sorted(compliance.columns)}"
+        )
+
+    frame = zones.copy()
+    frame["zone_id"] = frame["zone_id"].astype(str)
+    columns = [
+        column
+        for column in ("zone_id", "compliance", "canopy_pct", "pop_within_300m_pct")
+        if column in compliance.columns
+    ]
+    merged = frame.merge(
+        compliance[columns].assign(zone_id=compliance["zone_id"].astype(str)),
+        on="zone_id",
+        how="left",
+    )
+    merged["compliance"] = merged["compliance"].fillna("not_assessable")
+
+    target = int(params["greening"]["rule_3_30_300"]["canopy"]["target_pct"])
+    distance = int(
+        params["greening"]["rule_3_30_300"]["green_space"]["service_distance_m"]
+    )
+    detour = greening_module.detour_distance_m(params)
+    extra = (
+        f"- '{target}' is the tree-class share of a {int(params['greening']['landcover_scale_m'])} m "
+        "modal classification, NOT crown cover from a canopy-height model. "
+        f"- '{distance}' counts residents within {distance} m; the detour "
+        f"variant at {detour:.0f} m is in the exported table beside it. "
+        "- The '3' of 3-30-300 is NOT MEASURABLE from satellite data and is "
+        "reported as unmeasured, which is why there are five categories rather "
+        "than a pass/fail flag."
+    )
+    footer = greening_caption(
+        ahp_report,
+        params,
+        keys=(*GREENING_CAVEATS, "euclidean_not_network"),
+        extra=extra,
+    )
+    figure, axes, height, reserved = _map_figure(merged, footer, legend_inches=0.5)
+
+    colours = compliance_palette(params)
+    _zone_choropleth(axes, merged, "compliance", colours)
+    _category_legend(
+        axes, colours, list(greening_module.COMPLIANCE_CATEGORIES), ncol=5
+    )
+
+    _greening_suptitle(
+        figure,
+        title or f"3-30-300 compliance by GN division ({target} % canopy, {distance} m access)",
+        ahp_report,
+        params,
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    return figure
+
+
+def plot_compliance_map(
+    zones: Any,
+    compliance: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    ahp_report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the 3-30-300 compliance map. See :func:`build_compliance_map_figure`."""
+    return _save_figure(
+        build_compliance_map_figure(
+            zones, compliance, params, ahp_report=ahp_report, title=title
+        ),
+        out_path,
+    )
+
+
+def build_criterion_panel_figure(
+    zones: Any,
+    prepared: "pd.DataFrame",
+    params: dict[str, Any],
+    criteria: Sequence[str] | None = None,
+    correlation: "pd.DataFrame | None" = None,
+    ahp_report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+) -> Any:
+    """Small multiples of the normalised criteria, plus their correlation matrix.
+
+    **This is the figure that makes the collinearity visible**, and it belongs in
+    the report. Over Colombo, ``rho(LST, green fraction) = -0.9147``: "high LST"
+    and "low vegetation" are very nearly one variable, so five criterion maps
+    that all look the same are not a redundancy in the figure - they are the
+    finding.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame`` with ``zone_id`` and geometry.
+        prepared: Output of :func:`colombo_uhi.greening.prepare_criteria`.
+        params: Parsed params mapping.
+        criteria: Optional criterion subset.
+        correlation: Optional matrix from
+            :func:`colombo_uhi.greening.criterion_correlation`, drawn as a final
+            panel.
+        ahp_report: AHP report, for the footer.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If a normalised column is absent.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    from colombo_uhi import greening as greening_module
+
+    definitions = greening_module.resolve_criteria(params, criteria)
+    names = [str(entry["name"]) for entry in definitions]
+    absent = [
+        f"{name}_norm" for name in names if f"{name}_norm" not in prepared.columns
+    ]
+    if absent:
+        raise ValueError(f"{absent} not in the frame; pass prepare_criteria output")
+
+    frame = zones.copy()
+    frame["zone_id"] = frame["zone_id"].astype(str)
+    merged = frame.merge(
+        prepared[["zone_id", *[f"{name}_norm" for name in names]]].assign(
+            zone_id=prepared["zone_id"].astype(str)
+        ),
+        on="zone_id",
+        how="left",
+    )
+
+    extra = (
+        "- Every panel is on the SAME normalised scale, so panels that look "
+        "alike are measuring the same underlying variable. Over Colombo the "
+        "criteria are strongly intercorrelated, and the correlation panel plus "
+        "the leave-one-out ablation - not the AHP weights - are what say how "
+        "much the multi-criteria method adds over ranking by heat alone."
+    )
+    footer = greening_caption(ahp_report, params, extra=extra)
+    reserved = footer_inches(footer)
+
+    panels = len(names) + (1 if correlation is not None else 0)
+    cols = min(3, panels)
+    rows = int(np.ceil(panels / cols))
+    panel_inches = 3.0
+    height = rows * panel_inches + reserved + 0.55
+    figure = Figure(figsize=(cols * panel_inches + 0.8, height))
+    FigureCanvasAgg(figure)
+    axes_grid = figure.subplots(rows, cols, squeeze=False)
+    flat = [axes_grid[row][col] for row in range(rows) for col in range(cols)]
+
+    labels = {str(entry["name"]): str(entry["label"]) for entry in definitions}
+    for axes, name in zip(flat, names):
+        merged.plot(
+            ax=axes,
+            column=f"{name}_norm",
+            cmap="YlOrRd",
+            edgecolor="#ffffff",
+            linewidth=0.08,
+            vmin=0.0,
+            vmax=1.0,
+            missing_kwds={"color": "#e8e8e8"},
+        )
+        axes.set_title(
+            "\n".join(textwrap.wrap(labels.get(name, name), 34)), fontsize=7.5
+        )
+        axes.set_aspect("equal")
+        axes.set_xticks([])
+        axes.set_yticks([])
+        for spine in axes.spines.values():
+            spine.set_visible(False)
+
+    if correlation is not None:
+        axes = flat[len(names)]
+        values = np.asarray(correlation.to_numpy(), dtype=float)
+        image = axes.imshow(values, cmap="RdBu_r", vmin=-1.0, vmax=1.0)
+        ticks = range(len(correlation.index))
+        axes.set_xticks(list(ticks))
+        axes.set_yticks(list(ticks))
+        axes.set_xticklabels(
+            [str(name).replace("_", "\n") for name in correlation.index], fontsize=6
+        )
+        axes.set_yticklabels(
+            [str(name).replace("_", " ") for name in correlation.index], fontsize=6
+        )
+        for row in range(values.shape[0]):
+            for col in range(values.shape[1]):
+                axes.text(
+                    col,
+                    row,
+                    f"{values[row, col]:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="#222222",
+                )
+        axes.set_title("Criterion correlation", fontsize=7.5)
+        figure.colorbar(image, ax=axes, fraction=0.046, pad=0.04)
+
+    for axes in flat[panels:]:
+        axes.axis("off")
+
+    _greening_suptitle(
+        figure,
+        title or "Greening criteria, normalised (and how far they differ)",
+        ahp_report,
+        params,
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    figure.tight_layout(rect=(0, reserved / height, 1, 0.95))
+    return figure
+
+
+def plot_criterion_panel(
+    zones: Any,
+    prepared: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    criteria: Sequence[str] | None = None,
+    correlation: "pd.DataFrame | None" = None,
+    ahp_report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the criterion panel. See :func:`build_criterion_panel_figure`."""
+    return _save_figure(
+        build_criterion_panel_figure(
+            zones,
+            prepared,
+            params,
+            criteria=criteria,
+            correlation=correlation,
+            ahp_report=ahp_report,
+            title=title,
+        ),
+        out_path,
+    )
+
+
+def build_priority_table_figure(
+    ranked: "pd.DataFrame",
+    params: dict[str, Any],
+    ahp_report: Mapping[str, Any] | None = None,
+    top_n: int | None = None,
+    title: str | None = None,
+) -> Any:
+    """Render the top-N priority divisions as a figure-ready table.
+
+    Args:
+        ranked: The priority table.
+        params: Parsed params mapping.
+        ahp_report: AHP report, for the footer and the title stamp.
+        top_n: How many rows to show; defaults to ``greening.top_n``.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    if ranked.empty:
+        raise ValueError("the priority frame is empty; there is nothing to tabulate")
+
+    limit = int(params["greening"]["top_n"] if top_n is None else top_n)
+    display = ranked.head(limit).copy()
+
+    def _text(value: Any, digits: int = 3) -> str:
+        if value is None or value != value:
+            return ""
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, float):
+            return f"{value:.{digits}f}"
+        return str(value)
+
+    wanted = [
+        ("rank_ahp", "rank", 0),
+        ("zone_id", "zone id", 0),
+        ("adm4_name", "GN division", 0),
+        ("score_ahp", "score", 3),
+        ("rank_topsis", "TOPSIS", 0),
+        ("LST_C", "LST degC", 2),
+        ("NDVI", "NDVI", 3),
+        ("canopy_pct", "canopy %", 1),
+        ("pop_within_300m_pct", "within 300 m %", 1),
+        ("compliance", "3-30-300", 0),
+        ("wetland_status", "wetland", 0),
+    ]
+    columns = [entry for entry in wanted if entry[0] in display.columns]
+    table_data = []
+    for _, row in display.iterrows():
+        cells = []
+        for name, _, digits in columns:
+            text = _text(row[name], digits)
+            if name == "adm4_name":
+                text = "\n".join(textwrap.wrap(text, 22)) or text
+            cells.append(text.replace("_", " ") if name in ("compliance",) else text)
+        table_data.append(cells)
+
+    line_counts = [max(1, max(cell.count("\n") + 1 for cell in row)) for row in table_data]
+    total_lines = sum(line_counts) + 1
+
+    extra = (
+        "- The SCORE matters as much as the rank: with rank-normalised criteria "
+        "the distribution is smooth, so adjacent ranks can be separated by very "
+        "little. The gap at the cut is in the exported table."
+    )
+    footer = greening_caption(ahp_report, params, extra=extra)
+    reserved = footer_inches(footer)
+    table_inches = 0.17 * total_lines + 0.3
+    height = table_inches + 0.6 + reserved
+    figure = Figure(figsize=(12.0, height))
+    FigureCanvasAgg(figure)
+    axes = figure.subplots()
+    axes.axis("off")
+
+    table = axes.table(
+        cellText=table_data,
+        colLabels=[label for _, label, _ in columns],
+        cellLoc="left",
+        bbox=[0.0, 0.0, 1.0, 1.0],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.0)
+
+    flagged_index = (
+        list(display.columns).index("status") if "status" in display.columns else None
+    )
+    for row in range(len(table_data)):
+        shaded = False
+        if flagged_index is not None:
+            shaded = str(display.iloc[row, flagged_index]) != "ok"
+        for column in range(len(columns)):
+            cell = table[row + 1, column]
+            cell.set_edgecolor("#dddddd")
+            cell.set_height(line_counts[row] / total_lines)
+            if shaded:
+                cell.set_facecolor("#f2e6e6")
+    for column in range(len(columns)):
+        table[0, column].set_height(1.0 / total_lines)
+        table[0, column].set_facecolor("#eeeeee")
+
+    axes.set_title(
+        title or f"Top {min(limit, len(display))} greening-priority GN divisions",
+        fontsize=12,
+        pad=12,
+        color="#b2182b" if greening_failure_headline(ahp_report, params) else "#000000",
+    )
+    figure.text(
+        0.01, 0.01, footer, fontsize=7, va="bottom", ha="left", color="#444444"
+    )
+    figure.tight_layout(rect=(0, reserved / height, 1, 1))
+    return figure
+
+
+def plot_priority_table(
+    ranked: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    ahp_report: Mapping[str, Any] | None = None,
+    top_n: int | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the priority table figure. See :func:`build_priority_table_figure`."""
+    return _save_figure(
+        build_priority_table_figure(
+            ranked, params, ahp_report=ahp_report, top_n=top_n, title=title
         ),
         out_path,
     )

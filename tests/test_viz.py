@@ -1510,3 +1510,741 @@ def test_the_difference_map_names_what_it_actually_differenced(
     footer = " ".join(" ".join(t.get_text().split()) for t in figure.texts)
     assert "COUNTERFACTUAL MINUS ITS OBSERVED BASELINE" in footer
     assert "DIFFERENCE OF TWO PROJECTIONS" not in footer
+
+
+# =============================================================================
+# Phase 7 - greening priority figures
+# =============================================================================
+
+
+def _figure_text(figure: Any) -> str:
+    """All the loose text on a figure, whitespace-collapsed."""
+    return " ".join(" ".join(text.get_text().split()) for text in figure.texts)
+
+
+def _figure_titles(figure: Any) -> str:
+    """Suptitle plus every axes title."""
+    parts = [figure._suptitle.get_text() if figure._suptitle else ""]
+    parts.extend(axes.get_title() for axes in figure.axes)
+    return " ".join(" ".join(part.split()) for part in parts if part)
+
+
+@pytest.fixture(scope="module")
+def ahp_report(params: dict[str, Any]) -> dict[str, Any]:
+    from colombo_uhi import greening
+
+    matrix, names = greening.pairwise_matrix(params)
+    return greening.ahp_weights(matrix, params, names, warn=False)
+
+
+@pytest.fixture(scope="module")
+def ahp_matrix(params: dict[str, Any]) -> Any:
+    from colombo_uhi import greening
+
+    return greening.pairwise_matrix(params)
+
+
+@pytest.fixture(scope="module")
+def inconsistent_report(params: dict[str, Any]) -> dict[str, Any]:
+    """Judgements that fail the consistency ratio without being degenerate.
+
+    Deliberately asymmetric. A perfect 3-cycle at equal strength (a 9 b, b 9 c,
+    c 9 a) is symmetric, so it returns *equal* weights and is degenerate as well
+    as inconsistent - which is a different failure and is covered separately.
+    """
+    import numpy as np
+
+    from colombo_uhi import greening
+
+    matrix = np.array([[1.0, 9.0, 1 / 3], [1 / 9, 1.0, 5.0], [3.0, 1 / 5, 1.0]])
+    report = greening.ahp_weights(matrix, params, ["a", "b", "c"], warn=False)
+    assert not report["consistent"] and not report["degenerate"]
+    return report
+
+
+@pytest.fixture(scope="module")
+def greening_tables(params: dict[str, Any]) -> dict[str, Any]:
+    """A small end-to-end Phase 7 result set, built the way the notebook does."""
+    import numpy as np
+
+    from colombo_uhi import greening
+
+    rng = np.random.default_rng(23)
+    n = 24
+    frame = pd.DataFrame(
+        {
+            "zone_id": [f"LK1103{index:03d}" for index in range(n)],
+            "LST_C": rng.normal(31.0, 1.5, n),
+            "utfvi_severe_share": rng.random(n),
+            "NDVI": rng.random(n) * 0.6,
+            "pop_density": rng.lognormal(9.0, 1.0, n),
+            "pop_within_300m_pct": rng.random(n) * 100.0,
+        }
+    )
+    for column in ("LST_C", "utfvi_severe_share", "NDVI", "pop_density"):
+        frame[f"{column}_pixels"] = 400
+
+    matrix, names = greening.pairwise_matrix(params)
+    report = greening.ahp_weights(matrix, params, names, warn=False)
+    prepared, _ = greening.prepare_criteria(frame, params)
+    ranked = greening.rank_frame(
+        greening.mcda_scores(prepared, params, report["weights"]), params, top_n=8
+    )
+    topsis = greening.rank_frame(
+        greening.topsis_scores(prepared, params, report["weights"]),
+        params,
+        top_n=8,
+        score_column="score_topsis",
+    )
+    comparison = greening.compare_rankings(ranked, topsis, params)
+    shifts = greening.rank_shift_frame(ranked, topsis, params)
+    correlation = greening.criterion_correlation(prepared, params)
+
+    compliance = pd.DataFrame(
+        {
+            "zone_id": frame["zone_id"],
+            "canopy_pct": rng.random(n) * 50.0,
+            "rule_30_pass": rng.random(n) > 0.5,
+            "pop_within_300m_pct": rng.random(n) * 100.0,
+            "rule_300_pass": rng.random(n) > 0.5,
+        }
+    )
+    compliance = greening.compliance_3_30_300(
+        compliance[["zone_id", "canopy_pct", "rule_30_pass"]],
+        compliance[["zone_id", "pop_within_300m_pct", "rule_300_pass"]],
+        None,
+        params,
+    )
+    wetland = pd.DataFrame(
+        {
+            "zone_id": frame["zone_id"],
+            "wetland_status": ["within", "adjacent", "neither"] * (n // 3),
+            "wetland_policy_flag": [True, True, False] * (n // 3),
+            "wetland_within_pct": rng.random(n) * 20.0,
+        }
+    )
+    full = greening.build_priority_frame(
+        ranked,
+        params,
+        prepared=prepared,
+        topsis_ranked=topsis,
+        compliance=compliance,
+        wetland=wetland,
+    )
+    full["adm4_name"] = [f"Division number {index}" for index in range(n)]
+    return {
+        "prepared": prepared,
+        "ranked": ranked,
+        "topsis": topsis,
+        "comparison": comparison,
+        "shifts": shifts,
+        "correlation": correlation,
+        "compliance": compliance,
+        "wetland": wetland,
+        "full": full,
+        "report": report,
+        "matrix": matrix,
+        "names": names,
+        "ahp_frame": greening.build_ahp_frame(report, params),
+    }
+
+
+@pytest.fixture(scope="module")
+def greening_zones(greening_tables: dict[str, Any]) -> Any:
+    """Zone polygons matching the synthetic tables."""
+    gpd = pytest.importorskip("geopandas")
+    shapely = pytest.importorskip("shapely.geometry")
+
+    ids = list(greening_tables["full"]["zone_id"])
+    boxes = [
+        shapely.box(
+            (index % 6) * 100.0,
+            (index // 6) * 100.0,
+            (index % 6) * 100.0 + 95.0,
+            (index // 6) * 100.0 + 95.0,
+        )
+        for index in range(len(ids))
+    ]
+    return gpd.GeoDataFrame({"zone_id": ids}, geometry=boxes, crs="EPSG:32644")
+
+
+# --- The caption and the failure banner --------------------------------------
+
+
+def test_the_greening_caption_carries_every_required_caveat(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    caption = viz.greening_caption(ahp_report, params)
+    for key in (
+        "lst_not_air_temp",
+        "zonal_not_pixel",
+        "sensitivity_reporting",
+        "mcda_weights_are_judgements",
+    ):
+        fragment = " ".join(params["caveats"][key].split())[:60]
+        assert fragment in " ".join(caption.split())
+
+
+def test_the_greening_caption_states_the_ratio_and_normalisation(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    caption = viz.greening_caption(ahp_report, params)
+    assert "consistency ratio" in caption
+    assert "PASSES" in caption
+    assert "percentile_rank" in caption
+
+
+def test_the_caption_leads_with_the_failure_when_judgements_fail(
+    params: dict[str, Any], inconsistent_report: dict[str, Any]
+) -> None:
+    # A reader has to meet the failure before anything else on the figure.
+    caption = viz.greening_caption(inconsistent_report, params)
+    assert caption.splitlines()[0].startswith("*** INCONSISTENT JUDGEMENTS")
+    assert "FAILS" in caption
+
+
+def test_the_failure_headline_is_none_when_judgements_pass(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    assert viz.greening_failure_headline(ahp_report, params) is None
+    assert viz.greening_failure_headline(None, params) is None
+
+
+def test_the_failure_headline_names_the_consistency_ratio(
+    params: dict[str, Any], inconsistent_report: dict[str, Any]
+) -> None:
+    headline = viz.greening_failure_headline(inconsistent_report, params)
+    assert headline is not None
+    assert "CR =" in headline
+
+
+def test_a_degenerate_matrix_gets_its_own_headline(params: dict[str, Any]) -> None:
+    # "No judgement was made" is a different failure from "the judgements
+    # disagree with each other", and the banner must not conflate them.
+    import numpy as np
+
+    from colombo_uhi import greening
+
+    report = greening.ahp_weights(np.ones((4, 4)), params, list("abcd"), warn=False)
+    headline = viz.greening_failure_headline(report, params)
+    assert headline is not None
+    assert "NO JUDGEMENT WAS MADE" in headline
+
+
+def test_a_failing_ratio_leads_even_when_the_matrix_is_also_degenerate(
+    params: dict[str, Any],
+) -> None:
+    """The two failures can co-occur, and the substantive one must lead.
+
+    A perfect 3-cycle at equal strength is symmetric, so it scores a huge
+    consistency ratio *and* returns equal weights. Reporting only "no judgement
+    was made" would hide the fact that the judgements also contradict each other.
+    """
+    import numpy as np
+
+    from colombo_uhi import greening
+
+    matrix = np.ones((3, 3))
+    matrix[0, 1], matrix[1, 0] = 9.0, 1 / 9
+    matrix[1, 2], matrix[2, 1] = 9.0, 1 / 9
+    matrix[2, 0], matrix[0, 2] = 9.0, 1 / 9
+    report = greening.ahp_weights(matrix, params, ["a", "b", "c"], warn=False)
+    assert report["degenerate"] is True
+    assert report["consistency_ratio"] > report["consistency_ratio_max"]
+
+    headline = viz.greening_failure_headline(report, params)
+    assert headline is not None
+    assert headline.startswith("*** INCONSISTENT JUDGEMENTS")
+    assert "CR =" in headline
+
+
+def test_the_compliance_caption_adds_the_network_caveat(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    caption = viz.greening_caption(
+        ahp_report,
+        params,
+        keys=(*viz.GREENING_CAVEATS, "euclidean_not_network"),
+    )
+    assert "WALKING distance" in " ".join(caption.split())
+
+
+# --- Palettes ----------------------------------------------------------------
+
+
+def test_the_priority_palette_is_a_ramp(params: dict[str, Any]) -> None:
+    palette = viz.priority_palette(params)
+    assert len(palette) >= 4
+    assert all(colour.startswith("#") for colour in palette)
+
+
+def test_the_compliance_palette_has_exactly_five_entries(
+    params: dict[str, Any],
+) -> None:
+    from colombo_uhi import greening
+
+    palette = viz.compliance_palette(params)
+    assert set(palette) == set(greening.COMPLIANCE_CATEGORIES)
+    assert len(palette) == 5
+    assert all(colour.startswith("#") for colour in palette.values())
+
+
+# --- The AHP weights figure --------------------------------------------------
+
+
+def test_the_ahp_weights_figure_renders(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_ahp_weights_figure(
+        greening_tables["ahp_frame"],
+        greening_tables["report"],
+        params,
+        matrix=greening_tables["matrix"],
+        names=greening_tables["names"],
+    )
+    assert figure.get_figwidth() > 6
+    assert len(figure.axes) >= 2
+
+
+def test_the_ahp_banner_reports_pass_when_consistent(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_ahp_weights_figure(
+        greening_tables["ahp_frame"], greening_tables["report"], params
+    )
+    text = _figure_text(figure)
+    assert "CR = 0.0081" in text
+    assert "PASS" in text
+    assert "INCONSISTENT" not in _figure_titles(figure)
+
+
+def test_the_ahp_banner_reports_inconsistent_above_the_threshold(
+    params: dict[str, Any], inconsistent_report: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    from colombo_uhi import greening
+
+    frame = greening.build_ahp_frame(inconsistent_report, params)
+    figure = viz.build_ahp_weights_figure(frame, inconsistent_report, params)
+    assert "INCONSISTENT" in _figure_text(figure)
+    assert "INCONSISTENT JUDGEMENTS" in _figure_titles(figure)
+
+
+def test_the_ahp_figure_still_draws_when_judgements_fail(
+    params: dict[str, Any], inconsistent_report: dict[str, Any]
+) -> None:
+    # A figure showing that judgements failed is exactly what the report needs;
+    # refusing to draw it throws the evidence away.
+    pytest.importorskip("matplotlib")
+    from colombo_uhi import greening
+
+    frame = greening.build_ahp_frame(inconsistent_report, params)
+    figure = viz.build_ahp_weights_figure(frame, inconsistent_report, params)
+    assert figure.axes
+
+
+def test_the_ahp_figure_explains_the_log_colour_scale(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_ahp_weights_figure(
+        greening_tables["ahp_frame"],
+        greening_tables["report"],
+        params,
+        matrix=greening_tables["matrix"],
+        names=greening_tables["names"],
+    )
+    assert "LOGARITHMIC" in _figure_text(figure)
+
+
+def test_the_ahp_figure_refuses_an_empty_frame(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="no weights"):
+        viz.build_ahp_weights_figure(pd.DataFrame(), ahp_report, params)
+
+
+def test_plot_ahp_weights_writes_a_png(
+    params: dict[str, Any], greening_tables: dict[str, Any], tmp_path: Path
+) -> None:
+    pytest.importorskip("matplotlib")
+    out = viz.plot_ahp_weights(
+        greening_tables["ahp_frame"],
+        greening_tables["report"],
+        tmp_path / "ahp.png",
+        params,
+        matrix=greening_tables["matrix"],
+        names=greening_tables["names"],
+    )
+    assert out.is_file() and out.stat().st_size > 0
+
+
+# --- The ranking comparison --------------------------------------------------
+
+
+def test_the_ranking_comparison_renders_and_reports_rho(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_ranking_comparison_figure(
+        greening_tables["ranked"],
+        greening_tables["topsis"],
+        greening_tables["comparison"],
+        params,
+        shifts=greening_tables["shifts"],
+        ahp_report=greening_tables["report"],
+    )
+    axes_text = " ".join(text.get_text() for text in figure.axes[0].texts)
+    assert "Spearman rho" in axes_text
+    assert "Kendall tau" in axes_text
+    assert "Top-" in axes_text
+
+
+def test_the_ranking_comparison_says_agreement_is_not_validation(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_ranking_comparison_figure(
+        greening_tables["ranked"],
+        greening_tables["topsis"],
+        greening_tables["comparison"],
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    text = " ".join(_figure_text(figure).split())
+    assert "ROBUSTNESS check, not a validation" in text
+
+
+def test_the_ranking_comparison_refuses_an_empty_ranking(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="is empty"):
+        viz.build_ranking_comparison_figure(
+            pd.DataFrame(), greening_tables["topsis"], {}, params
+        )
+
+
+def test_plot_ranking_comparison_writes_a_png(
+    params: dict[str, Any], greening_tables: dict[str, Any], tmp_path: Path
+) -> None:
+    pytest.importorskip("matplotlib")
+    out = viz.plot_ranking_comparison(
+        greening_tables["ranked"],
+        greening_tables["topsis"],
+        greening_tables["comparison"],
+        tmp_path / "compare.png",
+        params,
+        shifts=greening_tables["shifts"],
+        ahp_report=greening_tables["report"],
+    )
+    assert out.is_file() and out.stat().st_size > 0
+
+
+# --- The priority table figure -----------------------------------------------
+
+
+def test_the_priority_table_renders_the_top_rows(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_priority_table_figure(
+        greening_tables["full"], params, ahp_report=greening_tables["report"], top_n=6
+    )
+    assert "Top 6" in _figure_titles(figure)
+
+
+def test_the_priority_table_wraps_a_long_division_name(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    frame = greening_tables["full"].copy()
+    frame.loc[frame.index[0], "adm4_name"] = "A" * 60
+    figure = viz.build_priority_table_figure(
+        frame, params, ahp_report=greening_tables["report"], top_n=4
+    )
+    table = figure.axes[0].tables[0]
+    wrapped = table[1, list(range(len(table.get_celld()))).index(0) + 2].get_text()
+    assert "\n" in wrapped.get_text() or len(wrapped.get_text()) <= 60
+
+
+def test_the_priority_table_says_the_score_matters_as_much_as_the_rank(
+    params: dict[str, Any], greening_tables: dict[str, Any]
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_priority_table_figure(
+        greening_tables["full"], params, ahp_report=greening_tables["report"], top_n=5
+    )
+    assert "SCORE matters as much as the rank" in " ".join(_figure_text(figure).split())
+
+
+def test_the_priority_table_refuses_an_empty_frame(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="nothing to tabulate"):
+        viz.build_priority_table_figure(pd.DataFrame(), params)
+
+
+def test_plot_priority_table_writes_a_png(
+    params: dict[str, Any], greening_tables: dict[str, Any], tmp_path: Path
+) -> None:
+    pytest.importorskip("matplotlib")
+    out = viz.plot_priority_table(
+        greening_tables["full"],
+        tmp_path / "table.png",
+        params,
+        ahp_report=greening_tables["report"],
+        top_n=6,
+    )
+    assert out.is_file() and out.stat().st_size > 0
+
+
+# --- The maps (need geopandas) -----------------------------------------------
+
+
+def test_the_priority_map_renders(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_greening_priority_map_figure(
+        greening_zones,
+        greening_tables["full"],
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    assert figure.axes
+
+
+def test_the_priority_map_uses_different_hatches_for_wetland_and_flagged(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    # The two say opposite things: a wetland-adjacent division is a policy
+    # opportunity, a below-coverage one is a division the data could not see.
+    pytest.importorskip("matplotlib")
+    frame = greening_tables["full"].copy()
+    frame["below_land_coverage_floor"] = False
+    frame.loc[frame.index[:3], "below_land_coverage_floor"] = True
+    figure = viz.build_greening_priority_map_figure(
+        greening_zones, frame, params, ahp_report=greening_tables["report"]
+    )
+    legend = figure.axes[0].get_legend()
+    labels = [text.get_text() for text in legend.get_texts()]
+    assert "Within / beside wetland" in labels
+    assert "Below land-coverage floor" in labels
+    # geopandas draws polygons into a PatchCollection, not into axes.patches.
+    hatches = {
+        collection.get_hatch()
+        for collection in figure.axes[0].collections
+        if collection.get_hatch()
+    }
+    assert hatches == {"///", "xxx"}
+    legend_hatches = {
+        handle.get_hatch()
+        for handle in legend.legend_handles
+        if getattr(handle, "get_hatch", None) and handle.get_hatch()
+    }
+    assert legend_hatches == hatches
+
+
+def test_the_priority_map_explains_both_hatches_in_the_footer(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_greening_priority_map_figure(
+        greening_zones,
+        greening_tables["full"],
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    text = " ".join(_figure_text(figure).split())
+    assert "ranked but NOT exported" in text
+    assert "wetland protection is an existing policy instrument" in text
+
+
+def test_the_priority_map_refuses_an_empty_ranking(
+    params: dict[str, Any], greening_zones: Any
+) -> None:
+    with pytest.raises(ValueError, match="nothing to map"):
+        viz.build_greening_priority_map_figure(greening_zones, pd.DataFrame(), params)
+
+
+def test_the_priority_map_refuses_a_missing_score_column(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    with pytest.raises(ValueError, match="score_missing"):
+        viz.build_greening_priority_map_figure(
+            greening_zones,
+            greening_tables["full"],
+            params,
+            score_column="score_missing",
+        )
+
+
+def test_plot_greening_priority_map_writes_a_png(
+    params: dict[str, Any],
+    greening_tables: dict[str, Any],
+    greening_zones: Any,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("matplotlib")
+    out = viz.plot_greening_priority_map(
+        greening_zones,
+        greening_tables["full"],
+        tmp_path / "priority.png",
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    assert out.is_file() and out.stat().st_size > 0
+
+
+def test_the_compliance_map_legend_has_five_entries_in_palette_order(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    pytest.importorskip("matplotlib")
+    from colombo_uhi import greening
+
+    figure = viz.build_compliance_map_figure(
+        greening_zones,
+        greening_tables["compliance"],
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    labels = [text.get_text() for text in figure.axes[0].get_legend().get_texts()]
+    expected = [
+        category.replace("_", " ") for category in greening.COMPLIANCE_CATEGORIES
+    ]
+    assert labels == expected
+
+
+def test_the_compliance_footer_carries_the_network_and_unmeasured_caveats(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    pytest.importorskip("matplotlib")
+    figure = viz.build_compliance_map_figure(
+        greening_zones,
+        greening_tables["compliance"],
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    text = " ".join(_figure_text(figure).split())
+    assert "WALKING distance" in text
+    assert "NOT MEASURABLE from satellite data" in text
+    assert "NOT crown cover" in text
+
+
+def test_the_compliance_map_refuses_a_frame_with_no_verdict(
+    params: dict[str, Any], greening_zones: Any
+) -> None:
+    with pytest.raises(ValueError, match="'compliance' column"):
+        viz.build_compliance_map_figure(
+            greening_zones, pd.DataFrame({"zone_id": ["a"]}), params
+        )
+
+
+def test_the_compliance_map_refuses_an_empty_frame(
+    params: dict[str, Any], greening_zones: Any
+) -> None:
+    with pytest.raises(ValueError, match="nothing to map"):
+        viz.build_compliance_map_figure(greening_zones, pd.DataFrame(), params)
+
+
+def test_plot_compliance_map_writes_a_png(
+    params: dict[str, Any],
+    greening_tables: dict[str, Any],
+    greening_zones: Any,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("matplotlib")
+    out = viz.plot_compliance_map(
+        greening_zones,
+        greening_tables["compliance"],
+        tmp_path / "compliance.png",
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    assert out.is_file() and out.stat().st_size > 0
+
+
+def test_the_criterion_panel_draws_one_axes_per_criterion_plus_correlation(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    pytest.importorskip("matplotlib")
+    from colombo_uhi import greening
+
+    figure = viz.build_criterion_panel_figure(
+        greening_zones,
+        greening_tables["prepared"],
+        params,
+        correlation=greening_tables["correlation"],
+        ahp_report=greening_tables["report"],
+    )
+    titled = [axes.get_title() for axes in figure.axes if axes.get_title()]
+    assert len(titled) >= len(greening.criterion_names(params)) + 1
+    assert any("Criterion correlation" in title for title in titled)
+
+
+def test_the_criterion_panel_says_why_the_panels_look_alike(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    # Five criterion maps that all look the same are not a redundancy in the
+    # figure - they are the finding.
+    pytest.importorskip("matplotlib")
+    figure = viz.build_criterion_panel_figure(
+        greening_zones,
+        greening_tables["prepared"],
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    text = " ".join(_figure_text(figure).split())
+    assert "measuring the same underlying variable" in text
+    assert "leave-one-out ablation" in text
+
+
+def test_the_criterion_panel_refuses_an_unprepared_frame(
+    params: dict[str, Any], greening_zones: Any
+) -> None:
+    with pytest.raises(ValueError, match="prepare_criteria"):
+        viz.build_criterion_panel_figure(
+            greening_zones, pd.DataFrame({"zone_id": ["a"]}), params
+        )
+
+
+def test_plot_criterion_panel_writes_a_png(
+    params: dict[str, Any],
+    greening_tables: dict[str, Any],
+    greening_zones: Any,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("matplotlib")
+    out = viz.plot_criterion_panel(
+        greening_zones,
+        greening_tables["prepared"],
+        tmp_path / "criteria.png",
+        params,
+        correlation=greening_tables["correlation"],
+        ahp_report=greening_tables["report"],
+    )
+    assert out.is_file() and out.stat().st_size > 0
+
+
+def test_every_phase7_map_stamps_the_title_when_judgements_fail(
+    params: dict[str, Any],
+    greening_tables: dict[str, Any],
+    greening_zones: Any,
+    inconsistent_report: dict[str, Any],
+) -> None:
+    pytest.importorskip("matplotlib")
+    for figure in (
+        viz.build_greening_priority_map_figure(
+            greening_zones,
+            greening_tables["full"],
+            params,
+            ahp_report=inconsistent_report,
+        ),
+        viz.build_compliance_map_figure(
+            greening_zones,
+            greening_tables["compliance"],
+            params,
+            ahp_report=inconsistent_report,
+        ),
+    ):
+        assert "INCONSISTENT JUDGEMENTS" in _figure_titles(figure)

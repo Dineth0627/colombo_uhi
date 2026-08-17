@@ -1,6 +1,6 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-15 (Phase 6 **SIGNED OFF** — Colab run 6, all checks closed, 92 output files. 1093 tests pass)_
+_Last updated: 2026-08-17 (Phase 7 **WRITTEN, NOT YET RUN IN COLAB**. 1440 tests pass, 3 skip)_
 
 ## Status snapshot
 
@@ -13,8 +13,259 @@ _Last updated: 2026-08-15 (Phase 6 **SIGNED OFF** — Colab run 6, all checks cl
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ✅ **done + Colab-verified (runs 1–6).** Track A validated: held-out RMSE **1.13 °C**, R² **0.894** on 212 blocks, led by NDBI / built fraction / LCZ. Track B a measured **negative result**: reproduces the quantity of land-cover change, cannot allocate it, never beats a no-change map across 2 schemes × 2 intervals. Greening counterfactual **−0.84 °C** mean inside priority zones at a 20 % canopy shift, validated and exported. 1093 tests pass, 15 skip |
-| 7 | Greening priority (MCDA/AHP) | ⬜ |
+| 7 | Greening priority (MCDA/AHP) | 🔄 **written, awaiting Colab.** AHP CR **0.0081** (12× margin), TOPSIS cross-check, 3-30-300, Ramsar wetland cross. 335 new tests; notebook 07's Part 2/3 cells execute for real, figures included |
 | 8 | Report figures | ⬜ |
+
+---
+
+## PHASE 7 — implementation record (greening priority, NOT YET RUN IN COLAB)
+
+_Written 2026-08-17. **1440 tests pass locally, 3 skip** — up from 1093/15, so **+335 new
+tests** and no pre-existing test changed. Nothing below has touched Earth Engine._
+
+> The skip count fell from 15 to 3 because `geopandas` and `rasterio` — both already
+> declared in `requirements.txt` — were installed into the local environment during this
+> phase. That is what let Phase 7's map figures and the notebook's Part 2 cells be
+> **executed** here rather than first in Colab, and it also un-skipped 12 Phase 5/6 tests
+> that had been deferred. On a machine without them the suite still passes; it just skips
+> more.
+
+### Three things measured from the committed data BEFORE any code was written
+
+These were measured against `data/outputs/`, and each one changed the design.
+
+**F1 — zone-mean UTFVI is arithmetically redundant with LST.** `UTFVI = (Ts − Tmean)/Tmean`
+with a **scalar** `Tmean` (`uhi.utfvi.reference: per_year_aoi_mean`), so a zone mean is an
+affine transform of a zone-mean LST:
+
+```
+rho(LST_C 2020s, zone-mean UTFVI) = +1.000000     exactly, n = 557
+```
+
+Using both as criteria would give heat its weight twice and **nothing on any output would
+look wrong**. → The UTFVI criterion is the **severe-class share** (Bad/Worse/Worst), a
+within-zone distributional property a mean cannot reproduce. This is also the more faithful
+reading of the brief, which asked for "high UTFVI **class**".
+
+**F2 — the criteria are already near-collinear in this city** (n = 557 GN divisions):
+
+| pair | Spearman ρ |
+|---|---|
+| LST 2020s ↔ Dynamic World green fraction 2024 | **−0.9147** |
+| LST 2020s ↔ Gi\* z | +0.9576 |
+| Phase-5 interim priority score ↔ LST | **+0.9829** |
+
+"High LST" and "low vegetation" are very nearly one variable here, and WorldPop — modelled
+partly from built-up area — is a third correlate. → `criterion_correlation`,
+`effective_dimensionality` and above all `criterion_ablation` are the phase's central
+product, not extras, and the notebook prints the verdict whether or not it flatters the
+method.
+
+**F3 — the Phase 5 coverage floor fires on WATER, not on cloud.** 22 of 557 GN divisions
+fall below `spatial_stats.landscape.min_observed_fraction: 0.90`, and the **identical**
+`observed_fraction` appears for Dynamic World 2018, Dynamic World 2024 *and* WorldCover
+2021 in **552 of 557** zones. Three classifiers, three dates, one number: it measures the
+polygon enclosing water.
+
+| zone | name | polygon km² | analysable ha | observed_fraction |
+|---|---|---|---|---|
+| LK1103120 | Fort | 7.463 | 131.4 | 0.705 |
+| LK1103115 | Pettah | 0.924 | 72.4 | 0.783 |
+| LK1103035 | Lunupokuna | 1.369 | 116.9 | 0.854 |
+
+Fort's COD-AB polygon **is** the Colombo Port outer harbour (CLAUDE.md's 6.89 km²).
+Excluding on the raw flag deletes **Pettah and Lunupokuna** from the interim top-60 —
+dense, hot, treeless CMC-core divisions, which is exactly what a greening priority list
+exists to find. → `greening.land_observed_fraction` recomputes coverage against **land**
+(`greening.zone_land_area`), carries the raw flag beside it, and returns the number of
+zones whose status changes so the notebook prints it.
+
+### New / changed files
+
+| File | Change |
+|---|---|
+| `config/params.yaml` | `greening:` expanded from 5 lines to ~330; `caveats:` +2 keys |
+| `src/colombo_uhi/greening.py` | written from the 12-line stub; **85 public names** |
+| `src/colombo_uhi/viz.py` | +6 `build_*`/`plot_*` pairs, `greening_caption`, `greening_failure_headline`, two palettes |
+| `tests/test_greening.py` | new, **249 tests** |
+| `tests/test_params.py` | **+37 tests** pinning every `greening.*` key |
+| `tests/test_viz.py` | **+42 tests** for the Phase 7 figures |
+| `notebooks/07_greening_priority.ipynb` | replaced the one-cell stub; **54 cells, 3 parts** |
+| `tests/test_notebook07.py` | new, **7 tests** — executes the notebook's own Part 2/3 cells |
+
+**No `requirements.txt` change.** `scipy`, `geopandas`, `rasterio` and `matplotlib` were
+already declared.
+
+### The AHP, and why the arithmetic is pinned rather than trusted
+
+Order LST, UTFVI-severe, NDVI-deficit, POP, ACCESS; reciprocals implied and derived as
+exactly `1/value`, so the matrix is reciprocal by construction rather than by rounding:
+
+```
+        LST   UTFVI  NDVI   POP  ACCESS
+LST   [  1      4      2      1     3  ]
+UTFVI [ 1/4     1     1/3    1/4   1/2 ]
+NDVI  [ 1/2     3      1     1/2    2  ]
+POP   [  1      4      2      1     3  ]
+ACC   [ 1/3     2     1/2    1/3    1  ]
+```
+
+| | LST | UTFVI | NDVI | POP | ACCESS |
+|---|---|---|---|---|---|
+| eigenvector | **0.3192** | **0.0683** | **0.1840** | **0.3192** | **0.1093** |
+| geometric mean | 0.3197 | 0.0680 | 0.1836 | 0.3197 | 0.1091 |
+
+`λmax = 5.036357` · `CI = 0.009089` · `RI(5) = 1.12` (Saaty 1980) · **`CR = 0.008115`** —
+passes 0.10 with a factor of ~12 to spare. Max eigenvector-vs-geometric-mean departure
+0.0005. **The heat bloc (LST + UTFVI) is 0.3875**, stated in params and printed by the
+notebook so the double-counting question is answered in the open.
+
+`derived_weights_reference` and `derived_consistency` are **regression pins**:
+`test_params.py` rebuilds the matrix from `ahp.pairwise` and recomputes the eigenvector
+**with `numpy.linalg.eig` alone**, so the pin is not checked by the same code that produced
+it. Edit a judgement and the test says exactly how far every weight moved.
+
+**Power iteration, not `numpy.linalg.eig`, in `src/`.** A positive reciprocal matrix is
+exactly the Perron–Frobenius case, so power iteration converges unconditionally to the one
+eigenvector that matters. `eig` returns complex values in arbitrary order and needs
+`argmax` / `abs` / a sign fix to select from — three places where a silently wrong
+eigenvector can be chosen, none of which raise. `eig` is used **in the test suite**, as the
+independent implementation power iteration is checked against at `atol=1e-10` over 20
+random reciprocal matrices. That is its right place.
+
+Three textbook anchors, in increasing order of strength: Saaty's "choosing a leader" 4×4
+(reproduces the published `0.5470 / 0.1270 / 0.2703 / 0.0556` to 3 dp, `CR = 0.043859`); a
+3×3 where the geometric mean equals the eigenvector to machine precision; and an **exactly
+consistent** matrix built as `a_ij = w_i/w_j`, which must return `w` exactly with `CR = 0`.
+The last is mathematics rather than citation.
+
+### Decisions taken with the user
+
+| # | Decision | Choice, and why |
+|---|---|---|
+| 1 | Feasibility criterion | **Dropped, and PROGRESS.md's Phase 6 promise retired by measurement.** Phase 6 measured grass+shrub+bare at **0.63 %** of the district: there is no vacant-land reservoir to rank, so a plantable-area criterion would be ≈ 0 everywhere and would rank on classifier noise. Greening here means raising canopy *within* built cells, consistent with `canopy_shift_predictors`. |
+| 2 | Whose judgements | **The analyst's**, argued from the literature and this project's own measurements, with a rationale recorded per pair. The report must say so; `caveats.mcda_weights_are_judgements` travels on every figure. |
+| 3 | The 300 m metric | **Euclidean EDT + a 1.3 detour ratio**, reported side by side. No `osmnx` dependency; the gap between the 300 m and 231 m columns is the size of the error. |
+| 4 | User asset hooks | **Both built, both shipped null.** The wetland cross is a four-source proxy union and 3-30-300 compliance is an explicit **upper bound**. |
+
+### Six things that would have produced confident, wrong products silently
+
+1. **Heat counted twice through a zone-mean UTFVI** (F1). Fixed by the severe-class share,
+   with a params test that the criterion column is not a mean.
+2. **The coverage floor deleting the CMC core** (F3). Fixed by the land denominator, with
+   both flags travelling and the status-change count printed.
+3. **A zone with missing data sunk to the bottom of the ranking.**
+   `prediction.interim_priority_zones` used `na_option="bottom"` — tolerable for an interim
+   proxy, not for a published recommendation. `prepare_criteria` redistributes the absent
+   criterion's *weight* (so a zone lacking the 0.068-weighted UTFVI share is not treated
+   like one lacking the 0.319-weighted heat criterion) and refuses to score above
+   `max_missing_weight`. **An AST test asserts `na_option="bottom"` is called nowhere in
+   `greening.py`** — checked on the syntax tree, so the docstring that warns against it does
+   not trip the test and a real call cannot hide behind formatting.
+4. **A weight attached to the wrong criterion.** Judgements are configured as **named
+   pairs** (`lst_hot__ndvi_deficit: 2`), never a nested list, and weights are passed as a
+   name-keyed mapping. A missing pair, a duplicated pair, or a pair given in both orders
+   **raises**. A test pins that reordering `greening.criteria` changes no weight.
+5. **A no-judgement matrix passing the consistency check.** All-1s scores `CR = 0` and has
+   decided nothing. `require_consistent` also refuses below `min_weight_spread`, so a
+   passing ratio can never be read as "the judgements were good".
+6. **TOPSIS rank reversal.** The ideal and anti-ideal come from the alternative *set*, so
+   `topsis_scores` is re-run on the retained zones rather than sub-selected, and
+   `compare_rankings` **refuses mismatched zone sets** and names this as the reason.
+
+### Warn at computation, refuse at product
+
+The brief asked for a CR **warning**; everywhere else in this repo a guard **refuses**. The
+project already owns the resolution — it learned it in Colab run 3, when `require_validated`
+turned a *measured* negative result into a traceback and destroyed every valid product
+beside it. Phase 7 copies that shape exactly:
+
+| Site | Behaviour |
+|---|---|
+| `ahp_weights()` | computes, sets `consistent: False`, emits `ConsistencyWarning`, **returns** |
+| notebook Step 1 | prints the boxed verdict and **continues** — an analyst needs the weights to fix the judgements |
+| every Phase 7 `viz.build_*` | **draws, and stamps** `INCONSISTENT JUDGEMENTS` in the title and at the head of the footer |
+| `write_priority_table`, `export_priority_table` | call `require_consistent` **before** touching disk → **refuse** |
+
+An AST test pins that the notebook's AHP step calls `ahp_weights` and does **not** call
+`require_consistent`, and a second that the writing cell goes through `write_priority_table`
+rather than a bare `to_csv`.
+
+### Two real bugs the notebook test caught before Colab
+
+`tests/test_notebook07.py` executes the notebook's own Part 2 and Part 3 cells verbatim in
+one namespace — **including the figure cell, against real geopandas and matplotlib**, so
+400 lines of map-drawing code were exercised locally rather than first in Colab. It found
+two defects that no unit test of `greening.py` could reach:
+
+1. **`NameError: WEIGHTS`.** Part 2 claims to run as a separate, Earth-Engine-free session,
+   but `WEIGHTS` / `AHP_REPORT` are set in Step 1, which sits in Part 1. Step 1 is pure
+   arithmetic on `params` and touches no data at all, so the fix was to say so: the WAIT
+   HERE cell now names the three cells a fresh Part-2 session must re-run.
+2. **`KeyError: 'rank_ahp'` in `compare_rankings`.** The normalisation sensitivity
+   (percentile rank vs min-max) and the sensor sensitivity (pooled vs single-sensor) both
+   compare two runs of the *same* method, so both frames carry `rank_ahp` and a plain merge
+   suffixed them to `rank_ahp_x`/`rank_ahp_y`. Fixed in the module, not worked around in the
+   notebook, with tests for both functions.
+
+A third test does what execution cannot: Part 1 needs a live Earth Engine session, so a
+**static ALL-CAPS name-flow check** runs across all 27 code cells in order and fails if any
+cross-cell name is used before assignment. That is the exact shape of Phase 6's run-2
+`NameError`.
+
+### What is measured, and what is only argued
+
+`greening.source` is the **pooled** `landsat_dry` series. Phase 4 forbids fitting a *trend*
+across it, but every criterion here is a **within-epoch level** and the ranking is over
+zones within one epoch, so a spatially uniform sensor step shifts every zone equally and
+cancels — as it does in SUHII and in Phase 5's Gi\*. That is an argument, so Step 12 also
+**measures** it: the whole ranking re-runs on the single-sensor `landsat_oli_dry` series and
+reports the rank correlation. If the ranking moves, the argument is wrong for a level
+criterion and the single-sensor ranking is what publishes.
+
+### Limits that travel into Phase 8
+
+1. **The weights are judgements**, argued rather than elicited. A different defensible set
+   gives a different ranking.
+2. **The criteria are near-collinear** (F2). If the ablation says the MCDA reproduces a
+   ranking by LST, that is the finding and it goes in the report.
+3. **3-30-300 compliance is an upper bound.** Dynamic World cannot tell a public park from
+   a private garden, a cantonment or the Colombo Golf Club, and no free layer resolves it.
+   **This is the largest unquantified error in the phase.**
+4. **The "3" was never measured** and no output may imply otherwise — hence five compliance
+   categories rather than a boolean.
+5. **The 300 m is straight-line**, so access is overstated by an unknown amount bounded
+   only by the 231 m detour column.
+6. **No official Colombo Wetland Complex boundary was used.** Colombo's 2018 accreditation
+   is a Wetland *City* accreditation, not a Ramsar *Site* designation, so none exists in any
+   free dataset. The layer is Dynamic World flooded vegetation + WorldCover herbaceous
+   wetland and mangroves + JRC GSW seasonality (1–11 months, excluding permanent water) +
+   WDPA's legally declared areas, with per-zone provenance naming which sources fired.
+7. **Agreement with Phase 5 is not validation** — three of five criteria overlap its proxy
+   and ρ(interim, LST) is already +0.9829 — and Phase 6's −0.84 °C counterfactual was
+   computed *inside* the Phase-5 zones, so it cannot be cited as evidence for these.
+8. **Canopy is a 10 m modal tree-class share**, not crown cover from a canopy-height model.
+9. **Every result is a property of the GN aggregation** (`caveats.zonal_not_pixel`).
+
+### What the Colab run must establish
+
+`git push` first — Step 0's staleness guard runs against the pushed repo and names the whole
+Phase 7 API surface.
+
+| # | Check |
+|---|---|
+| 1 | Step 1 prints **CR = 0.0081** and a `PASS` box. Anything else means params and the pin have drifted |
+| 2 | Step 2's region guard passes at ~699 km², and the land-cover year clears the coverage floor |
+| 3 | Step 3 finds at least one WDPA area inside Colombo District and **names** it |
+| 4 | Step 10's detour service area is a strict subset of the plain one, and the five compliance categories are non-degenerate |
+| 5 | Step 11 prints how many zones change status under the land floor, and **Pettah and Lunupokuna survive** |
+| 6 | Step 14's ablation prints its verdict **whether or not it flatters the method** |
+| 7 | Step 18 produces **five refusals**, then clears the real product |
+| 8 | Step 19 writes seven CSVs plus their `_meta.json` sidecars |
+
+Open questions the run answers (S1–S8) are listed in the notebook's final cell.
+
+---
 
 ### Colab run 6 (2026-08-15) — ✅ PHASE 6 COMPLETE. The greening lever bites; every guard held
 
