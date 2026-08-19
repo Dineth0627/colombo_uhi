@@ -2660,3 +2660,60 @@ def test_the_module_imports_without_earth_engine() -> None:
     assert "ee" not in sys.modules or True  # ee may be installed; it must not be needed
     module = importlib.reload(greening)
     assert callable(module.ahp_weights)
+
+
+# =============================================================================
+# Regressions from Colab run 1
+# =============================================================================
+
+
+def test_no_wetland_layer_is_built_with_reduce_to_image() -> None:
+    """``reduceToImage`` returned a fully-masked image and cost a run.
+
+    Colab run 1 listed ten WDPA protected areas over Colombo District by name -
+    including every wetland site the cross exists to find - and then reported the
+    WDPA raster as **0.00 km2**, so the source was dropped from the union as
+    "returns nothing here". An empty raster that reads as an honest zero is the
+    worst failure mode in this module. ``paint`` inherits the projection of the
+    image it paints onto and has no such subtlety.
+
+    Checked on the AST, so a call cannot hide behind formatting.
+    """
+    source = (repo_root() / "src" / "colombo_uhi" / "greening.py").read_text(
+        encoding="utf-8"
+    )
+    offenders = [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "reduceToImage"
+    ]
+    assert not offenders, (
+        f"reduceToImage is called at line(s) {offenders}. It returned a "
+        "fully-masked image for the WDPA collection in Colab run 1, so the only "
+        "legally-designated wetland source silently vanished from the union. "
+        "Use ee.Image.constant(0).byte().paint(...) instead."
+    )
+
+
+def test_the_wdpa_designation_filter_is_configured(params: dict[str, Any]) -> None:
+    """WDPA is a protected-area layer, not a wetland layer.
+
+    Ten protected areas intersect Colombo District and only four are wetlands.
+    The rest are inland forest - Labugama Kalatuwawa is a water-catchment forest
+    some 30 km inland - and flagging a division wetland-adjacent on the strength
+    of a reserved forest would be a different instrument over a different
+    landscape.
+    """
+    wdpa = params["greening"]["wetland"]["source_definitions"]["wdpa"]
+    designations = wdpa.get("designations_include")
+    assert designations is None or (
+        isinstance(designations, list)
+        and designations
+        and all(isinstance(value, str) and value for value in designations)
+    )
+    if designations is not None:
+        # The two that carry Colombo's wetland sanctuaries and EPAs.
+        assert "Sanctuary" in designations
+        assert "Environmental Protection Area (EPA)" in designations

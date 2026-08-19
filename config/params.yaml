@@ -2402,6 +2402,21 @@ greening:
         iso3_value: "LKA"
         name_property: "NAME"           # printed by the notebook probe so the analyst can SEE
         designation_property: "DESIG_ENG"   # which areas were found before trusting the layer
+        designations_include:           # *** WDPA IS A PROTECTED-AREA LAYER, NOT A WETLAND
+          - "Sanctuary"                 # LAYER. *** [MEASURED - Colab run 1] Ten protected
+          - "Environmental Protection Area (EPA)"   # areas intersect Colombo District, and
+                                        # only these two designations are wetlands here:
+                                        #   Sanctuary  -> Bellanwila-Attidiya, Sri Jayawardanapura
+                                        #   EPA        -> Thalangama, Bolgoda
+                                        # The other six are inland forest (Labugama Kalatuwawa,
+                                        # Indikada Mukalana, Mitirigala, Kananpella, Miriyagalla,
+                                        # Kurana Madakada) - Labugama is a water-catchment forest
+                                        # some 30 km inland. Flagging a division wetland-adjacent
+                                        # on the strength of a reserved forest would be a
+                                        # different policy instrument over a different landscape.
+                                        # Set to null to include EVERY protected area; the
+                                        # notebook probe prints what was included AND excluded so
+                                        # the choice is visible rather than buried.
         note: >-
           Captures LEGALLY DECLARED protected areas (e.g. the Bellanwila-Attidiya
           sanctuary) and NOT the full Colombo Wetland Complex, because Colombo's

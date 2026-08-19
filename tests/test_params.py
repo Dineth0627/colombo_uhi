@@ -1627,3 +1627,15 @@ def test_phase7_caveats_present(params: dict[str, Any]) -> None:
     for key in ("euclidean_not_network", "mcda_weights_are_judgements"):
         assert key in params["caveats"], f"caveats.{key} missing"
         assert params["caveats"][key].strip()
+
+
+def test_the_wdpa_source_names_the_properties_the_filter_needs(
+    params: dict[str, Any],
+) -> None:
+    # [MEASURED - Colab run 1] Ten protected areas intersect Colombo District and
+    # only four are wetlands; the filter is what keeps the other six - all inland
+    # forest - out of a layer called "wetland".
+    wdpa = params["greening"]["wetland"]["source_definitions"]["wdpa"]
+    for key in ("name_property", "designation_property"):
+        assert isinstance(wdpa[key], str) and wdpa[key]
+    assert "designations_include" in wdpa

@@ -1,6 +1,83 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-17 (Phase 7 **WRITTEN, NOT YET RUN IN COLAB**. 1440 tests pass, 3 skip)_
+_Last updated: 2026-08-19 (Phase 7 **Colab run 1 — Part 1 complete, five defects fixed**. 1443 tests pass, 3 skip)_
+
+### Colab run 1 (2026-08-19) — Part 1 ran end to end; five defects, one of them silent
+
+Every Part 1 cell executed. The headline check passed on the first attempt:
+
+```
+PASS: consistency ratio 0.0081 <= 0.10
+PASS: work region 685.6 km2, -1.9% from the expected 699 km2
+PASS: Dynamic World 2024 covers 99.96% of the district (floor 90%)
+```
+
+`lambda_max` 5.036357, CI 0.009089, eigenvector-vs-geometric-mean departure 0.000487 — the
+regression pin reproduced exactly. Dynamic World 2016 measured **21.6 %** coverage against
+2024's 99.96 %, re-confirming Phase 5's exclusion of it from a different direction. UTFVI
+severe shares came back for 557 GN and 13 DS divisions.
+
+Five defects, listed worst-first.
+
+**D1 — WDPA rasterised to nothing, and the notebook accepted it.** The probe listed **ten**
+protected areas intersecting Colombo District *by name* — including
+**Bellanwila-Attidiya**, **Sri Jayawardanapura**, **Thalangama EPA** and **Bolgoda EPA**,
+which are precisely the Colombo Wetland Complex sites the cross exists to find — and then
+reported the WDPA raster as **0.00 km²** and dropped it from the union as "returns nothing
+here". `reduceToImage(["WDPAID"], ee.Reducer.count())` returned a fully-masked image.
+
+This is the worst failure mode in the module: **an empty raster that reads as an honest
+zero**. The wetland cross would have run on three remote-sensing proxies with its only
+legally-designated source missing, and nothing in the output would have said so.
+
+Fixed three ways: `ee.Image.constant(0).byte().paint(...)` replaces `reduceToImage` (which
+also fixes the user-asset branch, where it was worse still — `system:index` is a STRING and
+a count reducer cannot sum over it); an AST test asserts `reduceToImage` is called nowhere
+in `greening.py`; and the notebook now **raises** on the contradiction itself — features
+found and raster empty is a rasterisation fault, not an absence of wetland.
+
+**D2 — WDPA is a protected-area layer, not a wetland layer.** Six of the ten areas are
+inland forest: Labugama Kalatuwawa (a water-catchment forest ~30 km inland), Indikada
+Mukalana, Mitirigala, Kananpella, Miriyagalla, Kurana Madakada. Folding those into a
+"wetland" union would flag divisions as wetland-adjacent on the strength of a reserved
+forest — a different policy instrument over a different landscape. `designations_include`
+now keeps `Sanctuary` and `Environmental Protection Area (EPA)`, and the probe prints what
+was **included and excluded** so the choice is visible rather than buried.
+
+**D3 — the population export FAILED.**
+
+```
+Exported bands must have compatible data types; found inconsistent types: Float32 and Byte.
+```
+
+`population` was Float32 and `observed` Byte; `Export.image.toDrive` refuses a mixed-type
+stack. The cast now goes on the concatenation rather than on each band, where the two could
+drift apart again. **This is the only failed export — it must be re-submitted.**
+
+**D4 — Part 2's file discovery would have matched nothing.** The export template puts the
+level in the *suffix*: `zone_covariates_district_2000_2025_100m_gn_2020s.csv`. The globs
+looked for `zone_covariates_gn_*.csv`. Part 2 would have died on a `FileNotFoundError` with
+every product sitting in `data/interim/`. The test fixture had carried the same guessed
+names, which is exactly why it passed locally; it now uses the real ones. `_find` also
+refuses an ambiguous match rather than picking one by sort order.
+
+**D5 — the single-sensor export lost its level marker.** `suffix="oli"` overrode the
+`{level}_{epoch}` default, so the file recorded neither. Now `f"{LEVEL}_{EPOCH}_oli"`.
+
+#### What run 2 must re-do
+
+Part 1 must be re-run from **Step 3** (the wetland probe) onward: the wetland raster was
+exported without WDPA and the population export failed. Steps 4 and 5 (covariate tables,
+UTFVI shares) completed and need not repeat, though re-running Step 4 is harmless and gives
+the single-sensor table its proper name.
+
+| Check | What run 2 establishes |
+|---|---|
+| Step 3 | WDPA reports a **non-zero** km², names four included sites and six excluded, and the contradiction guard stays quiet |
+| Step 7 | The population export reaches COMPLETED |
+| Step 8 | The wetland raster carries a `wdpa` band |
+| Part 2 | The discovery cell resolves all eight products |
+
 
 ## Status snapshot
 

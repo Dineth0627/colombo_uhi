@@ -3259,10 +3259,15 @@ def population_image(
 
     # people/km2 -> people per cell of the analysis grid
     cell_km2 = (scale * scale) / 1_000_000.0
-    population = density.multiply(cell_km2).rename("population").toFloat()
-    observed = density.mask().reduce("min").gt(0).rename("observed").toByte()
+    population = density.multiply(cell_km2).rename("population")
+    observed = density.mask().reduce("min").gt(0).rename("observed")
 
-    return ee.Image.cat([population.unmask(0), observed]).set(
+    # *** BOTH BANDS MUST SHARE ONE DTYPE. *** Colab run 1 lost this export to
+    # "Exported bands must have compatible data types; found inconsistent types:
+    # Float32 and Byte" - a Float32 count beside a Byte mask. Export.image.toDrive
+    # refuses a mixed-type stack outright, so the cast goes on the CAT rather than
+    # on each band, where the two could drift apart again.
+    return ee.Image.cat([population.unmask(0), observed]).toFloat().set(
         {"population_year": resolved_year, "scale_m": scale}
     )
 
@@ -3772,6 +3777,25 @@ def wdpa_collection(
     collection = ee.FeatureCollection(str(config["id"])).filter(
         ee.Filter.eq(str(config["iso3_property"]), str(config["iso3_value"]))
     )
+
+    # *** WDPA IS A PROTECTED-AREA LAYER, NOT A WETLAND LAYER. ***
+    # [MEASURED - Colab run 1] Ten protected areas intersect Colombo District,
+    # and only four of them are wetlands: the Bellanwila-Attidiya and Sri
+    # Jayawardanapura sanctuaries, and the Thalangama and Bolgoda Environmental
+    # Protection Areas. The other six are inland forest - Labugama Kalatuwawa,
+    # Indikada Mukalana, Mitirigala, Kananpella, Miriyagalla and Kurana Madakada,
+    # the first of which is a water-catchment forest some 30 km inland. Folding
+    # those into a "wetland" union would flag divisions as wetland-adjacent on
+    # the strength of a forest reserve, which is a different policy instrument
+    # over a different landscape.
+    designations = config.get("designations_include")
+    if designations:
+        collection = collection.filter(
+            ee.Filter.inList(
+                str(config["designation_property"]),
+                [str(value) for value in designations],
+            )
+        )
     if region is not None:
         collection = collection.filterBounds(region)
     return collection
@@ -3812,13 +3836,23 @@ def wetland_source_image(
         )
 
     if source == "asset":
-        collection = wetland_asset_collection(params)
-        image = collection.reduceToImage(["system:index"], ee.Reducer.count()).gt(0)
+        # Same `paint` idiom as the WDPA branch below, and for the same reason.
+        # `reduceToImage(["system:index"], count)` would be worse here still:
+        # system:index is a STRING, which a count reducer cannot sum over.
+        image = ee.Image.constant(0).byte().paint(
+            featureCollection=wetland_asset_collection(params), color=1
+        )
     elif source == "wdpa":
-        image = (
-            wdpa_collection(params, region=region)
-            .reduceToImage(["WDPAID"], ee.Reducer.count())
-            .gt(0)
+        # `paint` rather than `reduceToImage`. Colab run 1 measured what the
+        # difference costs: reduceToImage returned a fully-masked image, so WDPA
+        # summed to 0.00 km2 and was dropped from the union as "returns nothing
+        # here" - while the probe beside it was listing ten protected areas by
+        # name, including every wetland site the cross exists to find. An empty
+        # raster that reads as an honest zero is the worst failure mode in this
+        # module. `paint` inherits the projection of the image it paints onto and
+        # has no such subtlety.
+        image = ee.Image.constant(0).byte().paint(
+            featureCollection=wdpa_collection(params, region=region), color=1
         )
     elif source == "gsw_seasonal":
         config = definitions[source]

@@ -328,10 +328,15 @@ def test_every_part_2_notebook_cell_executes(
     # The files the discovery cell globs for, plus the committed inputs Part 2
     # reads directly.
     interim = tmp_path / "data/interim"
+    # THE REAL NAMES Colab run 1 produced. The first three matter: the export
+    # template puts the level in the SUFFIX, so they are
+    # `zone_covariates_district_..._gn_2020s.csv`, not `zone_covariates_gn_...`.
+    # This fixture originally carried the guessed form, which is why the run
+    # reached Part 2 with globs that matched nothing.
     for stem in (
-        "zone_covariates_gn_district_2020_2025_100m.csv",
-        "zone_covariates_ds_district_2020_2025_100m.csv",
-        "zone_covariates_gn_district_2020_2025_100m_oli.csv",
+        "zone_covariates_district_2000_2025_100m_gn_2020s.csv",
+        "zone_covariates_district_2000_2025_100m_ds_2020s.csv",
+        "zone_covariates_district_2000_2025_100m_gn_2020s_oli.csv",
         "greening_utfvi_severe_gn.csv",
         "greening_utfvi_severe_ds.csv",
         "greening_green_canopy_district_2024_2024_10m.tif",
