@@ -157,6 +157,10 @@ def _synthetic(params: dict[str, Any]) -> dict[str, Any]:
     canopy = green & (rng.random((FINE_ROWS, FINE_COLS)) < 0.7)
     observed = np.ones((FINE_ROWS, FINE_COLS), dtype=bool)
     observed[:4, :] = False  # a strip the classifier never saw
+    # Permanent water along one edge, standing in for the Colombo Port outer
+    # harbour: the cells that must NOT count against a zone's land coverage.
+    water = np.zeros((FINE_ROWS, FINE_COLS), dtype=bool)
+    water[:, :20] = True
 
     population = rng.lognormal(4.0, 0.8, (COARSE_ROWS, COARSE_COLS))
     pop_observed = np.ones((COARSE_ROWS, COARSE_COLS), dtype=bool)
@@ -202,9 +206,11 @@ def _synthetic(params: dict[str, Any]) -> dict[str, Any]:
         "green": {
             "green": green & observed,
             "canopy": canopy & observed,
+            "water": water,
             "observed": observed,
+            "land": ~water,
         },
-        "green_profile": _profile(10.0, FINE_ROWS, FINE_COLS, 3),
+        "green_profile": _profile(10.0, FINE_ROWS, FINE_COLS, 4),
         "population": population,
         "pop_observed": pop_observed,
         "pop_profile": _profile(100.0, COARSE_ROWS, COARSE_COLS, 2),

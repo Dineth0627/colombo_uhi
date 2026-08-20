@@ -142,7 +142,13 @@ WETLAND_STATUSES: tuple[str, ...] = ("within", "adjacent", "neither")
 
 #: Band order :func:`green_canopy_image` produces, and the order the exported
 #: GeoTIFF must be read back in.
-GREEN_CANOPY_BANDS: tuple[str, ...] = ("green", "canopy", "observed")
+#:
+#: ``water`` is not decoration. Colab run 3 measured what its absence costs: the
+#: land-coverage floor was computed against the whole rasterised polygon, so it
+#: reproduced the Phase 5 fraction to 16 decimal places for 555 of 557 zones and
+#: excluded Pettah and Lunupokuna from the priority list on the strength of the
+#: harbour inside their polygons.
+GREEN_CANOPY_BANDS: tuple[str, ...] = ("green", "canopy", "water", "observed")
 
 #: Band order :func:`population_image` produces.
 POPULATION_BANDS: tuple[str, ...] = ("population", "observed")
@@ -3428,12 +3434,13 @@ def green_canopy_image(
         scheme: Override for ``greening.landcover_scheme``.
 
     Returns:
-        Three-band ``ee.Image`` in :data:`GREEN_CANOPY_BANDS` order, carrying
-        ``scheme`` and ``year`` properties.
+        Four-band ``ee.Image`` in :data:`GREEN_CANOPY_BANDS` order - ``green``,
+        ``canopy``, ``water`` and ``observed`` - carrying ``scheme`` and ``year``
+        properties.
     """
     import ee  # Deferred: see module docstring.
 
-    from colombo_uhi import landcover
+    from colombo_uhi import aoi, landcover
 
     config = params["greening"]["rule_3_30_300"]
     resolved_scheme = str(
@@ -3467,7 +3474,21 @@ def green_canopy_image(
         .toByte()
     )
 
-    return ee.Image.cat([green, canopy, observed]).set(
+    # *** THE LAND DENOMINATOR. ***
+    # `observed` says the classifier produced a value; it does NOT say the cell
+    # is land. Over the Colombo Port outer harbour Dynamic World produces
+    # nothing at all, so a coverage fraction taken against the whole polygon
+    # counts open water as missing data. Run 3 measured the consequence: Pettah
+    # at 0.783 and Lunupokuna at 0.854 were excluded from the priority list -
+    # dense, hot, treeless CMC-core divisions - because a fifth of each polygon
+    # is harbour.
+    #
+    # aoi.static_water_mask is the right instrument: JRC occurrence is derived
+    # from 38 years of Landsat and is authoritative for PERMANENT water, which
+    # is exactly what the harbour, Beira, Bolgoda, Diyawanna and the Kelani are.
+    water = aoi.static_water_mask(params, region=region).rename("water").toByte()
+
+    return ee.Image.cat([green, canopy, water, observed]).set(
         {"scheme": resolved_scheme, "year": int(resolved_year)}
     )
 
@@ -3643,7 +3664,9 @@ def read_green_canopy_raster(
 
     Returns:
         ``(bands, profile)`` where ``bands`` maps each of
-        :data:`GREEN_CANOPY_BANDS` to a boolean array.
+        :data:`GREEN_CANOPY_BANDS` to a boolean array, plus a derived ``land``
+        band (``not water``) - the denominator the coverage floor must be taken
+        against.
 
     Raises:
         ValueError: If the file does not carry exactly three bands.
@@ -3658,6 +3681,10 @@ def read_green_canopy_raster(
     # A cell the classifier never saw is neither green nor not-green.
     bands["green"] = bands["green"] & bands["observed"]
     bands["canopy"] = bands["canopy"] & bands["observed"]
+    # The land denominator the coverage floor must be taken against. Derived here
+    # so no caller has to remember to negate the water band - forgetting exactly
+    # that is what made the run-2 fix inert.
+    bands["land"] = ~bands["water"]
     return bands, profile
 
 

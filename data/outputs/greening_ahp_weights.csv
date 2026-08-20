@@ -1,0 +1,6 @@
+criterion,label,direction,weight,weight_geometric,weight_rank
+lst_hot,Land surface temperature (2020s dry-season mean),benefit,0.319185484490906,0.31967279014900263,1
+pop_density,"Population density (WorldPop 2020, people/km2)",benefit,0.319185484490906,0.31967279014900263,2
+ndvi_deficit,Vegetation deficit (inverse NDVI),cost,0.18400551926416747,0.18360380409073584,3
+green_access_deficit,Residents beyond 300 m of a green space >= 0.5 ha (3-30-300),cost,0.1093441202139102,0.10909753082135142,4
+utfvi_severe_share,Share of zone in UTFVI Bad/Worse/Worst,benefit,0.06827939154011041,0.06795308478990748,5

@@ -2248,3 +2248,85 @@ def test_every_phase7_map_stamps_the_title_when_judgements_fail(
         ),
     ):
         assert "INCONSISTENT JUDGEMENTS" in _figure_titles(figure)
+
+
+# --- Footer legibility, from Colab run 3 -------------------------------------
+
+
+def test_the_caption_wraps_figure_specific_footer_text(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    """Run 3 shipped two figures whose last footer line ran off the canvas.
+
+    ``caveat_footer`` wrapped the standing caveats; ``extra`` was appended
+    verbatim beside them.
+    """
+    caption = viz.greening_caption(
+        ahp_report,
+        params,
+        extra=("word " * 90, "a second bullet " * 20),
+    )
+    longest = max(len(line) for line in caption.split("\n"))
+    assert longest <= viz.CAVEAT_WRAP_CHARS
+
+
+def test_a_dash_inside_a_bullet_does_not_split_it(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    """A dash used as punctuation is not a bullet boundary.
+
+    An earlier version split ``extra`` on ``" - "`` and tore the criterion
+    panel's footer - which contains ``"the ablation - not the weights - are
+    what say..."`` - into three bullets mid-sentence.
+    """
+    caption = viz.greening_caption(
+        ahp_report,
+        params,
+        extra=("The ablation - not the AHP weights - is what says how much.",),
+    )
+    bullets = [line for line in caption.split("\n") if line.startswith("- ")]
+    assert sum("not the AHP weights" in line for line in bullets) == 1
+    assert not any(line.strip() == "- not the AHP weights" for line in bullets)
+
+
+def test_a_plain_string_extra_is_still_accepted(
+    params: dict[str, Any], ahp_report: dict[str, Any]
+) -> None:
+    caption = viz.greening_caption(ahp_report, params, extra="a single bullet")
+    assert "- a single bullet" in caption
+
+
+def test_heatmap_labels_are_legible_on_dark_and_light_cells() -> None:
+    # The correlation panel's 1.00 diagonal disappeared into its own red.
+    assert viz._readable_on((0.05, 0.02, 0.10)) == "#ffffff"
+    assert viz._readable_on((0.98, 0.98, 0.95)) == "#111111"
+    assert viz._readable_on((1.0, 1.0, 1.0, 1.0)) == "#111111"
+
+
+def test_the_priority_map_separates_its_colourbar_from_its_legend(
+    params: dict[str, Any], greening_tables: dict[str, Any], greening_zones: Any
+) -> None:
+    """Two legends below one axes need a band deep enough for both.
+
+    In run 3 the colourbar's tick labels read through the patch legend's text.
+    """
+    pytest.importorskip("matplotlib")
+    figure = viz.build_greening_priority_map_figure(
+        greening_zones,
+        greening_tables["full"],
+        params,
+        ahp_report=greening_tables["report"],
+    )
+    legend = figure.axes[0].get_legend()
+    assert legend is not None
+    # The patch legend is anchored below the axes in axes coordinates, far
+    # enough down to clear the colourbar AND the colourbar's own axis label.
+    anchor_y = legend.get_bbox_to_anchor().transformed(
+        figure.axes[0].transAxes.inverted()
+    ).y1
+    assert anchor_y <= -0.15, (
+        f"the legend is anchored at y={anchor_y:.3f}; it needs to sit below the "
+        "colourbar, whose tick labels it overlapped in Colab run 3"
+    )
+    # And the reserved band actually grew to hold both.
+    assert figure.get_figheight() > 5.0

@@ -1,6 +1,126 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 7 **Colab run 2 — Part 1 signed off, Part 2 reaches Step 10**. 1458 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 7 **Colab run 3 — RUNS END TO END. One defect: the land floor was inert**. 1463 tests pass, 3 skip)_
+
+### Colab run 3 (2026-08-20) — every cell executed; the MCDA reproduces a ranking by LST
+
+**Phase 7 ran end to end, zero errors, 105 files bundled.** Every guard fired where it
+should, the grid alignment worked, and the phase produced its headline finding.
+
+#### The result
+
+| | |
+|---|---|
+| Alignment trim | 1.14 % (14.36 km²); grids register at 2950 × 4210 = 10× 295 × 421 |
+| AHP | CR **0.0081**, λmax 5.036357 — the pin reproduced exactly |
+| Normalisation sensitivity | ρ = **0.9962**, top-60 overlap 56 |
+| **Sensor sensitivity** | ρ = **0.9998**, top-60 overlap **60/60** |
+| AHP vs TOPSIS | ρ = 0.9861, τ = 0.9060, top-60 overlap 46 (Jaccard 0.622) |
+| GN vs parent DS rank | ρ = 0.9056 |
+| Guard | **5 refusals**, then cleared the real product |
+
+**The pooled-series choice is now measured, not merely argued.** `landsat_dry` against
+`landsat_oli_dry` gives ρ = 0.9998 and an identical top-60. The within-epoch-level argument
+holds empirically.
+
+#### The headline finding: the criteria are one variable
+
+```
+Criterion correlation (Spearman, normalised)
+                      lst_hot  utfvi  ndvi_def  pop_den  green_access
+lst_hot                 1.000  0.975     0.905    0.907         0.871
+utfvi_severe_share      0.975  1.000     0.884    0.904         0.861
+ndvi_deficit            0.905  0.884     1.000    0.890         0.841
+pop_density             0.907  0.904     0.890    1.000         0.830
+green_access_deficit    0.871  0.861     0.841    0.830         1.000
+
+PC1 carries 91.0 % of the variance;  effective dimensionality 1.51
+```
+
+And the ablation printed its verdict, as it was built to:
+
+```
+*** THE MCDA REPRODUCES A RANKING BY LST_HOT ALONE ***
+rho(full five-criterion ranking, lst_hot-only ranking) = 0.9768
+```
+
+Dropping *any single* criterion moves the ranking by ρ ≥ 0.991. **This is a finding about
+Colombo, not a fault in the method**, and it must be reported beside the ranking: the
+five-criterion MCDA is not adding what a five-criterion MCDA is normally assumed to add.
+`greening_criteria_gn.png` is the figure that shows it — five near-identical maps and a
+uniformly dark-red correlation panel.
+
+Agreement with the Phase 5 proxy is ρ = 0.9845, labelled `NOT_INDEPENDENT`, exactly as
+designed. It is not validation.
+
+#### What the ranking says
+
+The top 60 is the CMC core — New Bazaar (Pettah's market), Kochchikade, Aluthkade,
+Maradana, Grandpass, Kotahena, Maligakanda — at **41–43 °C**, NDVI 0.22–0.29, and **0.0 %
+tree-class canopy**. Not one of the 60 meets the 30 % canopy target; 58 of 60 fail both
+3-30-300 components. 45 of the 60 are within or beside mapped wetland, so the Ramsar
+instrument reaches most of them.
+
+District-wide 3-30-300: 190 both, 240 access-only, 127 neither, **0 canopy-only** — nothing
+passes 30 % canopy while failing 300 m access, which is what you would expect if canopy
+implies proximity. Median canopy 15.7 %, median residents within 300 m 95.1 % (83.5 % under
+the detour rule).
+
+#### D1 — the land-coverage floor fix was INERT, and Pettah is still excluded
+
+The run-2 diagnosis was right — the floor measures water — but the implementation did not
+change the denominator. `zone_land_area` was called **without a water mask**, so "land area"
+was the whole rasterised polygon and the fraction reproduced the Phase 5 number to sixteen
+decimal places for **555 of 557 zones**. Only Fort moved (0.705 → 0.796, still below), and
+that by a cropping artefact rather than by any water masking.
+
+Consequence: **Pettah (rank 16) and Lunupokuna (rank 50) are still excluded from the top
+60** — precisely the outcome the fix existed to prevent. 21 zones are excluded, and nearly
+all are coastal or reservoir-adjacent: Pettah, Lunupokuna, Sammanthranapura, Galle Face,
+Fort, the Moratuwa and Dehiwala coastal strip, and the Homagama/Padukka divisions that hold
+the Labugama and Kalatuwawa reservoirs.
+
+**Fixed properly (decision taken with the user).** `green_canopy_image` now emits a fourth
+band, `water`, from `aoi.static_water_mask` — JRC occurrence, derived from 38 years of
+Landsat and authoritative for permanent water, which is exactly what the harbour, Beira,
+Bolgoda, Diyawanna and the Kelani are. `read_green_canopy_raster` derives `land = ~water` on
+read, so no caller can forget to negate it, and Step 11 passes it as the denominator.
+
+**This requires a re-export.** The 10 m green/canopy raster must be re-submitted (Part 1
+Step 6, ~7 min) and Part 2 re-run.
+
+> ⚠️ **The committed `greening_priority_*.csv` are run 3's and exclude Pettah and
+> Lunupokuna.** They will change at run 4. Do not quote the top-60 list until then.
+
+#### D2 — figure legibility
+
+Three defects, all in `viz.py`, all fixed and pinned by tests:
+
+* **Footer text ran off the canvas** on two figures. `caveat_footer` wrapped the standing
+  caveats; the figure-specific `extra` was appended verbatim. Now wrapped to the same
+  110-character width.
+* **A dash inside a bullet split it into three.** The first wrap attempt split `extra` on
+  `" - "`, which cannot tell a bullet boundary from punctuation, and duly tore *"the
+  ablation - not the AHP weights - are what say…"* apart mid-sentence. `extra` is now a
+  **sequence, one string per bullet** — the boundaries are declared rather than guessed.
+* **The correlation panel's `1.00` diagonal was dark-on-dark**, and the priority map's
+  colourbar tick labels read through its patch legend. Heatmap annotations now pick black or
+  white by BT.601 luma, and the map reserves a band deep enough for both legends.
+
+Mover labels on the AHP-vs-TOPSIS scatter also stacked; the offsets now alternate.
+
+#### Run 4
+
+Re-run Part 1 **Step 6 only** (the green/canopy raster now carries the `water` band), then
+Part 2 in full.
+
+| # | Check |
+|---|---|
+| 1 | Step 6 prints four bands including `water` |
+| 2 | Step 11 prints the permanent-water area, and the land fraction now **differs** from the raw fraction |
+| 3 | **Pettah and Lunupokuna appear in the top 60** |
+| 4 | The status-change count is materially greater than 1 |
+| 5 | Everything else reproduces run 3: CR 0.0081, sensor ρ 0.9998, the ablation verdict |
 
 ### Colab run 2 (2026-08-20) — every run-1 fix held; the grids do not nest
 

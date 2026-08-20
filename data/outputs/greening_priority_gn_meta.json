@@ -1,0 +1,135 @@
+{
+  "method": "mcda_ahp_weighted_overlay",
+  "level": "gn",
+  "epoch": "2020s",
+  "source": "landsat_dry",
+  "sensitivity_source": "landsat_oli_dry",
+  "scale_m": 100,
+  "landcover_scheme": "dynamic_world",
+  "landcover_year": 2024,
+  "normalisation": "percentile_rank",
+  "top_n": 60,
+  "n_zones": 557,
+  "criteria": [
+    {
+      "name": "lst_hot",
+      "direction": "benefit",
+      "label": "Land surface temperature (2020s dry-season mean)",
+      "provenance": "spatial_stats.zone_covariate_table, epoch 2020s",
+      "weight": 0.319185484490906
+    },
+    {
+      "name": "utfvi_severe_share",
+      "direction": "benefit",
+      "label": "Share of zone in UTFVI Bad/Worse/Worst",
+      "provenance": "greening.utfvi_shares_by_zone",
+      "weight": 0.06827939154011041
+    },
+    {
+      "name": "ndvi_deficit",
+      "direction": "cost",
+      "label": "Vegetation deficit (inverse NDVI)",
+      "provenance": "spatial_stats.zone_covariate_table, epoch 2020s",
+      "weight": 0.18400551926416747
+    },
+    {
+      "name": "pop_density",
+      "direction": "benefit",
+      "label": "Population density (WorldPop 2020, people/km2)",
+      "provenance": "spatial_stats.population_density",
+      "weight": 0.319185484490906
+    },
+    {
+      "name": "green_access_deficit",
+      "direction": "cost",
+      "label": "Residents beyond 300 m of a green space >= 0.5 ha (3-30-300)",
+      "provenance": "greening.served_population_by_zone",
+      "weight": 0.1093441202139102
+    }
+  ],
+  "ahp": {
+    "weights": {
+      "lst_hot": 0.319185484490906,
+      "utfvi_severe_share": 0.06827939154011041,
+      "ndvi_deficit": 0.18400551926416747,
+      "pop_density": 0.319185484490906,
+      "green_access_deficit": 0.1093441202139102
+    },
+    "weights_geometric": {
+      "lst_hot": 0.31967279014900263,
+      "utfvi_severe_share": 0.06795308478990748,
+      "ndvi_deficit": 0.18360380409073584,
+      "pop_density": 0.31967279014900263,
+      "green_access_deficit": 0.10909753082135142
+    },
+    "lambda_max": 5.036356640328397,
+    "consistency_index": 0.009089160082099257,
+    "consistency_ratio": 0.008115321501874335,
+    "consistency_ratio_max": 0.1,
+    "random_index": 1.12,
+    "consistent": true,
+    "weight_spread": 0.2509060929507956,
+    "degenerate": false
+  },
+  "rule_3_30_300": {
+    "canopy_target_pct": 30.0,
+    "min_patch_ha": 0.5,
+    "service_distance_m": 300.0,
+    "detour_distance_m": 230.76923076923077,
+    "public_only": false,
+    "rule_3_status": "not_remotely_sensable"
+  },
+  "wetland": {
+    "sources": [
+      "dw_flooded_vegetation",
+      "worldcover_wetland",
+      "gsw_seasonal",
+      "wdpa"
+    ],
+    "official_boundary_used": false
+  },
+  "caveats": {
+    "lst_not_air_temp": "Values are LAND SURFACE TEMPERATURE (LST), not air temperature. Never label outputs as air temperature or 'temperature felt by residents'; surface UHI can be roughly 2x the canopy-air UHI.",
+    "zonal_not_pixel": "These statistics describe administrative POLYGONS, not pixels and not people. A coefficient fitted across 557 GN divisions is a property of that aggregation; reading it as an individual-level or pixel-level relationship is the ecological fallacy. The same analysis at DS level gives different numbers by construction, which is why both are reported.",
+    "sensitivity_reporting": "Report rural-reference and aggregation-unit (MAUP) sensitivity, never a single unqualified number.",
+    "within_epoch_only": "Epoch cluster maps are computed on the POOLED Landsat series, whose inter-sensor offsets over Colombo are material (L5-L7 +1.78 degC, L7-L8 -2.48 degC). Moran's I, LISA and Gi* are within-epoch statistics, so a spatially uniform sensor step cancels and the cluster GEOGRAPHY is valid. No epoch-to-epoch temperature magnitude may be read off these maps; the Phase 4 Mann-Kendall and Sen's slope products are what measure change.",
+    "euclidean_not_network": "The 300 m of the 3-30-300 rule is a WALKING distance. These service areas are straight-line, so they ignore the Kelani River, Beira Lake, the coastal railway and walled compounds, and therefore OVERSTATE access everywhere by an unknown amount. Each result is reported beside a 231 m variant (a 1.3 detour ratio); the gap between the two is the size of the uncertainty. Green space is also counted whether it is public or private, so compliance is an UPPER BOUND, and the '3 trees from every window' component cannot be measured from satellite data at all and is reported as unmeasured.",
+    "mcda_weights_are_judgements": "The AHP criterion weights are JUDGEMENTS, not measurements. They were argued by the analyst from the literature and from this project's own measurements, not elicited from stakeholders, and a different defensible set of judgements gives a different ranking. The consistency ratio tests only whether the judgements are self-consistent, never whether they are right. The criteria are also strongly intercorrelated over Colombo, so the leave-one-out ablation - not the weights - is what says how much the method adds over ranking by land surface temperature alone."
+  },
+  "score_gap_at_cut": 0.003207572307870721,
+  "tied_at_cut": 0,
+  "n_priority": 60,
+  "n_eligible": 536,
+  "normalisation_sensitivity_rho": 0.9962465656130912,
+  "sensor_sensitivity_rho": 0.9998295219155652,
+  "ahp_vs_topsis_rho": 0.9861316946327109,
+  "single_criterion_rho": 0.976839562692812,
+  "reproduces_single_criterion": true,
+  "pc1_variance_share": 0.9099010489594842,
+  "circularity_with_phase5": {
+    "spearman_rho": 0.9844537180818846,
+    "spearman_p": 0.0,
+    "n": 557,
+    "top_n": 60,
+    "top_n_overlap": 50,
+    "phase5_criteria": [
+      "gi_star_hot",
+      "lst_2020s",
+      "ndvi_inverse"
+    ],
+    "shared_criteria": [
+      "lst (Gi* z and the zone mean)",
+      "ndvi (inverted)"
+    ],
+    "independence": "not_independent",
+    "interpretation": "AGREEMENT HERE IS NOT VALIDATION. Phase 5's interim proxy ranks on ['gi_star_hot', 'lst_2020s', 'ndvi_inverse'], which overlaps Phase 7's criteria in ['lst (Gi* z and the zone mean)', 'ndvi (inverted)']. The two rankings agree because they are largely the same inputs reweighted, not because one confirms the other. Phase 6's greening counterfactual was also computed INSIDE the Phase 5 zones, so quoting it as evidence for these zones would close the loop entirely."
+  },
+  "wetland_sources_used": [
+    "dw_flooded_vegetation",
+    "worldcover_wetland",
+    "gsw_seasonal",
+    "wdpa"
+  ],
+  "official_wetland_boundary": false,
+  "compliance_is_upper_bound": true
+}

@@ -149,6 +149,63 @@ def caveat_footer(params: dict[str, Any], keys: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
+def _readable_on(colour: Any) -> str:
+    """Black or white, whichever is legible on ``colour``.
+
+    Annotating a heatmap in one fixed colour leaves the darkest cells unreadable
+    - the correlation panel's ``1.00`` diagonal disappeared into its own red in
+    Colab run 3. Uses the ITU-R BT.601 luma the eye actually responds to, not a
+    mean of the channels.
+
+    Args:
+        colour: An RGB or RGBA tuple in 0-1.
+
+    Returns:
+        ``"#111111"`` or ``"#ffffff"``.
+    """
+    red, green, blue = (float(channel) for channel in tuple(colour)[:3])
+    luma = 0.299 * red + 0.587 * green + 0.114 * blue
+    return "#111111" if luma > 0.55 else "#ffffff"
+
+
+def _wrap_bullets(text: str | Sequence[str]) -> str:
+    """Wrap free footer text to the same width and shape as :func:`caveat_footer`.
+
+    Appending figure-specific footer text verbatim is what pushed the last line
+    of two Phase 7 figures off the right edge of the canvas in Colab run 3, while
+    every caveat above it wrapped correctly.
+
+    **Pass a sequence, one string per bullet.** An earlier version took one
+    concatenated string and split it on ``" - "``, which cannot tell a bullet
+    boundary from a dash used as punctuation - and duly tore
+    ``"the leave-one-out ablation - not the AHP weights - are what say..."`` into
+    three bullets. A sequence says where the boundaries are instead of guessing.
+
+    Args:
+        text: One bullet per element, or a single string treated as one bullet
+            (newlines still separate bullets).
+
+    Returns:
+        Newline-wrapped text, one wrapped bullet per line group.
+    """
+    raw = [text] if isinstance(text, str) else list(text)
+    bullets: list[str] = []
+    for entry in raw:
+        for line in str(entry).split("\n"):
+            collapsed = " ".join(line.split())
+            if not collapsed:
+                continue
+            body = collapsed[2:].strip() if collapsed.startswith("- ") else collapsed
+            bullets.append(f"- {body}")
+
+    lines: list[str] = []
+    for bullet in bullets:
+        lines.extend(
+            textwrap.wrap(bullet, width=CAVEAT_WRAP_CHARS, subsequent_indent="  ")
+        )
+    return "\n".join(lines)
+
+
 def plot_annual_lst_comparison(
     series: Mapping[str, "pd.DataFrame"],
     out_path: str | Path,
@@ -3249,7 +3306,7 @@ def greening_caption(
     report: Mapping[str, Any] | None,
     params: dict[str, Any],
     keys: Sequence[str] = GREENING_CAVEATS,
-    extra: str = "",
+    extra: str | Sequence[str] = (),
 ) -> str:
     """Assemble the footer for a greening-priority figure.
 
@@ -3270,7 +3327,7 @@ def greening_caption(
         ratio = float(report.get("consistency_ratio", float("nan")))
         maximum = float(report.get("consistency_ratio_max", float("nan")))
         verdict = "PASSES" if report.get("consistent") else "FAILS"
-        summary = (
+        summary = _wrap_bullets(
             f"- AHP consistency ratio {ratio:.4f} against a {maximum:.2f} "
             f"threshold ({verdict}); criteria normalised by "
             f"{params['greening']['normalisation']['method']}."
@@ -3281,7 +3338,10 @@ def greening_caption(
     banner = greening_failure_headline(report, params)
     parts = [banner, summary, caveats] if banner else [caveats, summary]
     if extra:
-        parts.append(extra.strip("\n"))
+        # *** WRAP IT. *** Colab run 3 shipped two figures whose final footer
+        # line ran off the right edge of the canvas, because `extra` was appended
+        # verbatim while caveat_footer wrapped everything above it.
+        parts.append(_wrap_bullets(extra))
     return "\n".join(part for part in parts if part)
 
 
@@ -3393,13 +3453,18 @@ def build_greening_priority_map_figure(
     )
 
     extra = (
-        "- Outlined divisions are the exported top-N priority set. Divisions "
+        "Outlined divisions are the exported top-N priority set. Divisions "
         "hatched '///' are within or beside mapped wetland, where wetland "
         "protection is an existing policy instrument; divisions hatched 'xxx' "
-        "fell below the land-coverage floor and are ranked but NOT exported."
+        "fell below the land-coverage floor and are ranked but NOT exported.",
     )
     footer = greening_caption(ahp_report, params, extra=extra)
-    figure, axes, height, reserved = _map_figure(merged, footer, legend_inches=0.55)
+    # This map carries TWO legends below the axes - a continuous colourbar for
+    # the score and a patch legend for the overlays - and in Colab run 3 they
+    # landed on each other, the colourbar's tick labels reading through the
+    # legend text. They need a band deep enough for both, and the patch legend
+    # has to clear the colourbar AND its axis label.
+    figure, axes, height, reserved = _map_figure(merged, footer, legend_inches=1.35)
 
     colours = priority_palette(params)
     from matplotlib.colors import LinearSegmentedColormap
@@ -3417,8 +3482,8 @@ def build_greening_priority_map_figure(
             "label": "Greening priority score (higher = higher priority)",
             "orientation": "horizontal",
             "shrink": 0.6,
-            "pad": 0.02,
-            "fraction": 0.035,
+            "pad": 0.03,
+            "fraction": 0.03,
         },
     )
     axes.set_aspect("equal")
@@ -3474,11 +3539,12 @@ def build_greening_priority_map_figure(
                 )
             )
     if handles:
+        # Well below the colourbar and its axis label, not level with them.
         axes.legend(
             handles=handles,
             fontsize=7.5,
             loc="upper center",
-            bbox_to_anchor=(0.5, -0.06),
+            bbox_to_anchor=(0.5, -0.19),
             frameon=False,
             ncol=3,
         )
@@ -3551,10 +3617,10 @@ def build_ahp_weights_figure(
         raise ValueError("the AHP frame is empty; there are no weights to draw")
 
     extra = (
-        "- The pairwise matrix is drawn on a LOGARITHMIC colour scale: the "
-        "Saaty scale is multiplicative, so 9 and 1/9 are equally far from 1. "
-        "- Row geometric means are overlaid on the weight bars; the two "
-        "agreeing is itself evidence of consistency."
+        "The pairwise matrix is drawn on a LOGARITHMIC colour scale: the Saaty "
+        "scale is multiplicative, so 9 and 1/9 are equally far from 1.",
+        "Row geometric means are overlaid on the weight bars; the two agreeing "
+        "is itself evidence of consistency.",
     )
     footer = greening_caption(ahp_report, params, extra=extra)
     reserved = footer_inches(footer)
@@ -3595,7 +3661,7 @@ def build_ahp_weights_figure(
                     ha="center",
                     va="center",
                     fontsize=7,
-                    color="#222222",
+                    color=_readable_on(image.cmap(image.norm(entry))),
                 )
         heat_axes.set_title(
             "Pairwise judgements (row is how many times\nmore important than column)",
@@ -3733,9 +3799,9 @@ def build_ranking_comparison_figure(
     top_n = int(comparison.get("top_n", params["greening"]["top_n"]))
 
     extra = (
-        "- Rank agreement is a ROBUSTNESS check, not a validation: two methods "
-        "run on the same five criteria agreeing tells you the ranking is stable "
-        "under the method, not that the criteria are the right ones."
+        "Rank agreement is a ROBUSTNESS check, not a validation: two methods run "
+        "on the same five criteria agreeing tells you the ranking is stable "
+        "under the method, not that the criteria are the right ones.",
     )
     footer = greening_caption(ahp_report, params, extra=extra)
     reserved = footer_inches(footer)
@@ -3753,14 +3819,19 @@ def build_ranking_comparison_figure(
     )
 
     if shifts is not None and not shifts.empty:
-        for _, row in shifts.head(8).iterrows():
+        # Alternate the offset. The biggest movers cluster - they are the zones
+        # the two methods disagree about, and those sit together - so a single
+        # fixed offset stacked five labels on top of each other in Colab run 3.
+        offsets = ((9, 8), (9, -14), (-9, 14), (-9, -20))
+        for index, (_, row) in enumerate(shifts.head(6).iterrows()):
             axes.annotate(
                 str(row["zone_id"]),
                 (float(row[left_rank]), float(row[right_rank])),
                 fontsize=6.5,
                 color="#b2182b",
-                xytext=(3, 3),
+                xytext=offsets[index % len(offsets)],
                 textcoords="offset points",
+                ha="left" if index % 4 < 2 else "right",
             )
 
     axes.set_xlabel(f"{left_name} rank", fontsize=9)
@@ -3894,13 +3965,14 @@ def build_compliance_map_figure(
     )
     detour = greening_module.detour_distance_m(params)
     extra = (
-        f"- '{target}' is the tree-class share of a {int(params['greening']['landcover_scale_m'])} m "
-        "modal classification, NOT crown cover from a canopy-height model. "
-        f"- '{distance}' counts residents within {distance} m; the detour "
-        f"variant at {detour:.0f} m is in the exported table beside it. "
-        "- The '3' of 3-30-300 is NOT MEASURABLE from satellite data and is "
+        f"'{target}' is the tree-class share of a "
+        f"{int(params['greening']['landcover_scale_m'])} m modal classification, "
+        "NOT crown cover from a canopy-height model.",
+        f"'{distance}' counts residents within {distance} m; the detour variant "
+        f"at {detour:.0f} m is in the exported table beside it.",
+        "The '3' of 3-30-300 is NOT MEASURABLE from satellite data and is "
         "reported as unmeasured, which is why there are five categories rather "
-        "than a pass/fail flag."
+        "than a pass/fail flag.",
     )
     footer = greening_caption(
         ahp_report,
@@ -4004,11 +4076,11 @@ def build_criterion_panel_figure(
     )
 
     extra = (
-        "- Every panel is on the SAME normalised scale, so panels that look "
-        "alike are measuring the same underlying variable. Over Colombo the "
-        "criteria are strongly intercorrelated, and the correlation panel plus "
-        "the leave-one-out ablation - not the AHP weights - are what say how "
-        "much the multi-criteria method adds over ranking by heat alone."
+        "Every panel is on the SAME normalised scale, so panels that look alike "
+        "are measuring the same underlying variable. Over Colombo the criteria "
+        "are strongly intercorrelated, and the correlation panel plus the "
+        "leave-one-out ablation - not the AHP weights - are what say how much "
+        "the multi-criteria method adds over ranking by heat alone.",
     )
     footer = greening_caption(ahp_report, params, extra=extra)
     reserved = footer_inches(footer)
@@ -4059,14 +4131,15 @@ def build_criterion_panel_figure(
         )
         for row in range(values.shape[0]):
             for col in range(values.shape[1]):
+                entry = values[row, col]
                 axes.text(
                     col,
                     row,
-                    f"{values[row, col]:.2f}",
+                    f"{entry:.2f}",
                     ha="center",
                     va="center",
                     fontsize=6,
-                    color="#222222",
+                    color=_readable_on(image.cmap(image.norm(entry))),
                 )
         axes.set_title("Criterion correlation", fontsize=7.5)
         figure.colorbar(image, ax=axes, fraction=0.046, pad=0.04)
@@ -4180,9 +4253,9 @@ def build_priority_table_figure(
     total_lines = sum(line_counts) + 1
 
     extra = (
-        "- The SCORE matters as much as the rank: with rank-normalised criteria "
+        "The SCORE matters as much as the rank: with rank-normalised criteria "
         "the distribution is smooth, so adjacent ranks can be separated by very "
-        "little. The gap at the cut is in the exported table."
+        "little. The gap at the cut is in the exported table.",
     )
     footer = greening_caption(ahp_report, params, extra=extra)
     reserved = footer_inches(footer)
