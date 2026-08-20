@@ -441,19 +441,25 @@ def plot_suhii_sensitivity(
     return _save_figure(figure, out_path)
 
 
-def _save_figure(figure: Any, out_path: str | Path) -> Path:
+#: Raster density for the per-phase diagnostic figures in ``figures/``.
+DIAGNOSTIC_DPI = 150
+
+
+def _save_figure(figure: Any, out_path: str | Path, dpi: int = DIAGNOSTIC_DPI) -> Path:
     """Write a figure to disk, creating parent directories.
 
     Args:
         figure: A ``matplotlib.figure.Figure``.
         out_path: Destination ``.png`` path.
+        dpi: Raster density. Defaults to the phase-diagnostic 150; Phase 8
+            report figures pass :func:`report_dpi`, which reads ``report.dpi``.
 
     Returns:
         The path written.
     """
     destination = Path(out_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(destination, dpi=150)
+    figure.savefig(destination, dpi=int(dpi))
     return destination
 
 
@@ -3400,6 +3406,7 @@ def build_greening_priority_map_figure(
     ahp_report: Mapping[str, Any] | None = None,
     score_column: str = "score_ahp",
     title: str | None = None,
+    label_top_n: int | None = None,
 ) -> Any:
     """Build the greening-priority choropleth.
 
@@ -3415,6 +3422,10 @@ def build_greening_priority_map_figure(
         ahp_report: The mapping :func:`colombo_uhi.greening.ahp_weights` returned.
         score_column: Score to colour by.
         title: Figure title.
+        label_top_n: Label this many highest-ranked divisions with leader lines
+            into a column beside the map. ``0`` labels none; ``None`` labels none
+            too, so the Phase 7 diagnostic keeps the appearance it was signed off
+            with, and Phase 8 opts in explicitly with ``report.label_top_n``.
 
     Returns:
         A ``matplotlib.figure.Figure``.
@@ -3441,15 +3452,25 @@ def build_greening_priority_map_figure(
             "wetland_policy_flag",
             "below_land_coverage_floor",
             "status",
+            # The rank and the division name are what label_top_n draws. Leaving
+            # them out of the merge made annotate_top_zones find no rank column
+            # and silently label nothing - the map rendered, correctly in every
+            # other respect, with no labels and no error.
+            "rank_ahp",
+            "rank",
+            "adm4_name",
         )
         if column in ranked.columns
     ]
     frame = zones.copy()
     frame["zone_id"] = frame["zone_id"].astype(str)
+    # suffixes: the zone layer already carries adm4_name, and an unsuffixed
+    # collision would silently rename BOTH columns to adm4_name_x / _y.
     merged = frame.merge(
         ranked[columns].assign(zone_id=ranked["zone_id"].astype(str)),
         on="zone_id",
         how="left",
+        suffixes=("", "_ranked"),
     )
 
     extra = (
@@ -3467,7 +3488,13 @@ def build_greening_priority_map_figure(
     # landed on each other, the colourbar's tick labels reading through the
     # legend text. They need a band deep enough for both, and the patch legend
     # has to clear the colourbar AND its axis label.
-    figure, axes, height, reserved = _map_figure(merged, footer, legend_inches=1.35)
+    # Sized WITH the label gutter when labelling, so the map keeps its size and
+    # the labels get their own column rather than eating into it.
+    figure, axes, height, reserved = _map_figure(
+        _PaddedBounds(merged, LABEL_GUTTER_FRACTION) if label_top_n else merged,
+        footer,
+        legend_inches=1.35,
+    )
 
     colours = priority_palette(params)
     from matplotlib.colors import LinearSegmentedColormap
@@ -3552,6 +3579,9 @@ def build_greening_priority_map_figure(
             ncol=3,
         )
 
+    if label_top_n:
+        annotate_top_zones(axes, merged, params, top_n=int(label_top_n))
+
     _greening_suptitle(
         figure,
         title or "Greening priority by GN division (AHP weighted overlay)",
@@ -3572,11 +3602,13 @@ def plot_greening_priority_map(
     ahp_report: Mapping[str, Any] | None = None,
     score_column: str = "score_ahp",
     title: str | None = None,
+    label_top_n: int | None = None,
 ) -> Path:
     """Write the priority map. See :func:`build_greening_priority_map_figure`."""
     return _save_figure(
         build_greening_priority_map_figure(
-            zones, ranked, params, ahp_report, score_column=score_column, title=title
+            zones, ranked, params, ahp_report, score_column=score_column,
+            title=title, label_top_n=label_top_n,
         ),
         out_path,
     )
@@ -4323,3 +4355,2119 @@ def plot_priority_table(
         ),
         out_path,
     )
+
+
+# =============================================================================
+# Phase 8 - report output plumbing
+# =============================================================================
+def report_dpi(params: dict[str, Any]) -> int:
+    """Raster density for report figures, from ``report.dpi``.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        Dots per inch.
+    """
+    return int(params["report"]["dpi"])
+
+
+def report_figure_path(params: dict[str, Any], index: int, slug: str) -> Path:
+    """Destination path for one numbered report figure.
+
+    Report figures live in ``report.figure_dir``, deliberately NOT in
+    ``figures/``: that directory holds the per-phase diagnostics, which are
+    working products at :data:`DIAGNOSTIC_DPI` and are not regenerated here.
+    Mixing the two would leave a reader unable to tell which set a given PNG
+    belongs to.
+
+    Args:
+        params: Parsed params mapping.
+        index: Figure number, 1-based; zero-padded into the filename.
+        slug: Short lower-case identifier, e.g. ``"decadal_lst"``.
+
+    Returns:
+        Path under ``report.figure_dir``, with a ``.png`` suffix.
+
+    Raises:
+        ValueError: If ``index`` is not positive or ``slug`` is empty.
+    """
+    if int(index) < 1:
+        raise ValueError(f"figure index must be 1-based and positive, got {index}")
+    cleaned = str(slug).strip().lower().replace(" ", "_")
+    if not cleaned:
+        raise ValueError("figure slug must not be empty")
+    template = params["report"]["name_template"]
+    name = template.format(index=int(index), slug=cleaned)
+    return Path(params["report"]["figure_dir"]) / f"{name}.png"
+
+
+def save_report_figure(
+    figure: Any, params: dict[str, Any], index: int, slug: str
+) -> Path:
+    """Write one report figure at ``report.dpi``.
+
+    Args:
+        figure: A ``matplotlib.figure.Figure``.
+        params: Parsed params mapping.
+        index: Figure number, 1-based.
+        slug: Short lower-case identifier.
+
+    Returns:
+        The path written.
+    """
+    return _save_figure(
+        figure, report_figure_path(params, index, slug), dpi=report_dpi(params)
+    )
+
+
+def saturated_fraction(
+    values: Any, low: float, high: float
+) -> float:
+    """Fraction of finite values falling outside a colour stretch.
+
+    A stretch that clips its data understates the extremes it exists to show -
+    the mistake that forced ``trends.slope_vis`` to be widened twice. Every
+    continuous report figure reports this against
+    ``report.max_saturated_fraction`` rather than leaving it to the eye.
+
+    Args:
+        values: Array-like; NaNs are ignored.
+        low: Lower end of the stretch.
+        high: Upper end.
+
+    Returns:
+        Share of finite values outside ``[low, high]``; ``nan`` if none are
+        finite.
+    """
+    import numpy as np
+
+    data = np.asarray(values, dtype="float64").ravel()
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return float("nan")
+    outside = (finite < float(low)) | (finite > float(high))
+    return float(outside.mean())
+
+
+# =============================================================================
+# Phase 8 - colour-vision-deficiency verification
+# =============================================================================
+# Vienot, Brettel & Mollon (1999), "Digital video colourmaps for checking the
+# legibility of displays by dichromats". Linear RGB -> LMS, project onto the
+# dichromat's confusion plane, invert. The matrices below are theirs verbatim;
+# they operate on LINEAR light, which is why the sRGB transfer function has to
+# be undone first and reapplied afterwards. Skipping the linearisation is the
+# commonest way to get a plausible-looking but wrong simulation.
+
+#: Hunt-Pointer-Estevez style linear-RGB to LMS matrix (Vienot et al. 1999).
+_RGB_TO_LMS: tuple[tuple[float, float, float], ...] = (
+    (17.8824, 43.5161, 4.11935),
+    (3.45565, 27.1554, 3.86714),
+    (0.0299566, 0.184309, 1.46709),
+)
+
+#: Per-deficiency LMS projection matrices (Vienot et al. 1999).
+_CVD_MATRICES: dict[str, tuple[tuple[float, float, float], ...]] = {
+    "protanopia": ((0.0, 2.02344, -2.52581), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "deuteranopia": ((1.0, 0.0, 0.0), (0.494207, 0.0, 1.24827), (0.0, 0.0, 1.0)),
+    "tritanopia": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (-0.395913, 0.801109, 0.0)),
+}
+
+#: CIE D65 white point, for the Lab conversion behind the dE metric.
+_D65 = (0.95047, 1.0, 1.08883)
+
+#: sRGB (linear) to CIE XYZ, D65.
+_RGB_TO_XYZ: tuple[tuple[float, float, float], ...] = (
+    (0.4124564, 0.3575761, 0.1804375),
+    (0.2126729, 0.7151522, 0.0721750),
+    (0.0193339, 0.1191920, 0.9503041),
+)
+
+
+def normalise_hex(colour: str) -> str:
+    """Return ``colour`` as a lower-case ``#rrggbb`` string.
+
+    ``params.yaml`` stores hex WITHOUT the leading ``#`` because Earth Engine
+    palettes want it that way, while matplotlib wants it with. Every Phase 8
+    colour helper goes through here so neither convention leaks.
+
+    Args:
+        colour: Hex colour, with or without ``#``, 3 or 6 digits.
+
+    Returns:
+        ``#rrggbb``, lower case.
+
+    Raises:
+        ValueError: If the string is not a hex colour.
+    """
+    text = str(colour).strip().lstrip("#").lower()
+    if len(text) == 3:
+        text = "".join(character * 2 for character in text)
+    if len(text) != 6 or any(character not in "0123456789abcdef" for character in text):
+        raise ValueError(f"not a hex colour: {colour!r}")
+    return f"#{text}"
+
+
+def _to_linear_rgb(colour: str) -> list[float]:
+    """sRGB hex to linear-light RGB in 0-1."""
+    text = normalise_hex(colour)[1:]
+    channels = [int(text[index : index + 2], 16) / 255.0 for index in (0, 2, 4)]
+    return [
+        value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+        for value in channels
+    ]
+
+
+def _from_linear_rgb(channels: Sequence[float]) -> str:
+    """Linear-light RGB to an sRGB hex string, clipped to gamut."""
+    encoded = []
+    for value in channels:
+        clamped = min(max(float(value), 0.0), 1.0)
+        gamma = (
+            clamped * 12.92
+            if clamped <= 0.0031308
+            else 1.055 * clamped ** (1 / 2.4) - 0.055
+        )
+        encoded.append(int(round(min(max(gamma, 0.0), 1.0) * 255)))
+    return "#" + "".join(f"{value:02x}" for value in encoded)
+
+
+def _apply(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -> list[float]:
+    """3x3 matrix times a 3-vector, in plain Python (no numpy import cost)."""
+    return [sum(row[index] * vector[index] for index in range(3)) for row in matrix]
+
+
+def _invert3(matrix: Sequence[Sequence[float]]) -> list[list[float]]:
+    """Inverse of a 3x3 matrix by cofactors."""
+    (a, b, c), (d, e, f), (g, h, i) = (tuple(row) for row in matrix)
+    determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    if abs(determinant) < 1e-12:
+        raise ValueError("matrix is singular")
+    return [
+        [(e * i - f * h) / determinant, (c * h - b * i) / determinant,
+         (b * f - c * e) / determinant],
+        [(f * g - d * i) / determinant, (a * i - c * g) / determinant,
+         (c * d - a * f) / determinant],
+        [(d * h - e * g) / determinant, (b * g - a * h) / determinant,
+         (a * e - b * d) / determinant],
+    ]
+
+
+def simulate_cvd(colour: str, deficiency: str) -> str:
+    """Simulate how one colour appears to a dichromat.
+
+    Args:
+        colour: Hex colour, with or without ``#``.
+        deficiency: ``"protanopia"``, ``"deuteranopia"`` or ``"tritanopia"``.
+
+    Returns:
+        The simulated colour as ``#rrggbb``.
+
+    Raises:
+        KeyError: If the deficiency is not one of the three simulated.
+    """
+    if deficiency not in _CVD_MATRICES:
+        raise KeyError(
+            f"unknown deficiency '{deficiency}'; simulate_cvd handles "
+            f"{sorted(_CVD_MATRICES)}"
+        )
+    lms = _apply(_RGB_TO_LMS, _to_linear_rgb(colour))
+    projected = _apply(_CVD_MATRICES[deficiency], lms)
+    return _from_linear_rgb(_apply(_invert3(_RGB_TO_LMS), projected))
+
+
+def lab(colour: str) -> tuple[float, float, float]:
+    """CIE L*a*b* coordinates of an sRGB colour, D65.
+
+    Args:
+        colour: Hex colour, with or without ``#``.
+
+    Returns:
+        ``(L, a, b)``. ``L`` is 0 (black) to 100 (white).
+    """
+    xyz = _apply(_RGB_TO_XYZ, _to_linear_rgb(colour))
+    scaled = [value / white for value, white in zip(xyz, _D65)]
+    epsilon = (6 / 29) ** 3
+    transformed = [
+        value ** (1 / 3) if value > epsilon else value / (3 * (6 / 29) ** 2) + 4 / 29
+        for value in scaled
+    ]
+    return (
+        116 * transformed[1] - 16,
+        500 * (transformed[0] - transformed[1]),
+        200 * (transformed[1] - transformed[2]),
+    )
+
+
+def lightness(colour: str) -> float:
+    """CIE L* of a colour, 0-100. See :func:`lab`."""
+    return lab(colour)[0]
+
+
+def delta_e(first: str, second: str) -> float:
+    """CIE76 colour difference between two sRGB colours.
+
+    CIE76 rather than CIEDE2000 on purpose: these are large flat map patches,
+    not the small-patch, near-threshold judgements CIEDE2000 was fitted to, and
+    CIE76's plain Euclidean form is auditable by hand from the recorded L*a*b*.
+
+    Args:
+        first: Hex colour.
+        second: Hex colour.
+
+    Returns:
+        Euclidean distance in Lab.
+    """
+    return math.dist(lab(first), lab(second))
+
+
+def palette_separation(
+    colours: Sequence[str], deficiency: str | None = None
+) -> tuple[float, tuple[str, str] | None]:
+    """Smallest pairwise CIE76 difference in a palette, and the pair at fault.
+
+    .. warning::
+        This is the test for a **categorical** palette only. Adjacent stops of a
+        sequential or diverging ramp are *meant* to be close, so every
+        ColorBrewer ramp in ``params.yaml`` scores badly here while being
+        perfectly readable. Ramps are judged by :func:`palette_lightness_profile`
+        instead.
+
+    Args:
+        colours: Hex colours, with or without ``#``.
+        deficiency: Simulate this deficiency first; ``None`` for normal vision.
+
+    Returns:
+        ``(minimum_delta_e, (colour_a, colour_b))``; the pair is ``None`` when
+        fewer than two colours were given, and the distance ``inf``.
+    """
+    import itertools
+
+    seen = [normalise_hex(colour) for colour in colours]
+    shown = [simulate_cvd(colour, deficiency) if deficiency else colour for colour in seen]
+    best: tuple[float, tuple[str, str] | None] = (float("inf"), None)
+    for (index_a, first), (index_b, second) in itertools.combinations(
+        list(enumerate(shown)), 2
+    ):
+        distance = math.dist(lab(first), lab(second))
+        if distance < best[0]:
+            best = (distance, (seen[index_a], seen[index_b]))
+    return best
+
+
+def palette_lightness_profile(
+    colours: Sequence[str], deficiency: str | None = None
+) -> list[float]:
+    """L* of every stop in a palette, in order. See :func:`lightness`."""
+    return [
+        lightness(simulate_cvd(colour, deficiency) if deficiency else colour)
+        for colour in (normalise_hex(entry) for entry in colours)
+    ]
+
+
+def is_monotonic(values: Sequence[float]) -> bool:
+    """True if a sequence rises throughout or falls throughout."""
+    steps = [b - a for a, b in zip(values, values[1:])]
+    return bool(steps) and (all(s > 0 for s in steps) or all(s < 0 for s in steps))
+
+
+def is_diverging_monotonic(values: Sequence[float]) -> bool:
+    """True if L* is monotonic on each limb away from the palette's centre.
+
+    A diverging ramp's centre is its neutral, so lightness should peak (or
+    trough) there and fall away symmetrically. Requires an odd length, which
+    :func:`trend_vis_params` already enforces for the slope palette so that one
+    colour sits exactly at zero.
+
+    Args:
+        values: L* per stop, in palette order.
+
+    Returns:
+        Whether both limbs are monotonic in opposite directions.
+    """
+    if len(values) < 3 or len(values) % 2 == 0:
+        return False
+    middle = len(values) // 2
+    rising = list(values[: middle + 1])
+    falling = list(values[middle:])
+    up_then_down = is_monotonic(rising) and is_monotonic(falling) and (
+        rising[-1] > rising[0] and falling[-1] < falling[0]
+    )
+    down_then_up = is_monotonic(rising) and is_monotonic(falling) and (
+        rising[-1] < rising[0] and falling[-1] > falling[0]
+    )
+    return bool(up_then_down or down_then_up)
+
+
+def resolve_palette(params: dict[str, Any], path: str) -> list[str]:
+    """Look up a palette by dotted path, whatever shape it is stored in.
+
+    ``params.yaml`` holds palettes both as ordered lists (ramps) and as
+    class-keyed mappings (categories). The CVD check has to walk both, so the
+    shape is resolved here rather than at every call site.
+
+    Args:
+        params: Parsed params mapping.
+        path: Dotted path, e.g. ``"greening.palettes.compliance"``.
+
+    Returns:
+        Hex colours as ``#rrggbb``, in the order they are stored. For a mapping
+        that is insertion order, which is the order the YAML declares - and for
+        every palette in this project that order is the class order.
+
+    Raises:
+        KeyError: If the path does not resolve, naming the level that failed.
+    """
+    node: Any = params
+    walked: list[str] = []
+    for part in path.split("."):
+        if not isinstance(node, Mapping) or part not in node:
+            available = sorted(node) if isinstance(node, Mapping) else type(node).__name__
+            raise KeyError(
+                f"palette path '{path}' does not resolve: "
+                f"'{'.'.join(walked) or '<root>'}' has {available}"
+            )
+        node = node[part]
+        walked.append(part)
+    entries = list(node.values()) if isinstance(node, Mapping) else list(node)
+    return [normalise_hex(entry) for entry in entries]
+
+
+def check_palette(
+    colours: Sequence[str], kind: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    """Run the applicable colour-vision test over one palette.
+
+    Args:
+        colours: Hex colours in palette order.
+        kind: ``"categorical"``, ``"sequential"`` or ``"diverging"``.
+        params: Parsed params mapping (``report.cvd``).
+
+    Returns:
+        A row mapping with ``kind``, ``n_colours``, the per-vision metric, and a
+        boolean ``passed`` plus a human-readable ``verdict``.
+
+    Raises:
+        ValueError: If ``kind`` is not one of the three.
+    """
+    config = params["report"]["cvd"]
+    visions: list[str | None] = [None, *config["deficiencies"]]
+    row: dict[str, Any] = {"kind": kind, "n_colours": len(list(colours))}
+
+    if kind == "categorical":
+        floor = float(config["min_delta_e"])
+        worst = float("inf")
+        worst_pair: tuple[str, str] | None = None
+        for vision in visions:
+            distance, pair = palette_separation(colours, vision)
+            row[f"min_delta_e_{vision or 'normal'}"] = round(distance, 2)
+            if distance < worst:
+                worst, worst_pair = distance, pair
+        row["metric"] = "min_delta_e"
+        row["worst"] = round(worst, 2)
+        row["threshold"] = floor
+        row["worst_pair"] = "/".join(worst_pair) if worst_pair else ""
+        row["passed"] = bool(worst >= floor)
+        row["verdict"] = (
+            f"min dE {worst:.1f} >= {floor:.1f}"
+            if row["passed"]
+            else f"min dE {worst:.1f} < {floor:.1f} on {row['worst_pair']}"
+        )
+        return row
+
+    if kind not in ("sequential", "diverging"):
+        raise ValueError(
+            f"unknown palette kind '{kind}'; expected categorical, sequential "
+            "or diverging"
+        )
+
+    span_floor = float(config["min_lightness_span"])
+    test = is_monotonic if kind == "sequential" else is_diverging_monotonic
+    all_monotonic = True
+    smallest_span = float("inf")
+    for vision in visions:
+        profile = palette_lightness_profile(colours, vision)
+        label = vision or "normal"
+        row[f"monotonic_{label}"] = bool(test(profile))
+        row[f"lightness_span_{label}"] = round(max(profile) - min(profile), 1)
+        all_monotonic &= bool(test(profile))
+        smallest_span = min(smallest_span, max(profile) - min(profile))
+    row["metric"] = "lightness_monotonicity"
+    row["worst"] = round(smallest_span, 1)
+    row["threshold"] = span_floor
+    row["worst_pair"] = ""
+    row["passed"] = bool(all_monotonic and smallest_span >= span_floor)
+    if not all_monotonic:
+        row["verdict"] = "L* is not monotonic under every deficiency"
+    elif smallest_span < span_floor:
+        row["verdict"] = f"L* span {smallest_span:.1f} < {span_floor:.1f}"
+    else:
+        row["verdict"] = f"L* monotonic, span {smallest_span:.1f}"
+    return row
+
+
+def cvd_report(params: dict[str, Any]) -> "pd.DataFrame":
+    """Run the colour-vision check over every palette ``report.cvd`` names.
+
+    Exempted palettes are still MEASURED and still appear in the table - they
+    are simply not required to pass, and the recorded ``reason`` says why. An
+    exemption that hides its number would be worthless.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        One row per palette: path, kind, the applicable metric, whether it
+        passed, whether it is exempt, and the reason.
+    """
+    import pandas as pd
+
+    rows: list[dict[str, Any]] = []
+    for entry in params["report"]["cvd"]["palettes"]:
+        colours = resolve_palette(params, entry["path"])
+        row = check_palette(colours, entry["kind"], params)
+        row["path"] = entry["path"]
+        row["exempt"] = bool(entry.get("exempt", False))
+        row["reason"] = " ".join(str(entry.get("reason", "")).split())
+        row["colours"] = " ".join(colours)
+        rows.append(row)
+
+    frame = pd.DataFrame(rows)
+    leading = ["path", "kind", "n_colours", "metric", "worst", "threshold",
+               "passed", "exempt", "worst_pair", "verdict"]
+    ordered = leading + [column for column in frame.columns if column not in leading]
+    return frame[ordered]
+
+
+def cvd_failures(report: "pd.DataFrame") -> "pd.DataFrame":
+    """Rows of a :func:`cvd_report` that failed and are NOT exempt."""
+    return report[(~report["passed"]) & (~report["exempt"])]
+
+
+# =============================================================================
+# Phase 8 - report figures 1-4 (raster maps)
+# =============================================================================
+def _sequential_cmap(colours: Sequence[str], name: str) -> Any:
+    """Continuous colormap from an ordered palette, grey where masked."""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    stops = [normalise_hex(colour) for colour in colours]
+    cmap = LinearSegmentedColormap.from_list(name, stops)
+    return cmap.with_extremes(bad="#dcdcdc")
+
+
+def panel_aspect(array: Any, default: float = 0.6) -> float:
+    """Height-to-width ratio of a raster, for sizing the canvas it is drawn on.
+
+    ``imshow`` draws with ``aspect="equal"``, so a figure whose height ignores
+    the array's shape leaves the difference as blank paper - the same defect
+    :func:`map_aspect_ratio` was written for on the Phase 5 choropleths, and it
+    reappeared on the first Phase 8 draft as a two-inch void between the two
+    rows of the decadal figure.
+
+    Args:
+        array: 2-D array-like.
+        default: Returned when the shape is degenerate.
+
+    Returns:
+        ``rows / columns``, clamped to ``[0.2, 3.0]``.
+    """
+    import numpy as np
+
+    shape = np.asarray(array).shape
+    if len(shape) != 2 or min(shape) < 1:
+        return default
+    return float(min(max(shape[0] / shape[1], 0.2), 3.0))
+
+
+def _blank_axes(axes: Any) -> Any:
+    """Strip ticks and spines from a map panel."""
+    axes.set_xticks([])
+    axes.set_yticks([])
+    for spine in axes.spines.values():
+        spine.set_visible(False)
+    return axes
+
+
+def sensor_step_banner(
+    offsets: "pd.DataFrame | None", params: dict[str, Any]
+) -> str:
+    """One-line summary of the measured Landsat inter-sensor offsets.
+
+    Derived from ``data/outputs/sensor_offsets_cmc.csv`` rather than typed into
+    a caption, so the banner cannot disagree with the measurement it is warning
+    about. See ``caveats.figures_are_derived_not_authored``.
+
+    Args:
+        offsets: The table :func:`colombo_uhi.trends.build_sensor_offset_summary`
+            wrote. ``None`` yields a generic warning naming no numbers.
+        params: Parsed params mapping.
+
+    Returns:
+        A single line, ready to stamp on a figure.
+    """
+    generic = (
+        "POOLED LANDSAT: this row crosses the L5/L7/L8 changeovers and the "
+        "offsets over Colombo are material. Read it for GEOGRAPHY only."
+    )
+    if offsets is None or getattr(offsets, "empty", True):
+        return generic
+
+    material = offsets[offsets["verdict"].astype(str) == "material"]
+    if material.empty:
+        return generic
+
+    def _short(name: str) -> str:
+        text = str(name)
+        return "L" + text[-1] if text.startswith("landsat") else text
+
+    parts = [
+        f"{_short(row['sensor_a'])}-{_short(row['sensor_b'])} "
+        f"{float(row['mean_offset']):+.2f} degC "
+        f"(t={float(row['t_statistic']):+.1f}, {int(row['n_overlap_years'])} yr)"
+        for _, row in material.iterrows()
+    ]
+    return (
+        "MEASURED INTER-SENSOR OFFSETS over the CMC dry season: "
+        + "; ".join(parts)
+        + ". Decade-to-decade differences in the top row are dominated by these "
+        "steps, NOT by climate."
+    )
+
+
+def build_decadal_lst_panel_figure(
+    landsat: Mapping[str, Any],
+    modis: Mapping[str, Any],
+    params: dict[str, Any],
+    sensor_offsets: "pd.DataFrame | None" = None,
+    title: str = "Mean dry-season land surface temperature by decade",
+) -> Any:
+    """Build the six-panel decadal LST figure: pooled Landsat over MODIS Terra.
+
+    **Two rows, and the reason is the figure.** The top row is the pooled
+    Landsat decadal product, which spans the L5 -> L7 -> L8 changeovers. Its
+    measured offsets over Colombo are 2.4x and 3.4x the entire 26-year trend
+    signal, so a decade-to-decade comparison read off it measures the
+    constellation, not the city; it is drawn because it is the only product with
+    intra-urban detail, and it is labelled as a diagnostic. The bottom row is
+    MODIS Terra day - one sensor across all three windows, no changeover - which
+    is the comparison that is actually valid, at 1 km.
+
+    All six panels share ONE colour stretch (``report.decadal.shared_vis``).
+    Autoscaling each panel would hide exactly the step this figure exists to
+    expose.
+
+    Args:
+        landsat: Band-name to 2-D array, from
+            :func:`colombo_uhi.trends.read_trend_raster` on the pooled decadal
+            GeoTIFF, read with :func:`colombo_uhi.trends.decadal_band_order`.
+        modis: The same, for the MODIS Terra day decadal export.
+        params: Parsed params mapping.
+        sensor_offsets: ``sensor_offsets_cmc.csv``; drives the banner text.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If a decade's mean band is missing from either input,
+            naming which bands are present.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import Normalize
+    from matplotlib.figure import Figure
+
+    from colombo_uhi import trends
+
+    config = params["report"]["decadal"]
+    labels = [label for label, _, _ in trends.resolve_decades(None, params)]
+    keys = [f"mean_{label}" for label in labels]
+
+    rows = (
+        ("Landsat, pooled L5/L7/L8/L9\n(SENSOR-STEP DIAGNOSTIC)", landsat),
+        ("MODIS Terra day, one sensor\n(the valid comparison)", modis),
+    )
+    for row_label, arrays in rows:
+        missing = [key for key in keys if key not in arrays]
+        if missing:
+            raise ValueError(
+                f"the '{row_label.splitlines()[0]}' arrays are missing {missing}; "
+                f"they hold {sorted(arrays)}"
+            )
+
+    low = float(config["shared_vis"]["min"])
+    high = float(config["shared_vis"]["max"])
+    if high <= low:
+        raise ValueError(
+            f"report.decadal.shared_vis must have max > min, got {low}..{high}"
+        )
+    cmap = _sequential_cmap(config["palette"], "report_decadal")
+    norm = Normalize(vmin=low, vmax=high)
+
+    footer = caveat_footer(
+        params,
+        ["lst_not_air_temp", "valid_obs_required", "single_overpass",
+         "within_epoch_only"],
+    ) + "\n" + _wrap_bullets(
+        [
+            sensor_step_banner(sensor_offsets, params),
+            "All six panels share ONE colour stretch of "
+            f"{low:.0f}-{high:.0f} degC. Per-panel autoscaling would hide the "
+            "step between the top row's decades, which is the point of drawing "
+            "the two rows together.",
+            "The bottom row is 1 km: the CMC is about six pixels across, so it "
+            "carries the absolute levels honestly and the intra-urban pattern "
+            "not at all. Neither row is sufficient alone.",
+            "The number under each panel is that panel's mean over its finite "
+            "pixels, so the decade-to-decade step can be read as a number "
+            "rather than guessed from the colour.",
+        ]
+    )
+
+    # Height follows the data, not a constant: see panel_aspect.
+    width = float(params["report"]["width_inches"])
+    left, right = 0.10, 0.87
+    aspect = panel_aspect(landsat[keys[0]])
+    panel_height = (width * (right - left) / len(labels)) * aspect
+    reserved_inches = footer_inches(footer)
+    #: title band, per-panel captions and inter-row breathing room.
+    chrome = 1.30
+    height = 2 * panel_height + chrome + reserved_inches
+
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    panels = figure.subplots(2, len(labels), squeeze=False)
+    figure.subplots_adjust(
+        left=left, right=right,
+        top=1 - 0.55 / height, bottom=(reserved_inches + 0.30) / height,
+        wspace=0.06, hspace=0.42 / max(panel_height, 0.4),
+    )
+
+    image = None
+    for row_index, (row_label, arrays) in enumerate(rows):
+        for column, (label, key) in enumerate(zip(labels, keys)):
+            axes = _blank_axes(panels[row_index][column])
+            data = np.asarray(arrays[key], dtype="float64")
+            image = axes.imshow(
+                np.ma.masked_invalid(data), cmap=cmap, norm=norm,
+                interpolation="nearest",
+            )
+            if row_index == 0:
+                axes.set_title(label.replace("_", "-"), fontsize=10)
+            finite = data[np.isfinite(data)]
+            mean_text = f"mean {finite.mean():.2f} degC" if finite.size else "no data"
+            clipped = saturated_fraction(data, low, high)
+            axes.set_xlabel(
+                f"{mean_text}\n{clipped:.1%} outside the stretch", fontsize=7.5
+            )
+            if column == 0:
+                axes.set_ylabel(row_label, fontsize=8.5)
+
+    bar = figure.colorbar(
+        image, ax=panels.ravel().tolist(), orientation="vertical",
+        fraction=0.028, pad=0.02,
+    )
+    bar.set_label("Mean dry-season LST (degC)", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    figure.suptitle(title, fontsize=12, y=1 - 0.18 / height)
+    figure.text(
+        0.01, 0.10 / height, footer, fontsize=7, va="bottom", ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_decadal_lst_panel(
+    landsat: Mapping[str, Any],
+    modis: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    sensor_offsets: "pd.DataFrame | None" = None,
+    title: str = "Mean dry-season land surface temperature by decade",
+) -> Path:
+    """Write the decadal LST figure. See :func:`build_decadal_lst_panel_figure`."""
+    return _save_figure(
+        build_decadal_lst_panel_figure(
+            landsat, modis, params, sensor_offsets=sensor_offsets, title=title
+        ),
+        out_path,
+        dpi=report_dpi(params),
+    )
+
+
+def stipple_coordinates(
+    mask: Any, stride: int
+) -> tuple[Any, Any]:
+    """Column and row indices of every ``stride``-th true cell in a mask.
+
+    Drawing one dot per significant pixel turns a significant region into a
+    solid black blob and hides the slope beneath it, which defeats an overlay
+    whose whole job is to sit on top of a readable map. Sub-sampling on a fixed
+    lattice keeps the density even, so the stipple reads as texture rather than
+    as a second, misleading choropleth.
+
+    Args:
+        mask: 2-D boolean-ish array; truthy cells are candidates.
+        stride: Take every Nth row and Nth column. Must be >= 1.
+
+    Returns:
+        ``(x, y)`` index arrays, ready for ``axes.scatter``.
+
+    Raises:
+        ValueError: If ``stride`` is below 1.
+    """
+    import numpy as np
+
+    if int(stride) < 1:
+        raise ValueError(f"stipple stride must be >= 1, got {stride}")
+    flags = np.asarray(mask)
+    lattice = np.zeros(flags.shape, dtype=bool)
+    lattice[:: int(stride), :: int(stride)] = True
+    rows, columns = np.nonzero(flags & lattice)
+    return columns, rows
+
+
+def build_sen_slope_stipple_figure(
+    arrays: Mapping[str, Any],
+    params: dict[str, Any],
+    slope_key: str = "sen_slope",
+    significant_key: str = "significant",
+    title: str = "Sen's slope of land surface temperature",
+) -> Any:
+    """Build the report Sen's-slope map: one panel, significance as stippling.
+
+    The Phase 4 :func:`build_trend_map_figure` draws two panels - all slopes,
+    then significant slopes - because that pair is the honest DIAGNOSTIC. For
+    the report a single map is stronger: stippling puts the significance and the
+    magnitude in the same place, so a reader cannot read a rate off one panel
+    and its confidence off another without registering the two by eye.
+
+    Args:
+        arrays: Band-name to 2-D array, from
+            :func:`colombo_uhi.trends.read_trend_raster` on the FDR-corrected
+            raster.
+        params: Parsed params mapping.
+        slope_key: Band holding the Sen's slope, degC per year.
+        significant_key: Band holding the FDR significance mask (1/0/NaN).
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If a required array is missing, naming what is present.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+    from matplotlib.figure import Figure
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    missing = [key for key in (slope_key, significant_key) if key not in arrays]
+    if missing:
+        raise ValueError(
+            f"trend arrays are missing {missing}; they hold {sorted(arrays)}"
+        )
+
+    vis = trend_vis_params(params)
+    cmap = LinearSegmentedColormap.from_list(
+        "report_trend", [normalise_hex(colour) for colour in vis["palette"]]
+    ).with_extremes(bad="#dcdcdc")
+    norm = TwoSlopeNorm(vmin=vis["min"], vcenter=0.0, vmax=vis["max"])
+
+    slope = np.asarray(arrays[slope_key], dtype="float64")
+    significant = np.asarray(arrays[significant_key], dtype="float64")
+
+    tested = int(np.isfinite(significant).sum())
+    n_significant = int(np.nansum(significant == 1.0))
+    share = (n_significant / tested) if tested else float("nan")
+    clipped = saturated_fraction(slope, vis["min"], vis["max"])
+
+    stipple = params["report"]["stipple"]
+    footer = caveat_footer(
+        params,
+        ["lst_not_air_temp", "valid_obs_required", "single_overpass",
+         "fdr_dependence", "trend_not_causal"],
+    ) + "\n" + _wrap_bullets(
+        [
+            f"{n_significant:,} of {tested:,} fitted pixels ({share:.1%}) survive "
+            f"{params['trends']['fdr']['method'].replace('_', '-')} correction at "
+            f"alpha = {params['trends']['fdr']['alpha']}. Only those are stippled.",
+            "Grey is NOT 'no trend'. It is a pixel that was never tested, because "
+            "it fell below the valid-observation or minimum-year floor. Read this "
+            "map against figure 3.",
+            f"Stippling is drawn on a 1-in-{stipple['stride']} lattice, so its "
+            "density is a fixed texture and NOT proportional to anything. Its "
+            "extent is the result; its darkness is not.",
+            f"{clipped:.1%} of fitted pixels fall outside the "
+            f"{vis['min']:+.2f}..{vis['max']:+.2f} degC/yr colour stretch.",
+        ]
+    )
+
+    width = float(params["report"]["width_inches"])
+    left, span = 0.04, 0.80
+    panel_height = width * span * panel_aspect(slope)
+    reserved_inches = footer_inches(footer)
+    chrome = 0.85                       # title band plus a margin below the map
+    height = panel_height + chrome + reserved_inches
+
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    axes = _blank_axes(
+        figure.add_axes(
+            (left, (reserved_inches + 0.20) / height, span, panel_height / height)
+        )
+    )
+
+    image = axes.imshow(
+        np.ma.masked_invalid(slope), cmap=cmap, norm=norm, interpolation="nearest"
+    )
+    x, y = stipple_coordinates(significant == 1.0, int(stipple["stride"]))
+    axes.scatter(
+        x, y,
+        s=float(stipple["marker_size"]),
+        marker=str(stipple["marker"]),
+        c=normalise_hex(stipple["colour"]),
+        linewidths=0,
+    )
+
+    bar = figure.colorbar(image, ax=axes, fraction=0.032, pad=0.02)
+    bar.set_label("Sen's slope (degC per year)", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    axes.legend(
+        handles=[
+            Line2D([], [], linestyle="none", marker=str(stipple["marker"]),
+                   markersize=4, color=normalise_hex(stipple["colour"]),
+                   label=str(stipple["label"])),
+            Patch(facecolor="#dcdcdc", edgecolor="#999999",
+                  label="not tested (below the observation floor)"),
+        ],
+        loc="lower left", fontsize=8, frameon=True, facecolor="white",
+        edgecolor="#cccccc",
+    )
+
+    figure.suptitle(title, fontsize=12, y=1 - 0.22 / height)
+    figure.text(
+        0.01, 0.08 / height, footer, fontsize=7, va="bottom", ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_sen_slope_stipple(
+    arrays: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    slope_key: str = "sen_slope",
+    significant_key: str = "significant",
+    title: str = "Sen's slope of land surface temperature",
+) -> Path:
+    """Write the stippled slope map. See :func:`build_sen_slope_stipple_figure`."""
+    return _save_figure(
+        build_sen_slope_stipple_figure(
+            arrays, params, slope_key=slope_key,
+            significant_key=significant_key, title=title,
+        ),
+        out_path,
+        dpi=report_dpi(params),
+    )
+
+
+def build_obs_count_figure(
+    arrays: Mapping[str, Any],
+    params: dict[str, Any],
+    count_key: str | None = None,
+    title: str = "Valid dry-season observations per pixel",
+) -> Any:
+    """Build the valid-observation-count map beside its cumulative distribution.
+
+    ``CLAUDE.md`` caveat 2 requires a per-pixel valid-observation count beside
+    every composite and trend product. A map alone does not discharge that: a
+    reader cannot integrate a colour ramp by eye, and "most of the city is
+    thin" and "a corner of the city is thin" look similar on one. The ECDF panel
+    turns it into a number - what share of the AOI rests on fewer than N usable
+    scenes - which is the form the caveat is actually about.
+
+    Args:
+        arrays: Band-name to 2-D array holding the count.
+        params: Parsed params mapping.
+        count_key: Band holding the count; defaults to
+            ``composites.obs_count_band``.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the count band is missing, or holds no finite pixel.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import Normalize
+    from matplotlib.figure import Figure
+
+    key = count_key or params["composites"]["obs_count_band"]
+    if key not in arrays:
+        raise ValueError(
+            f"observation-count arrays are missing '{key}'; they hold "
+            f"{sorted(arrays)}"
+        )
+    counts = np.asarray(arrays[key], dtype="float64")
+    finite = counts[np.isfinite(counts)]
+    if finite.size == 0:
+        raise ValueError(f"band '{key}' has no finite pixel; nothing to draw")
+
+    vis = params["report"]["obs_count_vis"]
+    cmap = _sequential_cmap(vis["palette"], "report_obs_count")
+    norm = Normalize(vmin=float(vis["min"]), vmax=float(vis["max"]))
+    marks = [int(mark) for mark in vis["ecdf_marks"]]
+
+    shares = {mark: float((finite < mark).mean()) for mark in marks}
+    footer = caveat_footer(
+        params, ["valid_obs_required", "lst_not_air_temp", "single_overpass"]
+    ) + "\n" + _wrap_bullets(
+        [
+            "Median "
+            f"{np.median(finite):.0f} usable observations per pixel; "
+            f"1st percentile {np.percentile(finite, 1):.0f}, "
+            f"99th {np.percentile(finite, 99):.0f}.",
+            "Share of the AOI below each reference count: "
+            + ", ".join(f"<{mark}: {shares[mark]:.1%}" for mark in marks)
+            + ".",
+            "A count of zero is a real tropical-cloud result, not a gap in the "
+            "processing: some pixels had no cloud-free scene in that window at "
+            "all. Those pixels are masked out of every downstream product, which "
+            "is why the trend map has untested grey.",
+        ]
+    )
+
+    width = float(params["report"]["width_inches"])
+    left, right, map_share = 0.04, 0.94, 1.35 / 2.35
+    map_height = width * (right - left) * map_share * panel_aspect(counts)
+    reserved_inches = footer_inches(footer)
+    chrome = 1.55                       # title band, the ECDF's axis labels, and the
+                                        # horizontal colorbar under the map
+    # Floor the panel height so a very wide raster does not squash the ECDF,
+    # whose y axis is a share and needs room to be read.
+    height = max(map_height, 2.8) + chrome + reserved_inches
+
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    panels = figure.subplots(1, 2, gridspec_kw={"width_ratios": [1.35, 1.0]})
+    figure.subplots_adjust(
+        left=left, right=right,
+        top=1 - 0.55 / height, bottom=(reserved_inches + 0.60) / height,
+        wspace=0.26,
+    )
+
+    axes = _blank_axes(panels[0])
+    image = axes.imshow(
+        np.ma.masked_invalid(counts), cmap=cmap, norm=norm, interpolation="nearest"
+    )
+    axes.set_title("Per-pixel count", fontsize=10)
+    # HORIZONTAL, under the map. A vertical bar here sits in the gap between the
+    # two panels and its label lands on top of the ECDF's y-axis label - which is
+    # exactly what the first Phase 8 draft did.
+    bar = figure.colorbar(
+        image, ax=axes, orientation="horizontal", fraction=0.055, pad=0.04
+    )
+    bar.set_label("usable observations", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+
+    ecdf = panels[1]
+    ordered = np.sort(finite)
+    ecdf.plot(
+        ordered,
+        np.arange(1, ordered.size + 1) / ordered.size,
+        color="#31688e", linewidth=1.6,
+    )
+    for mark in marks:
+        ecdf.axvline(mark, color="#b2182b", linewidth=0.9, linestyle="--")
+        ecdf.annotate(
+            f"{mark}: {shares[mark]:.0%}",
+            xy=(mark, shares[mark]), xytext=(4, 4), textcoords="offset points",
+            fontsize=7.5, color="#b2182b",
+        )
+    ecdf.set_xlabel("usable observations per pixel", fontsize=9)
+    ecdf.set_ylabel("cumulative share of pixels", fontsize=9)
+    ecdf.set_ylim(0, 1)
+    ecdf.set_title("Cumulative distribution", fontsize=10)
+    ecdf.grid(True, alpha=0.3)
+    ecdf.tick_params(labelsize=8)
+
+    figure.suptitle(title, fontsize=12, y=1 - 0.18 / height)
+    figure.text(
+        0.01, 0.10 / height, footer, fontsize=7, va="bottom", ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_obs_count(
+    arrays: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    count_key: str | None = None,
+    title: str = "Valid dry-season observations per pixel",
+) -> Path:
+    """Write the observation-count figure. See :func:`build_obs_count_figure`."""
+    return _save_figure(
+        build_obs_count_figure(arrays, params, count_key=count_key, title=title),
+        out_path,
+        dpi=report_dpi(params),
+    )
+
+
+def build_utfvi_epoch_maps_figure(
+    epochs: Mapping[str, Any],
+    params: dict[str, Any],
+    title: str = "Urban thermal field variance index by epoch",
+) -> Any:
+    """Build the per-epoch UTFVI six-class maps with a shared class legend.
+
+    .. warning::
+        UTFVI is referenced to **each epoch's own mean LST**
+        (``uhi.utfvi.reference``), so class drift between panels is a
+        REDISTRIBUTION of heat within that epoch, never evidence of warming. A
+        city that warms uniformly by 2 degC produces three identical panels.
+        The class-share bars beneath the maps exist to make that reading
+        available as numbers, and the footer states it in words.
+
+    Args:
+        epochs: Epoch label to 2-D class array holding integer codes 0-5, with
+            NaN (or a masked array) outside the AOI.
+        params: Parsed params mapping.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If no epoch is supplied, or an epoch holds a class code
+            outside the configured scheme.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+    from matplotlib.figure import Figure
+    from matplotlib.patches import Patch
+
+    from colombo_uhi import uhi_metrics
+
+    _, labels = uhi_metrics.validate_utfvi_scheme(params)
+    palette = [normalise_hex(colour) for colour in params["uhi"]["utfvi"]["palette"]]
+    order = [key for key in params["report"]["facet_epochs"] if key in epochs]
+    order += [key for key in epochs if key not in order]
+    if not order:
+        raise ValueError("no epoch arrays supplied; there is nothing to map")
+
+    cmap = ListedColormap(palette).with_extremes(bad="#dcdcdc")
+    norm = BoundaryNorm(list(range(len(labels) + 1)), cmap.N)
+
+    shares: dict[str, list[float]] = {}
+    for key in order:
+        codes = np.asarray(epochs[key], dtype="float64")
+        finite = codes[np.isfinite(codes)]
+        if finite.size and (finite.min() < 0 or finite.max() > len(labels) - 1):
+            raise ValueError(
+                f"epoch '{key}' holds class codes {finite.min():.0f}..{finite.max():.0f}, "
+                f"outside the configured 0..{len(labels) - 1} scheme"
+            )
+        counts = np.array(
+            [float((finite == index).sum()) for index in range(len(labels))]
+        )
+        total = counts.sum()
+        shares[key] = list(counts / total * 100.0) if total else [float("nan")] * len(labels)
+
+    footer = caveat_footer(
+        params,
+        ["lst_not_air_temp", "valid_obs_required", "within_epoch_only",
+         "colour_is_not_the_only_channel"],
+    ) + "\n" + _wrap_bullets(
+        [
+            "UTFVI is referenced to EACH EPOCH'S OWN mean LST, so a difference "
+            "between these panels is a REDISTRIBUTION of heat within that epoch "
+            "and NEVER evidence of warming. Uniform warming leaves all three "
+            "panels identical; figure 2 is what measures change.",
+            "Class breaks "
+            + ", ".join(str(value) for value in params["uhi"]["utfvi"]["breaks"])
+            + " are the published thresholds and assume degrees CELSIUS - UTFVI "
+            "is a ratio, so on Kelvin every break would mean something else.",
+            "The palette runs light to dark with severity, so the ordering "
+            "survives greyscale printing and every simulated colour-vision "
+            "deficiency; the bars repeat the same information as numbers.",
+        ]
+    )
+
+    width = float(params["report"]["width_inches"])
+    left, right = 0.05, 0.97
+    map_height = (width * (right - left) / len(order)) * panel_aspect(epochs[order[0]])
+    bar_height = 1.25                   # the class-share row, in inches
+    reserved_inches = footer_inches(footer)
+    chrome = 1.35                       # title band, legend strip and panel titles
+    height = map_height + bar_height + chrome + reserved_inches
+
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    grid = figure.add_gridspec(
+        2, len(order), height_ratios=[map_height, bar_height],
+        left=left, right=right,
+        top=1 - 0.95 / height, bottom=(reserved_inches + 0.55) / height,
+        wspace=0.08, hspace=0.55 / max(map_height, 0.4),
+    )
+
+    for column, key in enumerate(order):
+        axes = _blank_axes(figure.add_subplot(grid[0, column]))
+        codes = np.asarray(epochs[key], dtype="float64")
+        axes.imshow(
+            np.ma.masked_invalid(codes), cmap=cmap, norm=norm, interpolation="nearest"
+        )
+        axes.set_title(key, fontsize=10)
+
+        bars = figure.add_subplot(grid[1, column])
+        positions = list(range(len(labels)))
+        bars.bar(positions, shares[key], color=palette, edgecolor="#666666", linewidth=0.4)
+        bars.set_xticks(positions)
+        bars.set_xticklabels(labels, fontsize=6.5, rotation=45, ha="right")
+        bars.set_ylim(0, 100)
+        bars.tick_params(labelsize=7)
+        bars.grid(True, axis="y", alpha=0.3)
+        if column == 0:
+            bars.set_ylabel("share of AOI (%)", fontsize=8)
+        else:
+            bars.set_yticklabels([])
+
+    figure.legend(
+        handles=[
+            Patch(facecolor=colour, edgecolor="#666666",
+                  label=f"{index}  {label}")
+            for index, (label, colour) in enumerate(zip(labels, palette))
+        ],
+        loc="upper center", bbox_to_anchor=(0.5, 1 - 0.42 / height),
+        ncol=len(labels), fontsize=7.5, frameon=True,
+        facecolor="white", edgecolor="#cccccc", handlelength=1.4,
+    )
+    figure.suptitle(title, fontsize=12, y=1 - 0.16 / height)
+    figure.text(
+        0.01, 0.10 / height, footer, fontsize=7, va="bottom", ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_utfvi_epoch_maps(
+    epochs: Mapping[str, Any],
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str = "Urban thermal field variance index by epoch",
+) -> Path:
+    """Write the UTFVI epoch maps. See :func:`build_utfvi_epoch_maps_figure`."""
+    return _save_figure(
+        build_utfvi_epoch_maps_figure(epochs, params, title=title),
+        out_path,
+        dpi=report_dpi(params),
+    )
+
+
+# =============================================================================
+# Phase 8 - report figures 7 and 9
+# =============================================================================
+def build_lst_vs_index_facet_figure(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    epoch_column: str = "epoch",
+    index_columns: Sequence[str] | None = None,
+    response: str | None = None,
+    max_points: int | None = None,
+    title: str | None = None,
+) -> Any:
+    """Build the LST-versus-driver scatter grid, one ROW per epoch.
+
+    The Phase 3 :func:`build_lst_vs_index_figure` pools every year into one row,
+    which answers "is LST related to vegetation?" but not "did that relationship
+    change?". Faceting by epoch is what makes the second question askable: three
+    rows with the same axes let a reader compare slopes by eye, and each panel
+    states its own slope, r and n so the comparison does not have to be by eye.
+
+    .. warning::
+        The fitted lines are a SCREENING device. Sampled pixels are strongly
+        spatially autocorrelated, so the ordinary least-squares standard errors
+        are too small and any p-value read off them is anti-conservative. Phase
+        5's GWR/MGWR is where this is handled properly.
+
+    Args:
+        frame: Sampled-pixel table carrying ``epoch_column``, the response and
+            every index column - the pooled output of
+            :func:`colombo_uhi.uhi_metrics.sample_drivers` per epoch.
+        params: Parsed params mapping.
+        epoch_column: Column naming each row's epoch.
+        index_columns: Drivers to plot, one column each; ``None`` uses
+            ``report.facet_indices``.
+        response: Response column; defaults to ``uhi.drivers.response``.
+        max_points: Points DRAWN per panel; ``None`` uses
+            ``report.facet_max_points``. Every fit uses every row regardless.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty, a named column is missing, or no
+            configured epoch appears in it.
+    """
+    import numpy as np
+    import pandas as pd
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    y_name = response or params["uhi"]["drivers"]["response"]
+    columns = list(index_columns or params["report"]["facet_indices"])
+    drawn = int(params["report"]["facet_max_points"] if max_points is None else max_points)
+
+    if frame.empty:
+        raise ValueError("sample frame is empty; there is nothing to plot")
+    missing = [
+        column
+        for column in (epoch_column, y_name, *columns)
+        if column not in frame.columns
+    ]
+    if missing:
+        raise ValueError(
+            f"sample frame is missing column(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+
+    present = set(frame[epoch_column].astype(str))
+    epochs = [key for key in params["report"]["facet_epochs"] if key in present]
+    epochs += [key for key in dict.fromkeys(frame[epoch_column].astype(str))
+               if key not in epochs]
+    if not epochs:
+        raise ValueError(
+            f"no epoch appears in column '{epoch_column}'; it holds {sorted(present)}"
+        )
+
+    footer = caveat_footer(
+        params,
+        ["lst_not_air_temp", "single_overpass", "valid_obs_required",
+         "within_epoch_only", "trend_not_causal"],
+    ) + "\n" + _wrap_bullets(
+        [
+            "Each fit uses EVERY sampled row; only the drawing is thinned to "
+            f"{drawn:,} points a panel. The line is drawn across the 1st-99th "
+            "percentile of x, so it is not extrapolated into a tail holding a "
+            "handful of pixels.",
+            "Sampled pixels are spatially autocorrelated, so these OLS standard "
+            "errors are too small and any p-value from them overstates "
+            "significance. Read the slopes as a screening result; Phase 5's "
+            "GWR/MGWR is the inferential version.",
+            "Rows share axes so the slopes are comparable BY EYE. They are not "
+            "comparable in LEVEL: the epochs are composited from different "
+            "Landsat sensors, whose offsets over Colombo are material, so a "
+            "vertical shift between rows is not a measurement of warming.",
+        ]
+    )
+
+    rows, cols = len(epochs), len(columns)
+    reserved_inches = footer_inches(footer)
+    panel = 3.0
+    height = rows * panel + 1.25 + reserved_inches
+    width = float(params["report"]["width_inches"])
+
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    panels = figure.subplots(rows, cols, squeeze=False, sharex="col", sharey=True)
+    figure.subplots_adjust(
+        left=0.09, right=0.98,
+        top=1 - 0.62 / height, bottom=(reserved_inches + 0.60) / height,
+        wspace=0.10, hspace=0.28,
+    )
+
+    seed = int(params["uhi"]["drivers"]["sample_seed"])
+    for row, epoch in enumerate(epochs):
+        block = frame[frame[epoch_column].astype(str) == epoch]
+        for column_index, column in enumerate(columns):
+            axes = panels[row][column_index]
+            pair = (
+                block[[y_name, column]]
+                .apply(pd.to_numeric, errors="coerce")
+                .dropna()
+            )
+            if pair.empty:
+                axes.set_title(f"{epoch} - {column}: no data", fontsize=8.5)
+                continue
+
+            shown = pair.sample(drawn, random_state=seed) if len(pair) > drawn else pair
+            axes.scatter(
+                shown[column], shown[y_name], s=3, alpha=0.22, edgecolors="none",
+                color="#31688e",
+            )
+            if int(pair[column].nunique(dropna=True)) > 1:
+                slope, intercept = np.polyfit(pair[column], pair[y_name], 1)
+                low, high = np.percentile(pair[column], [1, 99])
+                if high <= low:
+                    low, high = float(pair[column].min()), float(pair[column].max())
+                grid = np.linspace(low, high, 50)
+                axes.plot(grid, slope * grid + intercept, color="#b2182b", linewidth=1.7)
+                r_value = float(np.corrcoef(pair[column], pair[y_name])[0, 1])
+                axes.set_title(
+                    f"{epoch} - {column}:  {slope:+.2f} degC per unit,  "
+                    f"r = {r_value:+.2f},  n = {len(pair):,}",
+                    fontsize=8.5,
+                )
+            else:
+                axes.set_title(f"{epoch} - {column}: constant, no fit", fontsize=8.5)
+
+            axes.grid(True, alpha=0.3)
+            axes.tick_params(labelsize=7.5)
+            if row == rows - 1:
+                axes.set_xlabel(column, fontsize=9)
+            if column_index == 0:
+                axes.set_ylabel("LST (degC)", fontsize=9)
+
+    figure.suptitle(
+        title or f"{y_name} against NDVI and NDBI, by epoch (sampled pixels)",
+        fontsize=12, y=1 - 0.20 / height,
+    )
+    figure.text(
+        0.01, 0.10 / height, footer, fontsize=7, va="bottom", ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_lst_vs_index_facet(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    epoch_column: str = "epoch",
+    index_columns: Sequence[str] | None = None,
+    response: str | None = None,
+    max_points: int | None = None,
+    title: str | None = None,
+) -> Path:
+    """Write the faceted scatter grid. See :func:`build_lst_vs_index_facet_figure`."""
+    return _save_figure(
+        build_lst_vs_index_facet_figure(
+            frame, params, epoch_column=epoch_column, index_columns=index_columns,
+            response=response, max_points=max_points, title=title,
+        ),
+        out_path,
+        dpi=report_dpi(params),
+    )
+
+
+def build_scenario_triptych_figure(
+    baseline: Any,
+    greened: Any,
+    difference: Any,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+    priority_mask: Any = None,
+) -> Any:
+    """Build the greening counterfactual triptych: baseline, greened, difference.
+
+    This is a **counterfactual on observed predictors** - "what would the surface
+    look like if these zones were greened today" - and NOT a projection to a
+    future date. That distinction is why it can be drawn at all: it rests on the
+    validated random forest alone, with no land-cover projection underneath it,
+    so it carries regression metrics and no Kappa. The 2030 and 2036 horizons DO
+    rest on the CA-Markov component, which Phase 6 measured and could not
+    validate, so no map of them is produced.
+
+    The two temperature panels share ONE stretch, taken from the pair, so the
+    eye compares like with like; the difference panel takes the symmetric
+    diverging ramp from ``prediction.palettes``.
+
+    Args:
+        baseline: 2-D array of modelled LST under the unmodified predictors.
+        greened: 2-D array under the greening lever.
+        difference: 2-D array of greened minus baseline, in degC.
+        params: Parsed params mapping.
+        report: Validation report for the ``lst_scenario`` product; drives the
+            caption and, on failure, the banner.
+        title: Figure title.
+        priority_mask: Optional boolean array marking the greened zones. Supply
+            it: the district-wide mean difference is dominated by the ~97% of
+            cells nothing was done to, so quoting it as the greening effect
+            understates the result by an order of magnitude. When given, the
+            footer reports BOTH numbers and says which is which.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the three arrays do not share a shape, or the mask does
+            not match them.
+    """
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.colors import LinearSegmentedColormap, Normalize, TwoSlopeNorm
+    from matplotlib.figure import Figure
+
+    surfaces = [np.asarray(array, dtype="float64") for array in (baseline, greened, difference)]
+    shapes = {surface.shape for surface in surfaces}
+    if len(shapes) != 1:
+        raise ValueError(
+            f"the three scenario surfaces must share a shape, got {sorted(shapes)}"
+        )
+
+    palettes = params["prediction"]["palettes"]
+    limit = float(palettes["scenario_difference_max_degc"])
+    heat = _sequential_cmap(params["report"]["decadal"]["palette"], "report_scenario")
+    diverging = LinearSegmentedColormap.from_list(
+        "report_scenario_difference",
+        [normalise_hex(colour) for colour in palettes["scenario_difference"]],
+    ).with_extremes(bad="#dcdcdc")
+
+    both = np.concatenate([surfaces[0].ravel(), surfaces[1].ravel()])
+    finite = both[np.isfinite(both)]
+    if finite.size:
+        low, high = (float(value) for value in np.percentile(finite, [1, 99]))
+    else:
+        low, high = 0.0, 1.0
+    if high <= low:
+        low, high = low - 0.5, low + 0.5
+
+    delta = surfaces[2]
+    delta_finite = delta[np.isfinite(delta)]
+    mean_delta = float(delta_finite.mean()) if delta_finite.size else float("nan")
+    cooled = float((delta_finite < 0).mean()) if delta_finite.size else float("nan")
+    lever = params["prediction"]["scenarios"]["greening"]["canopy_increase_fraction"]
+
+    inside_line = (
+        "The mean above is over the WHOLE mapped area, most of which was not "
+        "greened, so it is NOT the greening effect. Quote the priority-zone "
+        "mean from greening_counterfactual_by_gn.csv instead."
+    )
+    if priority_mask is not None:
+        flags = np.asarray(priority_mask, dtype=bool)
+        if flags.shape != delta.shape:
+            raise ValueError(
+                f"priority_mask has shape {flags.shape}, but the surfaces are "
+                f"{delta.shape}"
+            )
+        inside = delta[flags & np.isfinite(delta)]
+        if inside.size:
+            inside_line = (
+                f"INSIDE the greened priority zones the mean difference is "
+                f"{float(inside.mean()):+.2f} degC over {int(inside.size):,} "
+                "cells. That is the result. The district-wide mean above is "
+                "diluted by every cell nothing was done to, and must not be "
+                "quoted as the greening effect."
+            )
+
+    footer = projection_caption(
+        report,
+        params,
+        keys=["scenario_not_forecast", "lst_not_air_temp", "single_overpass",
+              "zonal_not_pixel"],
+        extra=_wrap_bullets(
+            [
+                "This is a COUNTERFACTUAL ON OBSERVED PREDICTORS - 'if these "
+                "zones were greened today' - not a projection to a future date. "
+                "It involves no land-cover projection, which is why it carries "
+                "regression metrics and no Kappa, and why it may be mapped at "
+                "all while the 2030 and 2036 horizons may not.",
+                f"The lever is a {float(lever):.0%} shift of each priority "
+                "cell's surface character toward the observed canopy signature. "
+                "It assumes the planting happens, and it assumes the fitted "
+                "LST-driver relationship holds under a surface the model never "
+                "observed.",
+                f"Mean difference {mean_delta:+.2f} degC inside the mapped area; "
+                f"{cooled:.1%} of finite cells cool. The two temperature panels "
+                f"share one stretch of {low:.1f}-{high:.1f} degC (1st-99th "
+                "percentile of the pair), so they are directly comparable.",
+                inside_line,
+            ]
+        ),
+    )
+
+    width = float(params["report"]["width_inches"])
+    left, right = 0.04, 0.97
+    panel_height = (width * (right - left) / 3) * panel_aspect(surfaces[0])
+    reserved_inches = footer_inches(footer)
+    chrome = 1.35                       # title band, panel titles and two colorbars
+    height = panel_height + chrome + reserved_inches
+
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    panels = figure.subplots(1, 3)
+    figure.subplots_adjust(
+        left=left, right=right,
+        top=1 - 0.60 / height, bottom=(reserved_inches + 0.55) / height,
+        wspace=0.10,
+    )
+
+    heat_image = None
+    for axes, data, panel_title in (
+        (panels[0], surfaces[0], "Baseline (observed predictors)"),
+        (panels[1], surfaces[1], f"Greening scenario ({float(lever):.0%} canopy shift)"),
+    ):
+        _blank_axes(axes)
+        heat_image = axes.imshow(
+            np.ma.masked_invalid(data), cmap=heat,
+            norm=Normalize(vmin=low, vmax=high), interpolation="nearest",
+        )
+        axes.set_title(panel_title, fontsize=9.5)
+
+    heat_bar = figure.colorbar(
+        heat_image, ax=[panels[0], panels[1]], orientation="horizontal",
+        fraction=0.055, pad=0.05,
+    )
+    heat_bar.set_label("Modelled LST (degC)", fontsize=9)
+    heat_bar.ax.tick_params(labelsize=8)
+
+    _blank_axes(panels[2])
+    delta_image = panels[2].imshow(
+        np.ma.masked_invalid(delta), cmap=diverging,
+        norm=TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit),
+        interpolation="nearest",
+    )
+    panels[2].set_title("Difference (greening minus baseline)", fontsize=9.5)
+    delta_bar = figure.colorbar(
+        delta_image, ax=panels[2], orientation="horizontal",
+        fraction=0.055, pad=0.05,
+    )
+    delta_bar.set_label("degC", fontsize=9)
+    delta_bar.ax.tick_params(labelsize=8)
+
+    _suptitle(
+        figure,
+        title or "Greening counterfactual: modelled land surface temperature",
+        report,
+        params,
+    )
+    figure.text(
+        0.01, 0.10 / height, footer, fontsize=7, va="bottom", ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_scenario_triptych(
+    baseline: Any,
+    greened: Any,
+    difference: Any,
+    out_path: str | Path,
+    params: dict[str, Any],
+    report: Mapping[str, Any] | None = None,
+    title: str | None = None,
+    priority_mask: Any = None,
+) -> Path:
+    """Write the scenario triptych. See :func:`build_scenario_triptych_figure`."""
+    return _save_figure(
+        build_scenario_triptych_figure(
+            baseline, greened, difference, params, report=report, title=title,
+            priority_mask=priority_mask,
+        ),
+        out_path,
+        dpi=report_dpi(params),
+    )
+
+
+# =============================================================================
+# Phase 8 - top-N labelling for the greening priority map
+# =============================================================================
+def spread_label_positions(
+    wanted: Sequence[float],
+    min_gap: float,
+    low: float | None = None,
+    high: float | None = None,
+) -> list[float]:
+    """Push overlapping label positions apart along one axis, preserving order.
+
+    The top-ten priority divisions are the densest, smallest divisions in the
+    CMC core, so their centroids fall within a few hundred metres of each other
+    and ten labels drawn at those centroids overlap into an unreadable mat. This
+    nudges them apart on a single axis and keeps their relative order, so the
+    leader lines joining label to division never cross.
+
+    A single forward sweep then a single backward sweep, not an iterative
+    physical relaxation: the result is deterministic, which a test can pin, and
+    the ordering guarantee is exact rather than emergent.
+
+    Args:
+        wanted: Desired positions, one per label, in data units. Order is
+            preserved as given - sort by it beforehand if that matters.
+        min_gap: Minimum spacing between adjacent labels.
+        low: Optional lower bound the block is kept inside.
+        high: Optional upper bound.
+
+    Returns:
+        Adjusted positions, in the input order.
+
+    Raises:
+        ValueError: If ``min_gap`` is negative, or the labels cannot fit between
+            ``low`` and ``high`` - which is a real answer, not a layout hiccup:
+            it means too many labels were asked for.
+    """
+    if float(min_gap) < 0:
+        raise ValueError(f"min_gap must be non-negative, got {min_gap}")
+    values = [float(value) for value in wanted]
+    if not values:
+        return []
+    if low is not None and high is not None:
+        needed = (len(values) - 1) * float(min_gap)
+        if needed > float(high) - float(low):
+            raise ValueError(
+                f"{len(values)} labels need {needed:.3g} of span at a "
+                f"{float(min_gap):.3g} gap, but only "
+                f"{float(high) - float(low):.3g} is available; label fewer"
+            )
+
+    # Forward: nothing may sit closer than min_gap to the label before it.
+    for index in range(1, len(values)):
+        values[index] = max(values[index], values[index - 1] + float(min_gap))
+    # Backward: pull the whole block down if the forward sweep overshot the top.
+    if high is not None and values[-1] > float(high):
+        values[-1] = float(high)
+        for index in range(len(values) - 2, -1, -1):
+            values[index] = min(values[index], values[index + 1] - float(min_gap))
+    if low is not None and values[0] < float(low):
+        values[0] = float(low)
+        for index in range(1, len(values)):
+            values[index] = max(values[index], values[index - 1] + float(min_gap))
+    return values
+
+
+#: Share of the map's own width reserved to its RIGHT for the label column.
+#:
+#: The labelled divisions are the smallest and most tightly packed in the
+#: district, so labels have to sit outside the map and be joined by leader
+#: lines. Widening the axes limits to make room WITHOUT widening the canvas
+#: shrinks the map by roughly a third and leaves white bands above and below it,
+#: because the figure was already sized to the unpadded bounding box. The
+#: builder therefore sizes the canvas with this gutter included and
+#: :func:`annotate_top_zones` places labels inside the same gutter.
+LABEL_GUTTER_FRACTION = 0.30
+
+#: Inset of the label column from the map's right edge, as a share of width.
+LABEL_GUTTER_INSET = 0.03
+
+
+class _PaddedBounds:
+    """Stand-in for a GeoDataFrame carrying widened ``total_bounds``.
+
+    Only :func:`map_aspect_ratio` reads the layer when sizing a map canvas, and
+    it reads nothing but ``total_bounds``.
+    """
+
+    def __init__(self, zones: Any, right_padding: float) -> None:
+        min_x, min_y, max_x, max_y = (float(v) for v in zones.total_bounds)
+        width = max_x - min_x
+        self.total_bounds = (min_x, min_y, max_x + width * right_padding, max_y)
+
+
+def label_gutter_bounds(zones: Any) -> tuple[float, float]:
+    """``(label_x, right_limit)`` for a map drawn with a label gutter.
+
+    Args:
+        zones: ``geopandas.GeoDataFrame``.
+
+    Returns:
+        The x at which labels start, and the x the axes should extend to.
+    """
+    min_x, _, max_x, _ = (float(value) for value in zones.total_bounds)
+    width = max_x - min_x
+    return (
+        max_x + width * LABEL_GUTTER_INSET,
+        max_x + width * LABEL_GUTTER_FRACTION,
+    )
+
+
+def annotate_top_zones(
+    axes: Any,
+    merged: Any,
+    params: dict[str, Any],
+    top_n: int | None = None,
+    rank_column: str = "rank_ahp",
+    name_column: str = "adm4_name",
+) -> int:
+    """Label the highest-ranked divisions in a column beside the map.
+
+    Labels go in a stack to the RIGHT of the map rather than on the polygons
+    they name. Ten of the top divisions are sub-square-kilometre and adjacent,
+    so on-polygon labels would overlap each other and obscure the choropleth
+    they sit on; a leader line to an outside stack costs nothing and stays
+    readable at any zoom.
+
+    Args:
+        axes: The map axes, already drawn.
+        merged: ``geopandas.GeoDataFrame`` of zones joined to the ranking.
+        params: Parsed params mapping.
+        top_n: How many to label; defaults to ``report.label_top_n``.
+        rank_column: Column holding the rank, 1 = highest priority.
+        name_column: Column holding the division name.
+
+    Returns:
+        The number of labels drawn; zero when the frame carries no rank.
+    """
+    limit = int(params["report"]["label_top_n"] if top_n is None else top_n)
+    if rank_column not in merged.columns or limit < 1:
+        return 0
+
+    labelled = merged.dropna(subset=[rank_column]).nsmallest(limit, rank_column)
+    if labelled.empty:
+        return 0
+
+    centres = labelled.geometry.representative_point()
+    frame = labelled.assign(
+        _x=[point.x for point in centres], _y=[point.y for point in centres]
+    ).sort_values("_y", ascending=False)
+
+    min_x, min_y, max_x, max_y = (float(value) for value in merged.total_bounds)
+    span_y = max_y - min_y
+    gap = span_y / max(len(frame) + 1, 2)
+    try:
+        placed = spread_label_positions(
+            list(frame["_y"])[::-1], gap, low=min_y, high=max_y
+        )[::-1]
+    except ValueError:
+        placed = list(frame["_y"])
+
+    label_x, right_limit = label_gutter_bounds(merged)
+    for (_, row), y_position in zip(frame.iterrows(), placed):
+        name = str(row.get(name_column, row.get("zone_id", "")))
+        axes.annotate(
+            f"{int(row[rank_column])}. {name}",
+            xy=(float(row["_x"]), float(row["_y"])),
+            xytext=(label_x, y_position),
+            fontsize=6.5, va="center", ha="left", color="#111111",
+            arrowprops={
+                "arrowstyle": "-", "linewidth": 0.5, "color": "#555555",
+                "shrinkA": 0, "shrinkB": 1,
+            },
+        )
+    # The canvas was already sized with this gutter (see LABEL_GUTTER_FRACTION),
+    # so setting the limits to match reveals the label column rather than
+    # squeezing the map into it.
+    axes.set_xlim(min_x, right_limit)
+    return int(len(frame))
+
+
+# =============================================================================
+# Phase 8 - figure 11: the data-provenance table
+# =============================================================================
+#: Columns the provenance figure shows, and the width each gets, as a share of
+#: the table. The CSV in ``data/outputs`` carries every column; the FIGURE drops
+#: the free-text note, which is paragraphs long for some entries and would set
+#: the row height for the whole table.
+PROVENANCE_FIGURE_COLUMNS: tuple[tuple[str, str, float], ...] = (
+    ("collection_id", "Collection ID / asset path", 0.26),
+    ("type", "Type", 0.10),
+    ("bands", "Bands used", 0.22),
+    ("native_scale_m", "Native\nscale (m)", 0.07),
+    ("scale_factor", "Scale factor", 0.21),
+    ("temporal_coverage", "Coverage", 0.14),
+)
+
+
+def build_provenance_table_figure(
+    frame: "pd.DataFrame",
+    params: dict[str, Any],
+    title: str = "Data provenance: every source, band and scale factor",
+) -> Any:
+    """Build the data-provenance table as a figure.
+
+    Rendered as a drawn table rather than as ``matplotlib``'s ``table`` helper,
+    which cannot wrap a cell: several collection IDs and band lists are long
+    enough that a non-wrapping table either overflows the canvas or has to be
+    set in unreadably small type.
+
+    Sources the project configures but never uses are drawn in grey and marked,
+    because "configured" and "used" are different claims and a provenance table
+    that conflates them overstates what the analysis rests on.
+
+    Args:
+        frame: The table :func:`colombo_uhi.reporting.provenance_frame` returns.
+        params: Parsed params mapping.
+        title: Figure title.
+
+    Returns:
+        A ``matplotlib.figure.Figure``.
+
+    Raises:
+        ValueError: If the frame is empty or lacks a shown column.
+    """
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+    from matplotlib.patches import Rectangle
+
+    if frame.empty:
+        raise ValueError("the provenance frame is empty; there is nothing to tabulate")
+    shown = [(name, header, width) for name, header, width in PROVENANCE_FIGURE_COLUMNS]
+    missing = [name for name, _, _ in shown if name not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"provenance frame is missing column(s) {missing}; it has "
+            f"{sorted(frame.columns)}"
+        )
+
+    width = float(params["report"]["width_inches"])
+    #: Characters of 6.5 pt DejaVu Sans that fit in one inch, measured off the
+    #: first render. Deliberately CONSERVATIVE: over-estimating it packs more
+    #: characters onto a line than fit and one column runs into the next, which
+    #: is what the first draft did to the band and scale-factor columns.
+    chars_per_inch = 15.5
+    left, right = 0.02, 0.99
+    table_width = width * (right - left)
+
+    rows: list[tuple[str, list[list[str]], bool]] = []
+    for _, record in frame.iterrows():
+        cells: list[list[str]] = []
+        for name, _, share in shown:
+            text = str(record[name]) if record[name] == record[name] else ""
+            if name == "type":
+                # "image_collection" has no break point, so textwrap splits it
+                # mid-word into "image_collecti / on". Spaces give it one.
+                text = text.replace("_", " ")
+            limit = max(int(table_width * share * chars_per_inch), 8)
+            cells.append(textwrap.wrap(text, width=limit) or [""])
+        unused = str(record.get("used_by", "")).startswith("not ")
+        rows.append((str(record["key"]), cells, unused))
+
+    n_unused = sum(1 for _, _, unused in rows if unused)
+    footer = _wrap_bullets(
+        [
+            "Generated from config/params.yaml by colombo_uhi.reporting, not "
+            "typed. The full table, including the module that reads each source "
+            "and the free-text notes, is data/outputs/data_provenance.csv.",
+            "Every source is free and public. GN-division polygons are in no "
+            "public dataset and are uploaded by the project owner as an Earth "
+            "Engine asset.",
+            f"{n_unused} configured source(s) are shown in grey: they are named "
+            "in the configuration but referenced by no analysis step. Their "
+            "consequences are in docs/limitations.md."
+            if n_unused else
+            "Every configured source is referenced by at least one analysis step.",
+        ]
+    )
+
+    line_height = 0.115                 # inches per wrapped line of 6.5 pt text
+    row_pad = 0.07
+    # +1 line for the italic config key printed under the collection ID. The
+    # first draft drew that key at the row's bottom edge WITHOUT reserving space
+    # for it, so on every single-line row it landed on the row below and struck
+    # through the next collection ID.
+    line_counts = [
+        max(len(cell) for cell in cells) + 1 for _, cells, _ in rows
+    ]
+    heights = [count * line_height + row_pad for count in line_counts]
+    header_height = 0.34
+    reserved_inches = footer_inches(footer)
+    height = sum(heights) + header_height + 0.75 + reserved_inches
+
+    figure = Figure(figsize=(width, height))
+    FigureCanvasAgg(figure)
+    axes = figure.add_axes((left, reserved_inches / height, right - left,
+                            1 - (reserved_inches + 0.55) / height))
+    axes.set_axis_off()
+    axes.set_xlim(0, 1)
+    axes.set_ylim(0, 1)
+
+    # Column left edges, in axes coordinates. The key column is drawn in the
+    # first column's space, above the collection ID, so long IDs get full width.
+    edges: list[float] = []
+    cursor = 0.0
+    for _, _, share in shown:
+        edges.append(cursor)
+        cursor += share
+
+    total = sum(heights) + header_height
+    y = 1.0
+    axes.add_patch(
+        Rectangle(
+            (0, 1 - header_height / total), 1, header_height / total,
+            facecolor="#e8e8e8", edgecolor="none", transform=axes.transAxes,
+        )
+    )
+    for (name, header, _), x in zip(shown, edges):
+        axes.text(
+            x + 0.004, 1 - header_height / total / 2, header,
+            fontsize=7, fontweight="bold", va="center", ha="left",
+        )
+    y -= header_height / total
+
+    for (key, cells, unused), row_height, line_count in zip(rows, heights, line_counts):
+        share_height = row_height / total
+        colour = "#8a8a8a" if unused else "#111111"
+        if unused:
+            axes.add_patch(
+                Rectangle(
+                    (0, y - share_height), 1, share_height,
+                    facecolor="#f6f6f6", edgecolor="none", transform=axes.transAxes,
+                )
+            )
+        axes.axhline(y, color="#d0d0d0", linewidth=0.4)
+        top = y - 0.4 * line_height / total
+        for cell, x in zip(cells, edges):
+            for index, line in enumerate(cell):
+                axes.text(
+                    x + 0.004, top - index * line_height / total, line,
+                    fontsize=6.5, va="top", ha="left", color=colour,
+                    family="DejaVu Sans",
+                )
+        # The config key, small and grey, on the line reserved for it.
+        axes.text(
+            edges[0] + 0.004, top - (line_count - 1) * line_height / total,
+            key, fontsize=5.5, va="top", ha="left", color="#999999",
+            style="italic",
+        )
+        y -= share_height
+
+    figure.suptitle(title, fontsize=12, y=1 - 0.18 / height)
+    figure.text(
+        0.01, 0.10 / height, footer, fontsize=7, va="bottom", ha="left",
+        color="#444444",
+    )
+    return figure
+
+
+def plot_provenance_table(
+    frame: "pd.DataFrame",
+    out_path: str | Path,
+    params: dict[str, Any],
+    title: str = "Data provenance: every source, band and scale factor",
+) -> Path:
+    """Write the provenance table. See :func:`build_provenance_table_figure`."""
+    return _save_figure(
+        build_provenance_table_figure(frame, params, title=title),
+        out_path,
+        dpi=report_dpi(params),
+    )
+
+
+# =============================================================================
+# Phase 8 - the report manifest
+# =============================================================================
+#: The eleven report figures, in the order the report presents them.
+#:
+#: ``inputs`` names what each figure needs, in the vocabulary notebook 08 uses
+#: for its discovery cell, so a missing input is reported once and by name
+#: rather than as a traceback partway through a render loop.
+REPORT_FIGURES: tuple[dict[str, Any], ...] = (
+    {
+        "index": 1, "slug": "decadal_lst",
+        "title": "Decadal mean dry-season LST, Landsat and MODIS",
+        "builder": "build_decadal_lst_panel_figure",
+        "inputs": ("decadal_landsat_tif", "decadal_modis_tif", "sensor_offsets_csv"),
+    },
+    {
+        "index": 2, "slug": "sen_slope_fdr",
+        "title": "Sen's slope with FDR-significance stippling",
+        "builder": "build_sen_slope_stipple_figure",
+        "inputs": ("trend_fdr_tif",),
+    },
+    {
+        "index": 3, "slug": "valid_observations",
+        "title": "Per-pixel valid-observation count",
+        "builder": "build_obs_count_figure",
+        "inputs": ("obs_count_tif",),
+    },
+    {
+        "index": 4, "slug": "utfvi_epochs",
+        "title": "UTFVI six-class maps by epoch",
+        "builder": "build_utfvi_epoch_maps_figure",
+        "inputs": ("utfvi_class_tif",),
+    },
+    {
+        "index": 5, "slug": "hotspots",
+        "title": "Getis-Ord Gi* and emerging hot spots",
+        "builder": "build_hotspot_map_figure",
+        "inputs": ("zones_geojson", "gi_star_csv", "ehsa_csv"),
+    },
+    {
+        "index": 6, "slug": "suhii_series",
+        "title": "SUHII time series by source and rural definition",
+        "builder": "build_suhii_figure",
+        "inputs": ("suhii_csv",),
+    },
+    {
+        "index": 7, "slug": "lst_vs_indices",
+        "title": "LST against NDVI and NDBI, faceted by epoch",
+        "builder": "build_lst_vs_index_facet_figure",
+        "inputs": ("driver_samples_csv",),
+    },
+    {
+        "index": 8, "slug": "gwr_coefficients",
+        "title": "GWR local coefficients",
+        "builder": "build_gwr_coefficient_figure",
+        "inputs": ("zones_geojson", "gwr_csv"),
+    },
+    {
+        "index": 9, "slug": "greening_scenario",
+        "title": "Greening counterfactual: baseline, greened, difference",
+        "builder": "build_scenario_triptych_figure",
+        "inputs": ("counterfactual_baseline_tif", "counterfactual_greened_tif",
+                   "counterfactual_delta_tif"),
+    },
+    {
+        "index": 10, "slug": "greening_priority",
+        "title": "Greening priority by GN division, top zones labelled",
+        "builder": "build_greening_priority_map_figure",
+        "inputs": ("zones_geojson", "priority_csv"),
+    },
+    {
+        "index": 11, "slug": "data_provenance",
+        "title": "Data provenance",
+        "builder": "build_provenance_table_figure",
+        "inputs": (),
+    },
+)
+
+
+def report_manifest(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """The eleven report figures, with their output paths resolved.
+
+    Notebook 08 iterates this rather than hardcoding a list, so the notebook and
+    the module cannot disagree about how many figures there are or where they
+    go. A test pins that every entry names a real builder and that no two claim
+    the same path.
+
+    Args:
+        params: Parsed params mapping.
+
+    Returns:
+        One mapping per figure: ``index``, ``slug``, ``title``, ``builder``,
+        ``inputs`` and the resolved ``path``.
+    """
+    return [
+        {**entry, "path": report_figure_path(params, entry["index"], entry["slug"])}
+        for entry in REPORT_FIGURES
+    ]
+
+
+def missing_inputs(
+    available: Mapping[str, Any], params: dict[str, Any]
+) -> dict[int, list[str]]:
+    """Which figures cannot be drawn, and what each is missing.
+
+    Called before anything is rendered. A render loop that discovers a missing
+    raster on figure 9 has already spent several minutes drawing eight others
+    and reports the problem as a traceback; this reports every gap at once, by
+    name, before the first pixel.
+
+    Args:
+        available: Mapping of input name to whatever was found - a path, a
+            frame, an array. A value of ``None`` counts as absent.
+        params: Parsed params mapping.
+
+    Returns:
+        Mapping of figure index to its missing input names. Figures that can be
+        drawn do not appear.
+    """
+    gaps: dict[int, list[str]] = {}
+    for entry in report_manifest(params):
+        absent = [
+            name for name in entry["inputs"]
+            if available.get(name) is None
+        ]
+        if absent:
+            gaps[int(entry["index"])] = absent
+    return gaps

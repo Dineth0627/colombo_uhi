@@ -735,7 +735,9 @@ def test_trend_map_figure_reports_both_counts_in_the_footer(
     trend_arrays: dict[str, Any], params: dict[str, Any]
 ) -> None:
     figure = viz.build_trend_map_figure(trend_arrays, params)
-    footer = " ".join(text.get_text() for text in figure.texts)
+    footer = " ".join(
+        " ".join(text.get_text().split()) for text in figure.texts
+    )
     assert "FDR-significant" in footer
     # Untested pixels must be named as untested, never implied to be "no trend".
     assert "never" in footer and "tested" in footer
@@ -2332,3 +2334,734 @@ def test_the_priority_map_separates_its_colourbar_from_its_legend(
     )
     # And the reserved band actually grew to hold both.
     assert figure.get_figheight() > 5.0
+
+
+# =============================================================================
+# Phase 8 - report plumbing
+# =============================================================================
+def test_report_figure_path_uses_the_configured_directory_and_template(
+    params: dict[str, Any],
+) -> None:
+    path = viz.report_figure_path(params, 1, "decadal_lst")
+    assert path.parent.as_posix() == params["report"]["figure_dir"]
+    assert path.name == "fig01_decadal_lst.png"
+    # Zero-padded, so a directory listing sorts into report order rather than
+    # putting figure 10 between 1 and 2.
+    assert viz.report_figure_path(params, 11, "x").name.startswith("fig11_")
+
+
+def test_report_figure_path_rejects_a_meaningless_index_or_slug(
+    params: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="1-based"):
+        viz.report_figure_path(params, 0, "decadal_lst")
+    with pytest.raises(ValueError, match="slug"):
+        viz.report_figure_path(params, 1, "   ")
+
+
+def test_report_figures_land_outside_the_phase_diagnostic_directory(
+    params: dict[str, Any],
+) -> None:
+    # figures/ holds the per-phase diagnostics at 150 dpi and Phase 8 must not
+    # overwrite any of them: a reader has to be able to tell the two sets apart.
+    directory = params["report"]["figure_dir"]
+    assert directory != "figures"
+    assert directory.startswith("figures/")
+
+
+def test_manifest_has_eleven_figures_with_unique_paths(params: dict[str, Any]) -> None:
+    manifest = viz.report_manifest(params)
+    assert len(manifest) == 11
+    assert [entry["index"] for entry in manifest] == list(range(1, 12))
+    assert len({str(entry["path"]) for entry in manifest}) == 11
+
+
+def test_every_manifest_entry_names_a_builder_that_exists(
+    params: dict[str, Any],
+) -> None:
+    # The notebook dispatches on these names. A typo here is an AttributeError
+    # in Colab, several minutes into a render loop.
+    for entry in viz.report_manifest(params):
+        assert hasattr(viz, entry["builder"]), (
+            f"figure {entry['index']} names viz.{entry['builder']}, which does "
+            "not exist"
+        )
+
+
+def test_missing_inputs_names_every_gap_before_anything_is_drawn(
+    params: dict[str, Any],
+) -> None:
+    # Nothing available: every figure with inputs is blocked, and figure 11 -
+    # which is generated from params alone - is not.
+    gaps = viz.missing_inputs({}, params)
+    assert 11 not in gaps
+    assert gaps[9] == [
+        "counterfactual_baseline_tif",
+        "counterfactual_greened_tif",
+        "counterfactual_delta_tif",
+    ]
+    # A key present but None counts as absent, because that is what the
+    # notebook's discovery helpers return for a file that is not there.
+    assert viz.missing_inputs({"suhii_csv": None}, params)[6] == ["suhii_csv"]
+    assert 6 not in viz.missing_inputs({"suhii_csv": "x.csv"}, params)
+
+
+def test_saturated_fraction_counts_only_finite_values() -> None:
+    import numpy as np
+
+    data = np.array([0.0, 1.0, 2.0, 3.0, np.nan])
+    assert viz.saturated_fraction(data, 0.0, 2.0) == pytest.approx(0.25)
+    assert viz.saturated_fraction(data, -10.0, 10.0) == pytest.approx(0.0)
+    assert np.isnan(viz.saturated_fraction(np.array([np.nan]), 0.0, 1.0))
+
+
+def test_panel_aspect_follows_the_raster_and_is_clamped() -> None:
+    import numpy as np
+
+    assert viz.panel_aspect(np.zeros((30, 60))) == pytest.approx(0.5)
+    # One pathological shape must not produce a figure thousands of inches tall.
+    assert viz.panel_aspect(np.zeros((10_000, 1))) == pytest.approx(3.0)
+    assert viz.panel_aspect(np.zeros((1, 10_000))) == pytest.approx(0.2)
+    assert viz.panel_aspect(np.zeros(5)) == pytest.approx(0.6)
+
+
+def test_save_figure_writes_the_dpi_it_is_given(tmp_path: Path) -> None:
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    figure = Figure(figsize=(2, 2))
+    FigureCanvasAgg(figure)
+    figure.subplots().plot([0, 1], [0, 1])
+
+    default = viz._save_figure(figure, tmp_path / "a.png")
+    report = viz._save_figure(figure, tmp_path / "b.png", dpi=300)
+    assert default.stat().st_size and report.stat().st_size
+    # The report set has to be 300 dpi; the phase diagnostics have to stay 150,
+    # so the default must not have moved.
+    assert viz.DIAGNOSTIC_DPI == 150
+    # PNG stores resolution in pixels per METRE, so a 300 dpi round trip comes
+    # back as 299.9994. Compare with a tolerance rather than pinning the artefact.
+    PIL = pytest.importorskip("PIL.Image")
+    assert PIL.open(report).info["dpi"] == pytest.approx((300, 300), rel=1e-3)
+    assert PIL.open(default).info["dpi"] == pytest.approx((150, 150), rel=1e-3)
+
+
+# =============================================================================
+# Phase 8 - colour-vision verification
+# =============================================================================
+def test_normalise_hex_accepts_both_conventions_in_params() -> None:
+    # params.yaml stores hex WITHOUT '#' because Earth Engine palettes want it
+    # that way; matplotlib wants it with.
+    assert viz.normalise_hex("b2182b") == "#b2182b"
+    assert viz.normalise_hex("#B2182B") == "#b2182b"
+    assert viz.normalise_hex("fff") == "#ffffff"
+    with pytest.raises(ValueError, match="not a hex colour"):
+        viz.normalise_hex("mauve")
+
+
+def test_simulate_cvd_leaves_greys_where_they_are() -> None:
+    # A dichromat confusion line passes through the achromatic axis, so a
+    # neutral must simulate to itself. This is the sharpest cheap check that the
+    # sRGB linearisation has not been skipped: without it, greys shift.
+    for grey in ("#000000", "#808080", "#ffffff"):
+        for deficiency in ("protanopia", "deuteranopia", "tritanopia"):
+            simulated = viz.simulate_cvd(grey, deficiency)
+            channels = [int(simulated[i:i + 2], 16) for i in (1, 3, 5)]
+            assert max(channels) - min(channels) <= 2, (
+                f"{grey} under {deficiency} became {simulated}, which is not neutral"
+            )
+
+
+def test_simulate_cvd_is_idempotent() -> None:
+    # Simulation projects onto the dichromat's plane; a colour already on that
+    # plane must not move again. A second application that shifts the colour
+    # means the projection is not a projection.
+    for colour in ("#b2182b", "#2166ac", "#1a9850", "#fee08b"):
+        for deficiency in ("protanopia", "deuteranopia", "tritanopia"):
+            once = viz.simulate_cvd(colour, deficiency)
+            twice = viz.simulate_cvd(once, deficiency)
+            assert viz.delta_e(once, twice) < 1.5
+
+
+def test_simulate_cvd_collapses_the_classic_red_green_pair() -> None:
+    # The point of the whole exercise: red and green are far apart in normal
+    # vision and close under deuteranopia.
+    assert viz.delta_e("#1a9850", "#d73027") > 60
+    assert viz.delta_e(
+        viz.simulate_cvd("#1a9850", "deuteranopia"),
+        viz.simulate_cvd("#d73027", "deuteranopia"),
+    ) < 40
+
+
+def test_simulate_cvd_rejects_an_unknown_deficiency() -> None:
+    with pytest.raises(KeyError, match="unknown deficiency"):
+        viz.simulate_cvd("#ffffff", "achromatopsia")
+
+
+def test_lab_and_delta_e_behave_like_a_metric() -> None:
+    assert viz.lightness("#ffffff") == pytest.approx(100.0, abs=0.2)
+    assert viz.lightness("#000000") == pytest.approx(0.0, abs=0.2)
+    assert viz.delta_e("#b2182b", "#b2182b") == pytest.approx(0.0)
+    assert viz.delta_e("#000000", "#ffffff") == pytest.approx(
+        viz.delta_e("#ffffff", "#000000")
+    )
+
+
+def test_palette_separation_names_the_pair_at_fault() -> None:
+    distance, pair = viz.palette_separation(["ffffff", "000000", "fefefe"])
+    assert distance < 1.0
+    assert set(pair) == {"#ffffff", "#fefefe"}
+    # Fewer than two colours has no pairwise distance to report.
+    assert viz.palette_separation(["ffffff"]) == (float("inf"), None)
+
+
+def test_monotonicity_helpers() -> None:
+    assert viz.is_monotonic([1.0, 2.0, 3.0])
+    assert viz.is_monotonic([3.0, 2.0, 1.0])
+    assert not viz.is_monotonic([1.0, 3.0, 2.0])
+    assert not viz.is_monotonic([1.0, 1.0, 2.0]), "a flat step is not monotonic"
+    assert not viz.is_monotonic([])
+
+    # Diverging: lightest in the middle, falling away on both limbs.
+    assert viz.is_diverging_monotonic([40.0, 70.0, 97.0, 70.0, 40.0])
+    assert viz.is_diverging_monotonic([97.0, 70.0, 40.0, 70.0, 97.0])
+    assert not viz.is_diverging_monotonic([40.0, 70.0, 97.0, 99.0, 40.0])
+    # An even-length ramp has no stop AT the centre, so there is no limb to test.
+    assert not viz.is_diverging_monotonic([40.0, 97.0, 97.0, 40.0])
+
+
+def test_resolve_palette_handles_both_shapes_params_stores() -> None:
+    # Ramps are lists; categorical schemes are class-keyed mappings.
+    mapping = {"spatial_stats": {"palettes": {"lisa": {"HH": "b2182b", "LL": "2166ac"}}},
+               "trends": {"slope_vis": {"palette": ["2166ac", "f7f7f7", "b2182b"]}}}
+    assert viz.resolve_palette(mapping, "spatial_stats.palettes.lisa") == [
+        "#b2182b", "#2166ac"
+    ]
+    assert viz.resolve_palette(mapping, "trends.slope_vis.palette")[0] == "#2166ac"
+    with pytest.raises(KeyError, match="does not resolve"):
+        viz.resolve_palette(mapping, "trends.slope_vis.missing")
+
+
+def test_check_palette_applies_the_test_that_fits_the_palette_kind(
+    params: dict[str, Any],
+) -> None:
+    # THE reason the check has two branches. This ramp is perfectly readable -
+    # its lightness is monotonic - but adjacent stops are close, so a pairwise
+    # dE test "fails" it. Every ColorBrewer diverging palette in params.yaml
+    # behaves this way.
+    ramp = ["2166ac", "67a9cf", "d1e5f0", "f7f7f7", "fddbc7", "ef8a62", "b2182b"]
+    assert viz.check_palette(ramp, "diverging", params)["passed"]
+    assert not viz.check_palette(ramp, "categorical", params)["passed"]
+    with pytest.raises(ValueError, match="unknown palette kind"):
+        viz.check_palette(ramp, "ordinal", params)
+
+
+def test_check_palette_reports_the_metric_under_every_deficiency(
+    params: dict[str, Any],
+) -> None:
+    row = viz.check_palette(["1a9850", "a6d96a", "fee08b"], "categorical", params)
+    for vision in ("normal", *params["report"]["cvd"]["deficiencies"]):
+        assert f"min_delta_e_{vision}" in row
+    assert row["worst"] <= row["min_delta_e_normal"], (
+        "the worst case must be at or below normal vision"
+    )
+
+
+def test_every_non_exempt_palette_passes_the_colour_vision_check(
+    params: dict[str, Any],
+) -> None:
+    # This is the test that holds the Phase 8 decision in place. Two palettes
+    # were changed because they failed here - uhi.utfvi.palette on lightness
+    # monotonicity and greening.palettes.compliance on pairwise separation - and
+    # this stops either drifting back.
+    #
+    # If it fails: fix the PALETTE in params.yaml and record the measured before
+    # and after numbers beside it. Do not add an exemption to make it pass.
+    report = viz.cvd_report(params)
+    failures = viz.cvd_failures(report)
+    assert failures.empty, (
+        "palettes failing the colour-vision check:\n"
+        + failures[["path", "kind", "metric", "worst", "verdict"]].to_string(index=False)
+    )
+
+
+def test_the_two_exempt_palettes_are_still_measured(params: dict[str, Any]) -> None:
+    # An exemption that hid its number would be worthless. Both exempt palettes
+    # carry the measurement that justifies the exemption.
+    report = viz.cvd_report(params).set_index("path")
+    exempt = report[report["exempt"]]
+    assert set(exempt.index) == {
+        "prediction.palettes.dynamic_world", "spatial_stats.palettes.ehsa"
+    }
+    for path, row in exempt.iterrows():
+        assert row["worst"] > 0 or row["metric"], f"{path} carries no measurement"
+        assert row["reason"], f"{path} is exempt without a stated reason"
+
+
+def test_the_cvd_check_covers_every_palette_in_params(params: dict[str, Any]) -> None:
+    # A palette added to params.yaml and left out of report.cvd.palettes would
+    # be unverified while the report claims every palette was checked.
+    checked = {entry["path"] for entry in params["report"]["cvd"]["palettes"]}
+
+    def _walk(node: Any, prefix: str = "") -> list[str]:
+        found: list[str] = []
+        if isinstance(node, dict):
+            for key, value in node.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                looks_like_a_palette = (
+                    key == "palette"
+                    or (prefix.endswith("palettes") and isinstance(value, (list, dict)))
+                )
+                if looks_like_a_palette and _is_colours(value):
+                    found.append(path)
+                else:
+                    found.extend(_walk(value, path))
+        return found
+
+    def _is_colours(value: Any) -> bool:
+        entries = list(value.values()) if isinstance(value, dict) else (
+            list(value) if isinstance(value, list) else []
+        )
+        if not entries:
+            return False
+        try:
+            for entry in entries:
+                viz.normalise_hex(entry)
+        except (ValueError, TypeError):
+            return False
+        return True
+
+    for path in _walk(params):
+        assert path in checked, (
+            f"palette '{path}' is not listed under report.cvd.palettes, so it is "
+            "never verified"
+        )
+
+
+def test_the_utfvi_palette_is_an_ordered_ramp(params: dict[str, Any]) -> None:
+    # UTFVI is an ORDERED severity scale, so lightness must carry the order and
+    # keep carrying it in greyscale and under every simulated deficiency. The
+    # Spectral palette this replaced ran light in the middle and dark at both
+    # ends, which made "Excellent" and "Worse" nearly the same lightness.
+    colours = params["uhi"]["utfvi"]["palette"]
+    assert len(colours) == len(params["uhi"]["utfvi"]["labels"])
+    for vision in (None, *params["report"]["cvd"]["deficiencies"]):
+        profile = viz.palette_lightness_profile(colours, vision)
+        assert viz.is_monotonic(profile), (
+            f"UTFVI lightness is not monotonic under {vision or 'normal vision'}: "
+            f"{[round(value) for value in profile]}"
+        )
+    assert profile[0] > profile[-1], "the ramp must run light (cool) to dark (hot)"
+
+
+def test_the_compliance_palette_separates_the_two_partial_categories(
+    params: dict[str, Any],
+) -> None:
+    # The distinction this map exists to draw. Under the green-to-red palette
+    # this replaced, canopy_only and access_only sat at dE 10.4 under both
+    # red-green deficiencies - a reader could not tell "has canopy, no park
+    # access" from "has park access, no canopy".
+    compliance = params["greening"]["palettes"]["compliance"]
+    pair = [compliance["canopy_only"], compliance["access_only"]]
+    for vision in (None, *params["report"]["cvd"]["deficiencies"]):
+        distance, _ = viz.palette_separation(pair, vision)
+        assert distance >= params["report"]["cvd"]["min_delta_e"], (
+            f"canopy_only and access_only are only dE {distance:.1f} apart under "
+            f"{vision or 'normal vision'}"
+        )
+
+
+# =============================================================================
+# Phase 8 - label placement
+# =============================================================================
+def test_spread_label_positions_preserves_order_and_the_minimum_gap() -> None:
+    # Order is preserved so the leader lines joining label to division never
+    # cross; the gap is what stops ten CMC-core labels overlapping into a mat.
+    placed = viz.spread_label_positions([0.0, 0.1, 0.2, 5.0], min_gap=1.0)
+    assert placed == sorted(placed)
+    assert all(b - a >= 1.0 - 1e-9 for a, b in zip(placed, placed[1:]))
+    # A well-separated input is left alone.
+    assert viz.spread_label_positions([0.0, 5.0, 10.0], min_gap=1.0) == [0.0, 5.0, 10.0]
+    assert viz.spread_label_positions([], min_gap=1.0) == []
+
+
+def test_spread_label_positions_keeps_the_block_inside_its_bounds() -> None:
+    placed = viz.spread_label_positions(
+        [9.0, 9.2, 9.4], min_gap=1.0, low=0.0, high=10.0
+    )
+    assert placed[-1] <= 10.0 + 1e-9
+    assert placed[0] >= 0.0 - 1e-9
+    assert all(b - a >= 1.0 - 1e-9 for a, b in zip(placed, placed[1:]))
+
+
+def test_spread_label_positions_refuses_an_impossible_request() -> None:
+    # Not a layout hiccup - it means too many labels were asked for, and saying
+    # so is more useful than silently stacking them.
+    with pytest.raises(ValueError, match="label fewer"):
+        viz.spread_label_positions([0.0] * 20, min_gap=1.0, low=0.0, high=5.0)
+    with pytest.raises(ValueError, match="non-negative"):
+        viz.spread_label_positions([0.0, 1.0], min_gap=-1.0)
+
+
+# =============================================================================
+# Phase 8 - figure structure
+# =============================================================================
+def _decadal_arrays(params: dict[str, Any], shape: tuple[int, int] = (12, 20)):
+    """Synthetic decadal means, one band per configured window."""
+    import numpy as np
+
+    from colombo_uhi import trends
+
+    labels = [label for label, _, _ in trends.resolve_decades(None, params)]
+    arrays = {}
+    for index, label in enumerate(labels):
+        block = np.full(shape, 30.0 + index)
+        block[0, 0] = np.nan
+        arrays[f"mean_{label}"] = block
+    return arrays
+
+
+def test_the_decadal_figure_draws_one_panel_per_window_on_one_shared_norm(
+    params: dict[str, Any],
+) -> None:
+    from colombo_uhi import trends
+
+    labels = [label for label, _, _ in trends.resolve_decades(None, params)]
+    figure = viz.build_decadal_lst_panel_figure(
+        _decadal_arrays(params), _decadal_arrays(params, (6, 10)), params
+    )
+    images = [image for axes in figure.axes for image in axes.get_images()]
+    assert len(images) == 2 * len(labels)
+
+    # ONE stretch across all six panels. Autoscaling each would hide the sensor
+    # step between the top row's decades, which is the point of the figure.
+    limits = {(image.norm.vmin, image.norm.vmax) for image in images}
+    assert len(limits) == 1
+    shared = params["report"]["decadal"]["shared_vis"]
+    assert limits == {(float(shared["min"]), float(shared["max"]))}
+
+
+def test_the_decadal_figure_names_the_missing_band(params: dict[str, Any]) -> None:
+    good = _decadal_arrays(params)
+    partial = {key: value for key, value in list(good.items())[1:]}
+    with pytest.raises(ValueError, match="missing"):
+        viz.build_decadal_lst_panel_figure(partial, good, params)
+
+
+def test_the_decadal_banner_quotes_the_measured_offsets(
+    params: dict[str, Any],
+) -> None:
+    import pandas as pd
+
+    offsets = pd.DataFrame([
+        {"sensor_a": "landsat5", "sensor_b": "landsat7", "n_overlap_years": 8,
+         "mean_offset": 1.783, "t_statistic": 2.72, "verdict": "material"},
+        {"sensor_a": "landsat8", "sensor_b": "landsat9", "n_overlap_years": 4,
+         "mean_offset": -0.397, "t_statistic": -0.67, "verdict": "negligible"},
+    ])
+    banner = viz.sensor_step_banner(offsets, params)
+    assert "+1.78" in banner
+    # Only MATERIAL steps are named: listing the negligible one beside them
+    # would suggest the reader should discount all three equally.
+    assert "-0.40" not in banner
+    # With nothing measured the banner still warns, it just names no numbers.
+    assert "POOLED LANDSAT" in viz.sensor_step_banner(None, params)
+
+
+def test_stipple_coordinates_mark_only_significant_cells() -> None:
+    import numpy as np
+
+    mask = np.zeros((12, 12), dtype=bool)
+    mask[4:8, 4:8] = True
+    x, y = viz.stipple_coordinates(mask, stride=2)
+    assert len(x) == len(y)
+    assert all(mask[row, column] for row, column in zip(y, x))
+    # Every marked cell is on the lattice, so the density is a fixed texture and
+    # not a second choropleth a reader might read as a quantity.
+    assert all(row % 2 == 0 and column % 2 == 0 for row, column in zip(y, x))
+    # A denser lattice marks more of the same region, never a different one.
+    dense_x, _ = viz.stipple_coordinates(mask, stride=1)
+    assert len(dense_x) > len(x)
+    with pytest.raises(ValueError, match="stride"):
+        viz.stipple_coordinates(mask, stride=0)
+
+
+def test_the_slope_figure_stipples_exactly_the_significant_lattice(
+    params: dict[str, Any],
+) -> None:
+    import numpy as np
+
+    slope = np.linspace(-0.4, 0.4, 400).reshape(20, 20)
+    significant = np.zeros((20, 20))
+    significant[:10] = 1.0
+    significant[15:] = np.nan          # tested/untested/significant, all three
+
+    figure = viz.build_sen_slope_stipple_figure(
+        {"sen_slope": slope, "significant": significant}, params
+    )
+    expected, _ = viz.stipple_coordinates(
+        significant == 1.0, int(params["report"]["stipple"]["stride"])
+    )
+    # Count only on the MAP axes: figure.axes also holds the colorbar, whose
+    # solids are a collection as well.
+    map_axes = next(axes for axes in figure.axes if axes.get_images())
+    drawn = sum(
+        collection.get_offsets().shape[0] for collection in map_axes.collections
+    )
+    assert drawn == len(expected)
+
+
+def test_the_slope_figure_needs_both_bands(params: dict[str, Any]) -> None:
+    import numpy as np
+
+    with pytest.raises(ValueError, match="missing"):
+        viz.build_sen_slope_stipple_figure({"sen_slope": np.zeros((4, 4))}, params)
+
+
+def test_the_observation_count_figure_needs_a_finite_pixel(
+    params: dict[str, Any],
+) -> None:
+    import numpy as np
+
+    band = params["composites"]["obs_count_band"]
+    with pytest.raises(ValueError, match="missing"):
+        viz.build_obs_count_figure({"other": np.zeros((4, 4))}, params)
+    with pytest.raises(ValueError, match="no finite pixel"):
+        viz.build_obs_count_figure({band: np.full((4, 4), np.nan)}, params)
+
+
+def test_the_observation_count_figure_draws_the_map_and_the_distribution(
+    params: dict[str, Any],
+) -> None:
+    import numpy as np
+
+    band = params["composites"]["obs_count_band"]
+    counts = np.arange(400, dtype="float64").reshape(20, 20) % 120
+    figure = viz.build_obs_count_figure({band: counts}, params)
+    # A colour ramp cannot be integrated by eye, which is why the ECDF is there.
+    assert any(axes.get_images() for axes in figure.axes)
+    assert any(axes.lines for axes in figure.axes)
+    # One reference line per configured mark.
+    marks = params["report"]["obs_count_vis"]["ecdf_marks"]
+    vertical = [
+        line for axes in figure.axes for line in axes.lines
+        if len(set(line.get_xdata())) == 1
+    ]
+    assert len(vertical) == len(marks)
+
+
+def test_the_utfvi_figure_legends_every_class_and_bounds_the_codes(
+    params: dict[str, Any],
+) -> None:
+    import numpy as np
+
+    from colombo_uhi import uhi_metrics
+
+    _, labels = uhi_metrics.validate_utfvi_scheme(params)
+    epochs = {
+        key: np.arange(36, dtype="float64").reshape(6, 6) % len(labels)
+        for key in params["report"]["facet_epochs"]
+    }
+    figure = viz.build_utfvi_epoch_maps_figure(epochs, params)
+    legend = figure.legends[0]
+    assert len(legend.get_texts()) == len(labels)
+    # The class NUMBER travels with the name, so colour is never the only
+    # channel carrying the class (caveats.colour_is_not_the_only_channel).
+    assert legend.get_texts()[0].get_text().startswith("0")
+
+    with pytest.raises(ValueError, match="outside the configured"):
+        viz.build_utfvi_epoch_maps_figure(
+            {"2000s": np.full((4, 4), 99.0)}, params
+        )
+    with pytest.raises(ValueError, match="no epoch"):
+        viz.build_utfvi_epoch_maps_figure({}, params)
+
+
+def test_the_facet_figure_is_epochs_by_indices(params: dict[str, Any]) -> None:
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(0)
+    epochs = list(params["report"]["facet_epochs"])
+    indices = list(params["report"]["facet_indices"])
+    frame = pd.concat([
+        pd.DataFrame({
+            "epoch": epoch,
+            "LST_C": rng.normal(35, 2, 200),
+            **{name: rng.normal(0, 0.3, 200) for name in indices},
+        })
+        for epoch in epochs
+    ], ignore_index=True)
+
+    figure = viz.build_lst_vs_index_facet_figure(frame, params)
+    panels = [axes for axes in figure.axes if axes.get_title()]
+    assert len(panels) == len(epochs) * len(indices)
+    # Rows share axes so the SLOPES are comparable by eye.
+    limits = {axes.get_ylim() for axes in panels}
+    assert len(limits) == 1
+
+    with pytest.raises(ValueError, match="missing column"):
+        viz.build_lst_vs_index_facet_figure(frame.drop(columns=["LST_C"]), params)
+    with pytest.raises(ValueError, match="empty"):
+        viz.build_lst_vs_index_facet_figure(frame.iloc[:0], params)
+
+
+def test_the_facet_figure_fits_on_every_row_but_draws_a_thinned_sample(
+    params: dict[str, Any],
+) -> None:
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(1)
+    drawn = int(params["report"]["facet_max_points"])
+    size = drawn * 3
+    index = params["report"]["facet_indices"][0]
+    frame = pd.DataFrame({
+        "epoch": params["report"]["facet_epochs"][0],
+        index: rng.uniform(0, 1, size),
+        params["report"]["facet_indices"][1]: rng.uniform(0, 1, size),
+        "LST_C": rng.normal(35, 1, size),
+    })
+    figure = viz.build_lst_vs_index_facet_figure(frame, params)
+    for axes in figure.axes:
+        for collection in axes.collections:
+            assert collection.get_offsets().shape[0] <= drawn
+    # The fit uses every row, so the panel title reports the full n.
+    assert f"{size:,}" in " ".join(axes.get_title() for axes in figure.axes)
+
+
+def test_the_scenario_triptych_requires_three_matching_surfaces(
+    params: dict[str, Any], monkeypatch: Any
+) -> None:
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    report = prediction.build_validation_report(
+        "lst_scenario", {"rmse": 1.13, "r2": 0.89}, params, held_out=True
+    )
+    good = np.full((8, 10), 34.0)
+    with pytest.raises(ValueError, match="share a shape"):
+        viz.build_scenario_triptych_figure(good, good, np.zeros((4, 4)), params,
+                                           report=report)
+    with pytest.raises(ValueError, match="priority_mask has shape"):
+        viz.build_scenario_triptych_figure(
+            good, good, np.zeros((8, 10)), params, report=report,
+            priority_mask=np.ones((4, 4), dtype=bool),
+        )
+
+
+def test_the_scenario_triptych_reports_the_priority_zone_mean_separately(
+    params: dict[str, Any],
+) -> None:
+    import numpy as np
+
+    from colombo_uhi import prediction
+
+    report = prediction.build_validation_report(
+        "lst_scenario", {"rmse": 1.13, "r2": 0.89}, params, held_out=True
+    )
+    baseline = np.full((10, 10), 36.0)
+    delta = np.zeros((10, 10))
+    delta[:1] = -2.0                      # one row greened, the rest untouched
+    mask = delta < 0
+
+    figure = viz.build_scenario_triptych_figure(
+        baseline, baseline + delta, delta, params, report=report, priority_mask=mask
+    )
+    # The footer is wrapped, so a sentence spans line breaks; compare on
+    # collapsed whitespace rather than on the wrap points.
+    footer = " ".join(
+        " ".join(text.get_text().split()) for text in figure.texts
+    )
+    # The district-wide mean here is -0.20 degC and the greened-zone mean is
+    # -2.00. Quoting the first as the greening effect understates it tenfold,
+    # which is exactly the misreading this line exists to prevent.
+    assert "-2.00 degC" in footer
+    assert "must not be quoted as the greening effect" in footer
+
+
+def test_the_provenance_figure_refuses_an_empty_table(params: dict[str, Any]) -> None:
+    import pandas as pd
+
+    from colombo_uhi import reporting
+
+    with pytest.raises(ValueError, match="empty"):
+        viz.build_provenance_table_figure(
+            pd.DataFrame(columns=list(reporting.PROVENANCE_COLUMNS)), params
+        )
+
+
+def test_the_provenance_figure_shows_every_configured_source(
+    params: dict[str, Any],
+) -> None:
+    from colombo_uhi import reporting
+
+    frame = reporting.provenance_frame(params)
+    figure = viz.build_provenance_table_figure(frame, params)
+    drawn = " ".join(
+        text.get_text() for axes in figure.axes for text in axes.texts
+    )
+    for key in params["datasets"]:
+        assert key in drawn, f"{key} is missing from the provenance figure"
+
+
+def test_every_report_builder_renders_at_report_dpi(
+    params: dict[str, Any], tmp_path: Path
+) -> None:
+    # An end-to-end check that the report path really is 300 dpi, not just that
+    # report_dpi() returns 300.
+    import numpy as np
+
+    figure = viz.build_decadal_lst_panel_figure(
+        _decadal_arrays(params), _decadal_arrays(params), params
+    )
+    path = viz._save_figure(figure, tmp_path / "fig.png", dpi=viz.report_dpi(params))
+    PIL = pytest.importorskip("PIL.Image")
+    expected = float(params["report"]["dpi"])
+    assert PIL.open(path).info["dpi"] == pytest.approx((expected, expected), rel=1e-3)
+
+
+def test_the_label_gutter_widens_the_canvas_instead_of_the_axes_limits(
+    params: dict[str, Any],
+) -> None:
+    """Labels get their own column; the map keeps its size.
+
+    Widening the axes limits alone shrank the map by roughly a third and left
+    white bands above and below it, because ``_map_figure`` had already sized
+    the canvas to the unpadded bounding box.
+    """
+    class _Zones:
+        total_bounds = (0.0, 0.0, 100.0, 50.0)
+
+    label_x, right_limit = viz.label_gutter_bounds(_Zones())
+    assert label_x == pytest.approx(100.0 + 100.0 * viz.LABEL_GUTTER_INSET)
+    assert right_limit == pytest.approx(100.0 + 100.0 * viz.LABEL_GUTTER_FRACTION)
+    # The labels have to sit inside the gutter, not past its edge.
+    assert label_x < right_limit
+
+    padded = viz._PaddedBounds(_Zones(), viz.LABEL_GUTTER_FRACTION)
+    assert padded.total_bounds[2] == pytest.approx(right_limit)
+    # Only the right edge moves: padding the others would recentre the map.
+    assert padded.total_bounds[:2] == (0.0, 0.0)
+    assert padded.total_bounds[3] == pytest.approx(50.0)
+
+
+def test_the_priority_map_carries_the_rank_needed_to_label_it(
+    params: dict[str, Any],
+) -> None:
+    """The rank and the division name have to survive the merge.
+
+    They did not in the first draft: the map rendered correctly in every other
+    respect, ``annotate_top_zones`` found no rank column, and it labelled
+    nothing - with no error anywhere.
+    """
+    import inspect
+
+    source = inspect.getsource(viz.build_greening_priority_map_figure)
+    merge_block = source[source.index("columns = ["):source.index("frame = zones.copy()")]
+    for column in ("rank_ahp", "adm4_name"):
+        assert f'"{column}"' in merge_block, (
+            f"{column} is not merged into the mapped frame, so label_top_n "
+            "would silently draw nothing"
+        )

@@ -887,16 +887,41 @@ uhi:
                                       # of every class. Only ever feed UTFVI the LST_C band.
     class_band_name: "UTFVI_class"    # output band name of the 0-5 class image
     band_name: "UTFVI"                # output band name of the continuous index
-    palette:                          # [DEFAULT — Phase 3] one hex colour per class, in class
-                                      # order (Excellent -> Worst). ColorBrewer RdYlBu-derived,
-                                      # blue = coolest. Lives here so notebooks never hardcode
-                                      # a palette.
-      - "2b83ba"                      # Excellent (< 0)
-      - "abdda4"                      # Good (0 - 0.005)
-      - "ffffbf"                      # Normal (0.005 - 0.010)
-      - "fdae61"                      # Bad (0.010 - 0.015)
-      - "f46d43"                      # Worse (0.015 - 0.020)
-      - "d7191c"                      # Worst (> 0.020)
+    palette:                          # *** MEASURED, Phase 8 CVD check — do not revert. ***
+                                      # One hex colour per class, in class order
+                                      # (Excellent -> Worst). matplotlib `inferno` sampled at
+                                      # 0.18..0.95 and REVERSED, so lightness falls
+                                      # monotonically with severity.
+                                      #
+                                      # The previous palette was ColorBrewer Spectral-6
+                                      # (2b83ba abdda4 ffffbf fdae61 f46d43 d7191c). It FAILED
+                                      # the Phase 8 check on the test that matters for an
+                                      # ORDERED scale: its L* profile ran 52 -> 84 -> 99 -> 77
+                                      # -> 62 -> 46, i.e. NOT monotonic, so "Excellent" (L*52)
+                                      # and "Worse" (L*62) were near-identical in lightness and
+                                      # differed only in hue. In greyscale, in photocopy, and
+                                      # under protanopia the coolest class and the second
+                                      # hottest read alike. Minimum pairwise CIE76 dE also sat
+                                      # at 12.5 under tritanopia.
+                                      #
+                                      #   metric                 Spectral-6   inferno_r
+                                      #   L* monotonic (all CVD)     NO          YES
+                                      #   min dE, normal            24.1        23.2
+                                      #   min dE, deuteranopia      13.5        23.5
+                                      #   min dE, protanopia        14.4        19.6
+                                      #   min dE, tritanopia        12.5        15.4
+                                      #
+                                      # Sampled at 0.18..0.95 rather than 0.02..0.98 on
+                                      # purpose: the full range ends at #02020c, and a "Worst"
+                                      # class rendered pure black is indistinguishable from a
+                                      # boundary stroke or a no-data hole on a printed map.
+                                      # Re-measure with viz.cvd_report() if this is ever edited.
+      - "f1ef75"                      # Excellent (< 0)          L* 93
+      - "fca309"                      # Good (0 - 0.005)         L* 74
+      - "e8602d"                      # Normal (0.005 - 0.010)   L* 58
+      - "b63458"                      # Bad (0.010 - 0.015)      L* 41
+      - "781c6d"                      # Worse (0.015 - 0.020)    L* 27
+      - "390963"                      # Worst (> 0.020)          L* 16
     epochs:                           # [DEFAULT — Phase 3] the three-epoch comparison. Must
                                       # tile time.start_year..time.end_year with no gap and no
                                       # overlap (test_params pins this).
@@ -2520,12 +2545,32 @@ greening:
     priority: ["f7f7f7", "fddbc7", "fdae61", "f46d43", "d73027", "a50026"]
                                         # low -> high priority. Warm ramp, consistent with
                                         # trends.slope_vis and prediction.palettes.
-    compliance:                         # FIVE categories - see rule_3_30_300.trees_in_view
-      both_30_and_300: "1a9850"
-      canopy_only: "a6d96a"
-      access_only: "fee08b"
-      neither: "d73027"
-      not_assessable: "bdbdbd"
+    compliance:                         # FIVE categories - see rule_3_30_300.trees_in_view.
+                                        # *** MEASURED, Phase 8 CVD check — do not revert. ***
+                                        # The previous palette (1a9850 a6d96a fee08b d73027
+                                        # bdbdbd) was a green-to-red ramp and FAILED: the two
+                                        # PARTIAL-compliance categories, canopy_only (#a6d96a,
+                                        # light green) and access_only (#fee08b, light yellow),
+                                        # collapsed onto each other at min pairwise CIE76
+                                        # dE = 10.4 under BOTH deuteranopia and protanopia -
+                                        # from 35.3 in normal vision. A red-green deficient
+                                        # reader could not tell "has canopy, no park access"
+                                        # from "has park access, no canopy", which is the one
+                                        # distinction this map exists to draw.
+                                        #
+                                        # The two partial categories now take blue and pale
+                                        # yellow, which no dichromacy confuses. Full compliance
+                                        # keeps green (darker, for lightness separation),
+                                        # neither keeps a red-orange, not_assessable keeps grey.
+                                        #
+                                        #   min dE      normal  deut  prot  trit
+                                        #   was          35.3   10.4  10.4  32.7
+                                        #   now          55.1   42.5  36.2  37.6
+      both_30_and_300: "00441b"         # dark green   - meets BOTH the 30% and 300 m tests
+      canopy_only: "2166ac"             # blue         - 30% canopy, no green space within 300 m
+      access_only: "ffff99"             # pale yellow  - green space within 300 m, canopy short
+      neither: "d55e00"                 # vermillion   - meets neither
+      not_assessable: "bdbdbd"          # grey         - not enough observed land to judge
     wetland_status:
       within: "2c7fb8"
       adjacent: "7fcdbb"
@@ -2672,3 +2717,152 @@ caveats:
     are also strongly intercorrelated over Colombo, so the leave-one-out
     ablation - not the weights - is what says how much the method adds over
     ranking by land surface temperature alone.
+  colour_is_not_the_only_channel: >-
+    Colour alone never carries a class on these figures. Every categorical map
+    also states its classes in an ordered legend, and any category the Phase 8
+    colour-vision check could not separate is additionally distinguished by
+    hatching or by direct labelling. Readers with a colour-vision deficiency,
+    and readers looking at a greyscale photocopy, must be able to recover the
+    same classes.
+  figures_are_derived_not_authored: >-
+    Every number on a report figure, and every parameter quoted in
+    docs/methods.md, is read from config/params.yaml or from a committed product
+    in data/outputs/ at render time. Nothing is typed into a caption by hand. A
+    test regenerates both documents and fails if the committed copy disagrees,
+    so a threshold cannot be changed in one place and left stale in another.
+
+# --- Report outputs (Phase 8) -------------------------------------------------
+# Figures for the written report. SEPARATE from `figures/`, which holds the
+# per-phase diagnostics: those are working products at 150 dpi and are NOT
+# regenerated here. Phase 8 writes a parallel, self-consistent set at 300 dpi.
+report:
+  dpi: 300                            # [CLAUDE.md Phase 8] publication raster density
+  figure_dir: "figures/report"        # phase diagnostics stay in figures/
+  name_template: "fig{index:02d}_{slug}"
+  width_inches: 9.5                   # matches viz._map_figure's canvas width, so a report
+                                      # figure and a phase figure sit at the same scale on a page
+
+  # --- Figure 1: decadal mean dry-season LST -----------------------------------
+  decadal:
+    # TWO ROWS, and the reason is the whole point of the figure.
+    #
+    # `landsat_source` spans the L5 -> L7 -> L8 changeovers, whose measured
+    # offsets over Colombo (CLAUDE.md, Colab run 16) are L5-L7 = +1.78 degC and
+    # L7-L8 = -2.48 degC - 2.4x and 3.4x the entire 26-year trend signal. A
+    # decade-to-decade comparison drawn from it is therefore a SENSOR-STEP
+    # DIAGNOSTIC and nothing else, and the figure says so on its face.
+    #
+    # `modis_source` is ONE sensor across all three windows (Terra, 2000-02
+    # onward, no changeover), so its row is the comparison that is actually
+    # valid. It costs an order of magnitude in resolution: at 1 km the CMC is
+    # ~6 pixels across, which is why the Landsat row is drawn at all.
+    landsat_source: "landsat_dry"     # key into uhi.suhii.sources - DIAGNOSTIC ONLY
+    modis_source: "terra_day"         # one sensor, ~10:30 overpass, closest to Landsat
+    shared_vis:                       # [DEFAULT - Phase 8, RE-CHECK ON FIRST RUN] ONE stretch
+      min: 24.0                       # across all six panels: a shared colour scale is what
+      max: 44.0                       # makes the sensor step visible instead of hiding it under
+                                      # per-panel autoscaling. The notebook prints the saturated
+                                      # fraction per row; widen this if either row exceeds
+                                      # report.max_saturated_fraction, exactly as
+                                      # trends.slope_vis was widened after Colab run 17.
+    palette: ["fee5d9", "fcae91", "fb6a4a", "de2d26", "a50f15", "67000d"]
+                                      # sequential ColorBrewer Reds-6. SEQUENTIAL, not
+                                      # diverging: absolute temperature has no meaningful zero
+                                      # to centre a diverging ramp on. L* falls monotonically
+                                      # under all three simulated deficiencies (Phase 8 check).
+  max_saturated_fraction: 0.05        # [DEFAULT - Phase 4 precedent] a stretch that clips more
+                                      # than 5% of pixels understates the extremes it exists to
+                                      # show. Applies to every continuous report figure.
+
+  # --- Figure 2: Sen's slope with FDR stippling --------------------------------
+  stipple:
+    stride: 6                         # [DEFAULT - Phase 8] draw a stipple dot every Nth pixel in
+                                      # each direction. At stride 1 a significant region becomes
+                                      # a solid black mask and hides the slope underneath, which
+                                      # defeats the overlay. Raise it if the map looks sooty.
+    marker: "."
+    marker_size: 0.8
+    colour: "1a1a1a"
+    label: "FDR-significant (Benjamini-Hochberg)"
+
+  # --- Figure 3: valid-observation count ---------------------------------------
+  obs_count_vis:                      # [DEFAULT - Phase 8, RE-CHECK ON FIRST RUN] total usable
+    min: 0                            # dry-season scene observations per pixel, 2000-2025. The
+    max: 120                          # notebook prints the percentiles.
+    palette: ["440154", "31688e", "35b779", "fde725"]   # viridis, same as trends.n_years_vis,
+                                      # so a count map always reads the same way
+    ecdf_marks: [10, 26, 50]          # reference counts drawn on the companion ECDF panel:
+                                      # 10 = the practical floor for a per-pixel statistic,
+                                      # 26 = one usable scene per study year, 50 = comfortable
+
+  # --- Figures 4 and 7: per-epoch facets ---------------------------------------
+  facet_epochs: ["2000s", "2010s", "2020s"]   # keys into uhi.utfvi.epochs
+  facet_indices: ["NDVI", "NDBI"]             # [CLAUDE.md Phase 8] figure 7's columns
+  facet_max_points: 3000              # points DRAWN per panel; every fit uses every row
+
+  # --- Figure 10: greening priority --------------------------------------------
+  label_top_n: 10                     # divisions labelled on the priority map. Ten, not
+                                      # greening.top_n (60): sixty labels over the CMC core is an
+                                      # unreadable mat. The full ranked list is figure 10's
+                                      # companion table and greening_priority_top_gn.csv.
+  label_min_separation_pt: 9.0        # labels are nudged apart until they clear this, then
+                                      # joined to their division by a leader line
+
+  # --- Colour-vision-deficiency verification -----------------------------------
+  # RUN, MEASURED AND ACTED ON in Phase 8 - see viz.cvd_report() and
+  # data/outputs/palette_cvd_check.csv. TWO DIFFERENT TESTS, because one test
+  # cannot judge both kinds of palette:
+  #
+  #   categorical -> minimum pairwise CIE76 dE across every pair of classes,
+  #                  under normal vision and under each simulated deficiency.
+  #   sequential  -> L* must fall (or rise) MONOTONICALLY along the ramp under
+  #                  every deficiency, and span at least min_lightness_span.
+  #   diverging   -> L* must be monotonic on each limb away from the centre.
+  #
+  # Judging a ramp by pairwise dE is the mistake this split exists to avoid:
+  # adjacent stops of a continuous ramp are MEANT to be close, so every
+  # ColorBrewer diverging palette in this file "fails" a dE test (min 9.5) while
+  # being perfectly readable. Lightness monotonicity is what a ramp must have.
+  cvd:
+    deficiencies: ["deuteranopia", "protanopia", "tritanopia"]
+                                      # Vienot, Brettel & Mollon (1999) dichromat simulation
+    min_delta_e: 12.0                 # [DEFAULT - Phase 8] CIE76 floor between any two
+                                      # CATEGORIES, under normal vision and under every
+                                      # deficiency. Large flat map patches, so a modest floor;
+                                      # the two palettes this caught were at 10.4 and 12.5.
+    min_lightness_span: 25.0          # [DEFAULT - Phase 8] L* range a RAMP must cover, so it
+                                      # survives greyscale printing
+    palettes:                         # every palette in this file, with the test that applies
+      - {path: "uhi.utfvi.palette", kind: "sequential"}
+      - {path: "trends.slope_vis.palette", kind: "diverging"}
+      - {path: "trends.n_years_vis.palette", kind: "sequential"}
+      - {path: "spatial_stats.palettes.lisa", kind: "categorical"}
+      - {path: "spatial_stats.palettes.gi_star", kind: "diverging"}
+      - {path: "spatial_stats.palettes.gwr_diverging", kind: "diverging"}
+      - {path: "prediction.palettes.scenario_difference", kind: "diverging"}
+      - {path: "greening.palettes.priority", kind: "sequential"}
+      - {path: "greening.palettes.compliance", kind: "categorical"}
+      - {path: "greening.palettes.wetland_status", kind: "categorical"}
+      - {path: "report.decadal.palette", kind: "sequential"}
+      - {path: "report.obs_count_vis.palette", kind: "sequential"}
+      # --- exempted, with the measured number and the reason ---------------------
+      - path: "prediction.palettes.dynamic_world"
+        kind: "categorical"
+        exempt: true                  # min dE 6.9 (tritanopia); crops #e49635 vs shrub #dfc35a
+        reason: >-
+          These are the OFFICIAL Dynamic World legend colours from the Earth
+          Engine catalog. Recolouring them would break the one property that
+          lets a reader compare an observed land-cover panel with any other
+          published Dynamic World map, and Phase 6 exports no projected
+          land-cover product in any case. Land-cover panels carry direct class
+          labels instead.
+      - path: "spatial_stats.palettes.ehsa"
+        kind: "categorical"
+        exempt: true                  # min dE 0.9 (tritanopia) - and only 5.8 in NORMAL vision
+        reason: >-
+          Seventeen categories cannot be separated by colour at all: this
+          palette fails for a reader with normal colour vision too, which no
+          recolouring of seventeen classes can fix. EHSA maps are therefore read
+          from their ORDERED legend and from direct labelling, with hue carrying
+          only the hot/cold/no-pattern grouping and lightness the degree of
+          establishment.

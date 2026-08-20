@@ -1,6 +1,154 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 7 **SIGNED OFF** — Colab run 7, every check closed. 1477 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 8 **WRITTEN, awaiting the Colab run**. 1567 tests pass, 3 skip)_
+
+### Phase 8 (2026-08-20) — report outputs, written and locally verified
+
+Eleven report figures at 300 dpi, a colour-vision check that was **run and acted
+on**, and two prose documents generated from `params.yaml` so they cannot drift.
+Everything that can be verified without Earth Engine has been: 90 new tests,
+every figure rendered from synthetic or committed data and inspected.
+
+#### What was built
+
+| | |
+|---|---|
+| `config/params.yaml` | new `report:` section; two palettes replaced; two new caveats |
+| `src/colombo_uhi/viz.py` | `dpi` on `_save_figure`, CVD verification, seven new builders, `label_top_n` on the priority map, the manifest |
+| `src/colombo_uhi/reporting.py` | **new** — provenance table, generated methods and limitations |
+| `notebooks/08_figures_for_report.ipynb` | **new** — 50 cells, 26 of them code |
+| `docs/methods.md`, `docs/limitations.md` | **new, generated** |
+| `tests/test_reporting.py` | **new** — 31 tests including the drift test |
+| `README.md` | full reproduction guide |
+
+#### Two palettes failed the colour-vision check and were changed
+
+The check runs **two different tests**, because one cannot judge both kinds of
+palette. Categorical palettes are judged on the minimum pairwise CIE76 ΔE under
+simulated deuteranopia, protanopia and tritanopia (Viénot–Brettel–Mollon 1999);
+ramps are judged on whether L\* stays monotonic. Judging a ramp by pairwise ΔE is
+the mistake that split exists to avoid — **every** ColorBrewer diverging palette
+in `params.yaml` scores 9.5 on the ΔE test while being perfectly readable.
+
+**`uhi.utfvi.palette`** failed the test that matters for an *ordered* scale. The
+old Spectral-6 ramp ran L\* 52 → 84 → 99 → 77 → 62 → 46 — not monotonic — so
+"Excellent" (L\* 52) and "Worse" (L\* 62) were near-identical in lightness and
+differed only in hue. In greyscale, in photocopy and under protanopia, the
+coolest class and the second-hottest read alike. Replaced with `inferno`
+sampled 0.18–0.95 and reversed:
+
+| | Spectral-6 | inferno_r |
+|---|---|---|
+| L\* monotonic under all three deficiencies | **NO** | YES |
+| min ΔE, normal | 24.1 | 23.2 |
+| min ΔE, deuteranopia | 13.5 | 23.5 |
+| min ΔE, protanopia | 14.4 | 19.6 |
+| min ΔE, tritanopia | 12.5 | 15.4 |
+
+Sampled at 0.18–0.95 rather than the full range on purpose: the full range ends
+at `#02020c`, and a "Worst" class rendered pure black is indistinguishable from
+a boundary stroke or a no-data hole on a printed map.
+
+**`greening.palettes.compliance`** failed on separation. The two *partial*
+compliance categories — `canopy_only` (light green) and `access_only` (light
+yellow) — collapsed from ΔE 35.3 in normal vision to **10.4 under both
+red-green deficiencies**. A red-green deficient reader could not tell "has
+canopy, no park access" from "has park access, no canopy", which is the one
+distinction that map exists to draw. The partials now take blue and pale yellow:
+55.1 / 42.5 / 36.2 / 37.6.
+
+**Two palettes are exempt, and both still carry their measurement.** Dynamic
+World (min ΔE 6.9) keeps the official catalog legend colours, because
+recolouring them would break comparison with every other published Dynamic World
+map — and Phase 6 exports no land-cover product anyway. EHSA (min ΔE **0.9**,
+and only 5.8 in *normal* vision) has seventeen categories, which no recolouring
+of seventeen classes can fix; it is read from an ordered legend instead.
+
+#### Three findings that came out of building the figures
+
+1. **`validation_reports.json` did not contain the report for the only
+   validated raster Phase 6 exported.** The file is described in notebook 06 as
+   holding "every validation report" and holds `lst_fit`, `lulc_projection` and
+   `lst_projection` — but not the `lst_scenario` entry belonging to the greening
+   counterfactual. Notebook 06's writer cell is fixed for the next run; until
+   then `reporting.scenario_report_from_raster` reads the metrics from the
+   **GeoTIFF's own validation tag**, stamped there by the guard that allowed the
+   file to be written. That is the authoritative copy and it needs no re-run.
+
+2. **Four configured datasets are referenced by no analysis step**:
+   `worldcover_2020`, `viirs_nightlights`, `aster_ged`, `era5_land`. Found by
+   searching, not by inspection — the provenance table derives its "used by"
+   column from the source and the config rather than from a hand-kept list. The
+   consequential one is `era5_land`: `CLAUDE.md` names it for reanalysis
+   air-temperature validation and **that comparison was never carried out**, so
+   nothing in this project corroborates the satellite LST against an
+   air-temperature record. Now stated in `docs/limitations.md` as limitation 14.
+
+3. **The district-wide mean of the greening counterfactual is −0.03 °C.** The
+   headline is −0.84 °C. The difference is dilution: 97 % of the mapped cells
+   are ones nothing was done to. Figure 9 therefore takes a `priority_mask` and
+   reports both numbers with a line saying which is which; the reproduction runs
+   to −0.8468 °C over 2,763 cells, matching the committed −0.84 °C exactly.
+
+#### The decision that shaped figure 1
+
+Decadal LST maps on a shared colour scale are exactly the epoch-to-epoch
+magnitude comparison this project has already measured and forbidden: the pooled
+Landsat series crosses the L5→L7→L8 changeovers, whose offsets are 2.4× and 3.4×
+the entire trend signal. **Taken with the user: draw both rows.** Pooled Landsat
+on top, stamped as a sensor-step diagnostic with the measured offsets read from
+`sensor_offsets_cmc.csv` rather than typed; MODIS Terra day beneath it, one
+sensor across all three windows. All six panels share one stretch, because
+per-panel autoscaling would hide the step the figure exists to expose.
+
+**This is check 4 of the Colab sign-off, and it is the one that matters**: if the
+two rows step together, the cross-sensor finding is wrong and every trend
+product in this project rests on it.
+
+#### The drift test
+
+`tests/test_reporting.py` regenerates `docs/methods.md`, `docs/limitations.md`
+and `data/outputs/data_provenance.csv` and asserts the committed copies match
+byte for byte. Editing a threshold in `params.yaml` without regenerating turns
+the suite red. That is what makes "generated, cannot drift" a mechanism rather
+than a claim in a docstring:
+
+```bash
+python -c "from colombo_uhi import load_params, reporting; reporting.write_docs(load_params())"
+```
+
+#### Two layout bugs caught by looking at the output
+
+Neither would have failed a test. The decadal figure's first draft left two
+inches of white between its rows, because `imshow` draws at `aspect="equal"` and
+the canvas height was a constant — the same defect `map_aspect_ratio` was
+written for on the Phase 5 choropleths, reappearing on rasters. And the priority
+map's `label_top_n` drew **nothing at all**: `rank_ahp` was not among the columns
+merged into the mapped frame, so `annotate_top_zones` found no rank and returned
+zero, silently, with the map otherwise perfect. Both now have tests.
+
+#### What you must run in Colab
+
+Notebook 08, top to bottom. It submits **three** tasks and reuses everything
+else. Roughly 30 minutes plus export time.
+
+| # | Check | Why |
+|---|---|---|
+| 1 | Part 1 submitted exactly **three** tasks, all `COMPLETED` | more means something re-ran |
+| 2 | Step 4 reported **no** missing inputs | every gap is named there, before anything is drawn |
+| 3 | **Eleven** PNGs in `figures/report/`, each 300 dpi | `PIL.Image.open(p).info["dpi"]` ≈ `(300, 300)` |
+| 4 | Figure 1: **the Landsat row steps between decades and the MODIS row does not** | if both step, the cross-sensor finding is wrong |
+| 5 | No panel on figures 1 or 3 exceeds `report.max_saturated_fraction` | a clipped stretch understates the extremes |
+| 6 | The colour table has **zero non-exempt failures** | fix the palette, never the exemption |
+| 7 | Figure 9's priority-zone mean reads about **−0.84 °C** | the district-wide figure is not the result |
+| 8 | Figure 10 labels ten divisions, leader lines do not cross | labels are ordered by centroid latitude |
+| 9 | `pytest` still passes **after** Step 6 rewrites the docs | the drift test compares committed against generated |
+| 10 | Read `docs/methods.md` once, end to end | generated prose can be correct and still unreadable — the one thing no test can check |
+
+**Also re-check `report.decadal.shared_vis` (24–44 °C) and
+`report.obs_count_vis` (0–120) on the first run.** Both are defaults, not
+measurements; the notebook prints the saturated fraction for each and says which
+line to widen. That is the same loop that widened `trends.slope_vis` twice.
 
 ### Colab run 7 (2026-08-20) — PHASE 7 SIGNED OFF
 
