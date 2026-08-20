@@ -3807,6 +3807,109 @@ def zone_land_area(
     )
 
 
+def zone_coverage(
+    bands: Mapping[str, "np.ndarray"],
+    zones: "np.ndarray",
+    zone_labels: Mapping[int, Any],
+    cell_size_m: float,
+    params: dict[str, Any],
+    raw: "pd.DataFrame | None" = None,
+) -> "pd.DataFrame":
+    """Per-zone land-cover coverage, numerator and denominator from ONE raster.
+
+    .. warning::
+        **Both sides must come from the same product.** Colab run 4 took the
+        classified area from Phase 5's committed
+        ``landscape_metrics_green_by_gn.csv`` and the land area from the current
+        10 m raster - two different exports, from two different phases - so the
+        ratio measured the difference between them rather than coverage. Step 2
+        of the same run had just measured Dynamic World 2024 covering **99.96 %**
+        of the district, while the mixed ratio put 15 zones below a 90 % floor.
+        Pettah stayed excluded from the priority list on the strength of it.
+
+        This function exists so a caller cannot mix the two. It takes one
+        ``bands`` mapping and derives both sides from it.
+
+    Coverage is ``(observed AND land) / land``: the share of a zone's **land**
+    that the classifier actually saw. Permanent water is removed from both sides,
+    so a harbour inside a polygon neither counts as missing data nor inflates the
+    denominator.
+
+    Args:
+        bands: The mapping :func:`read_green_canopy_raster` returned, carrying at
+            least ``observed`` and ``land``.
+        zones: Integer zone-code raster on the same grid as ``bands``.
+        zone_labels: Zone code to ``zone_id``.
+        cell_size_m: Cell size in metres.
+        params: Parsed params mapping.
+        raw: Optional frame with ``zone_id`` and ``observed_fraction`` - an
+            earlier phase's flag, carried through for comparison only and never
+            used as a numerator.
+
+    Returns:
+        ``pandas.DataFrame`` with ``zone_id``, ``land_area_ha``,
+        ``analysable_area_ha``, ``land_observed_fraction`` and
+        ``below_land_coverage_floor``; plus ``observed_fraction_raw``,
+        ``below_coverage_floor_raw`` and ``status_changed`` when ``raw`` is given.
+
+    Raises:
+        ValueError: If a required band is absent or the shapes disagree.
+    """
+    import numpy as np  # Deferred: see module docstring.
+    import pandas as pd
+
+    for name in ("observed", "land"):
+        if name not in bands:
+            raise ValueError(
+                f"no {name!r} band; zone_coverage needs both 'observed' and "
+                f"'land' from one raster, and got {sorted(bands)}"
+            )
+    observed = np.asarray(bands["observed"], dtype=bool)
+    land = np.asarray(bands["land"], dtype=bool)
+    codes = np.asarray(zones)
+    if not (observed.shape == land.shape == codes.shape):
+        raise ValueError(
+            f"observed {observed.shape}, land {land.shape} and zones "
+            f"{codes.shape} must be the same shape"
+        )
+
+    land_area = zone_land_area(codes, zone_labels, cell_size_m, observed=land)
+    analysable = zone_land_area(
+        codes, zone_labels, cell_size_m, observed=observed & land
+    ).rename(columns={"land_area_ha": "analysable_area_ha"})
+
+    landscape = analysable.rename(
+        columns={"analysable_area_ha": "landscape_area_ha"}
+    )
+    if raw is not None and "observed_fraction" in raw.columns:
+        reference = raw[["zone_id", "observed_fraction"]].copy()
+        reference["zone_id"] = reference["zone_id"].astype(str)
+        landscape = landscape.merge(reference, on="zone_id", how="left")
+
+    fractions = land_observed_fraction(landscape, land_area, params)
+    result = fractions.merge(
+        analysable[["zone_id", "analysable_area_ha"]], on="zone_id", how="left"
+    ).merge(land_area[["zone_id", "land_area_ha"]], on="zone_id", how="left")
+
+    if raw is None or "observed_fraction" not in raw.columns:
+        result = result.drop(
+            columns=[
+                "observed_fraction_raw",
+                "below_coverage_floor_raw",
+                "status_changed",
+            ],
+            errors="ignore",
+        )
+
+    # DataFrame.merge does NOT carry .attrs, so the counts land_observed_fraction
+    # recorded would be silently dropped - and the notebook prints them.
+    result.attrs.update(fractions.attrs)
+    result.attrs["water_area_km2"] = float(
+        (~land).sum() * (float(cell_size_m) ** 2) / 1e6
+    )
+    return result
+
+
 def read_population_raster(
     path: str | Path, params: dict[str, Any]
 ) -> tuple["np.ndarray", "np.ndarray", dict[str, Any]]:

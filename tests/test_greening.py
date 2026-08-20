@@ -2887,3 +2887,110 @@ def test_crop_to_window_refuses_a_window_off_the_edge() -> None:
 def test_crop_to_window_refuses_an_empty_window() -> None:
     with pytest.raises(ValueError, match="positive region"):
         greening.crop_to_window(np.zeros((10, 10)), (0, 0, 0, 5))
+
+
+# =============================================================================
+# zone_coverage - Colab run 4
+# =============================================================================
+
+
+def coverage_setup() -> tuple[dict[str, "np.ndarray"], "np.ndarray", dict[int, str]]:
+    """A 'Pettah': a fifth of the polygon is harbour, its land fully classified."""
+    zones = np.zeros((20, 20), dtype=int)
+    zones[:10] = 1
+    zones[10:] = 2
+    land = np.ones((20, 20), dtype=bool)
+    land[:10, :4] = False
+    observed = np.ones((20, 20), dtype=bool)
+    observed[:10, :4] = False
+    return {"observed": observed, "land": land}, zones, {1: "PETTAH", 2: "INLAND"}
+
+
+def test_water_leaves_both_sides_of_the_coverage_ratio(
+    params: dict[str, Any],
+) -> None:
+    """The harbour must neither count as missing data nor inflate the denominator.
+
+    Run 4's mixed-product ratio left Pettah at 0.785 and excluded it from the
+    priority list; taken against its own land, its coverage is 1.0.
+    """
+    bands, zones, labels = coverage_setup()
+    result = greening.zone_coverage(bands, zones, labels, 10.0, params).set_index(
+        "zone_id"
+    )
+    assert result.loc["PETTAH", "land_observed_fraction"] == pytest.approx(1.0)
+    assert not bool(result.loc["PETTAH", "below_land_coverage_floor"])
+    # The water is out of the denominator too: 200 cells in the zone, 40 of them
+    # harbour, so 160 cells of 100 m2 = 1.6 ha of land.
+    assert result.loc["PETTAH", "land_area_ha"] == pytest.approx(1.6)
+    assert result.loc["PETTAH", "analysable_area_ha"] == pytest.approx(1.6)
+
+
+def test_zone_coverage_reports_the_earlier_flag_for_comparison(
+    params: dict[str, Any],
+) -> None:
+    bands, zones, labels = coverage_setup()
+    raw = pd.DataFrame(
+        {"zone_id": ["PETTAH", "INLAND"], "observed_fraction": [0.80, 1.0]}
+    )
+    result = greening.zone_coverage(
+        bands, zones, labels, 10.0, params, raw=raw
+    ).set_index("zone_id")
+    assert bool(result.loc["PETTAH", "below_coverage_floor_raw"])
+    assert not bool(result.loc["PETTAH", "below_land_coverage_floor"])
+    assert bool(result.loc["PETTAH", "status_changed"])
+
+
+def test_zone_coverage_omits_the_comparison_columns_without_a_reference(
+    params: dict[str, Any],
+) -> None:
+    bands, zones, labels = coverage_setup()
+    result = greening.zone_coverage(bands, zones, labels, 10.0, params)
+    for column in (
+        "observed_fraction_raw",
+        "below_coverage_floor_raw",
+        "status_changed",
+    ):
+        assert column not in result.columns
+
+
+def test_zone_coverage_still_flags_a_genuinely_unseen_zone(
+    params: dict[str, Any],
+) -> None:
+    # The floor must keep working where coverage really is poor - it is a guard,
+    # and a guard that never fires on bad data is not doing its job.
+    zones = np.ones((10, 10), dtype=int)
+    land = np.ones((10, 10), dtype=bool)
+    observed = np.zeros((10, 10), dtype=bool)
+    observed[:5] = True
+    result = greening.zone_coverage(
+        {"observed": observed, "land": land}, zones, {1: "CLOUDY"}, 10.0, params
+    )
+    assert result.loc[0, "land_observed_fraction"] == pytest.approx(0.5)
+    assert bool(result.loc[0, "below_land_coverage_floor"])
+
+
+def test_zone_coverage_records_the_water_area(params: dict[str, Any]) -> None:
+    bands, zones, labels = coverage_setup()
+    result = greening.zone_coverage(bands, zones, labels, 10.0, params)
+    assert result.attrs["water_area_km2"] == pytest.approx(40 * 100 / 1e6)
+
+
+def test_zone_coverage_rejects_a_missing_band(params: dict[str, Any]) -> None:
+    bands, zones, labels = coverage_setup()
+    with pytest.raises(ValueError, match="'land'"):
+        greening.zone_coverage(
+            {"observed": bands["observed"]}, zones, labels, 10.0, params
+        )
+
+
+def test_zone_coverage_rejects_a_shape_mismatch(params: dict[str, Any]) -> None:
+    bands, zones, labels = coverage_setup()
+    with pytest.raises(ValueError, match="same shape"):
+        greening.zone_coverage(
+            {"observed": np.ones((5, 5), bool), "land": np.ones((5, 5), bool)},
+            zones,
+            labels,
+            10.0,
+            params,
+        )

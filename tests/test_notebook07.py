@@ -634,3 +634,31 @@ def test_no_criterion_is_drawn_from_a_projected_product() -> None:
             "criterion drawn from a projected product would inherit a model with "
             "no demonstrated allocation skill."
         )
+
+
+def test_coverage_is_computed_from_one_raster_not_two_products() -> None:
+    """The run-4 lesson, pinned on the notebook.
+
+    Run 4 took the classified area from Phase 5's committed
+    ``landscape_metrics_green_by_gn.csv`` and the land area from the current 10 m
+    export - two different products - so the ratio measured the difference
+    between them rather than coverage, and Pettah stayed out of the priority
+    list. ``greening.zone_coverage`` takes ONE bands mapping and derives both
+    sides from it; calling ``land_observed_fraction`` directly from the notebook
+    re-opens the door to mixing them.
+    """
+    tree = ast.parse(_load_sources()["cell32"])
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "zone_coverage" in called, (
+        "Step 11 does not use greening.zone_coverage, which is what keeps the "
+        "coverage numerator and denominator on the same raster"
+    )
+    assert "land_observed_fraction" not in called, (
+        "Step 11 calls land_observed_fraction directly. That takes two separately "
+        "built frames and cannot check they came from the same product - which is "
+        "exactly how run 4 produced a coverage ratio spanning two phases."
+    )

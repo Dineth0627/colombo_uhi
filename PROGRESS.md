@@ -1,6 +1,76 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 7 **Colab run 3 — RUNS END TO END. One defect: the land floor was inert**. 1463 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 7 **Colab run 4 — the water band works; the coverage ratio spanned two products**. 1471 tests pass, 3 skip)_
+
+### Colab run 4 (2026-08-20) — the third attempt at one floor, and why the first two missed
+
+All 27 cells, zero errors. The `water` band arrived and did its job:
+
+```
+bands: ['green', 'canopy', 'water', 'observed']
+permanent water inside the analysis grid: 8.3 km2 (JRC occurrence >= 50%)
+below the RAW floor:  22 zones     below the LAND floor: 15 zones
+zones whose status CHANGES: 7   (was 1 in run 3)
+```
+
+Sammanthranapura 0.856 → 0.943, Fort 0.796 → 0.834, Galle Face and four coastal Moratuwa /
+Dehiwala divisions rescued. **But Pettah moved only 0.783 → 0.785 and Lunupokuna 0.854 →
+0.868 — both still below the floor, both still out of the top 60.**
+
+#### D1 — the coverage ratio spanned two different products
+
+The reason is not water. It is that the **numerator and the denominator came from different
+rasters**. Step 11 read `landscape_area_ha` from Phase 5's committed
+`landscape_metrics_green_by_gn.csv` and computed the land area from the *current* 10 m
+export. Two products, two phases, one ratio — so it measured the difference between them
+rather than coverage.
+
+The contradiction was visible in the run's own output and I did not read it: **Step 2
+measured Dynamic World 2024 covering 99.96 % of the district**, while Step 11 put 15 zones
+below a 90 % floor. Both cannot be true of the same raster.
+
+This is the third attempt at this one floor, so the fix is structural rather than another
+call-site correction. `greening.zone_coverage` takes **one** ``bands`` mapping and derives
+both sides from it — `(observed AND land) / land`, permanent water out of both. A caller can
+no longer mix products, because there is only one input to mix. An AST test pins that Step 11
+calls it and does **not** call `land_observed_fraction` directly, which is the door that was
+left open.
+
+Measured on the notebook test's synthetic raster, median land coverage is now **1.0000** and
+only the deliberately-unseen zone stays below the floor.
+
+Two smaller things fixed alongside: `DataFrame.merge` does not carry `.attrs`, so the counts
+the notebook prints were being dropped; and the run-4 test arithmetic for a zone's land area
+was wrong on first writing.
+
+#### Everything else reproduced run 3 exactly
+
+CR 0.0081, PC1 **91.0 %**, effective dimensionality 1.51, the same correlation matrix to
+three decimals, and the same ablation verdict:
+
+```
+*** THE MCDA REPRODUCES A RANKING BY LST_HOT ALONE ***
+rho(full five-criterion ranking, lst_hot-only ranking) = 0.9768
+```
+
+That stability across two runs with different coverage flags is itself worth reporting: the
+finding does not depend on which zones were excluded.
+
+> ⚠️ **The committed `greening_priority_*.csv` are run 4's and still exclude Pettah and
+> Lunupokuna.** Do not quote the top-60 list until run 5.
+
+#### Run 5
+
+**No re-export.** Part 1 is unchanged since run 4 — the `water` band is already in the
+downloaded raster. Re-run the clone cell, Step 0, Step 1, then Part 2 from the discovery
+cell.
+
+| # | Check |
+|---|---|
+| 1 | Step 11 prints median land coverage near **1.0** and only a handful of zones below the floor |
+| 2 | **Pettah and Lunupokuna appear in the top 60** |
+| 3 | Any zone still below the floor is one Dynamic World genuinely did not see, not one with a harbour in its polygon |
+| 4 | CR 0.0081, PC1 91.0 %, ablation ρ 0.9768 — unchanged |
 
 ### Colab run 3 (2026-08-20) — every cell executed; the MCDA reproduces a ranking by LST
 
