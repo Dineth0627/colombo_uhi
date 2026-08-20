@@ -2029,7 +2029,7 @@ def test_the_priority_map_uses_different_hatches_for_wetland_and_flagged(
     legend = figure.axes[0].get_legend()
     labels = [text.get_text() for text in legend.get_texts()]
     assert "Within / beside wetland" in labels
-    assert "Below land-coverage floor" in labels
+    assert "Land-cover coverage below floor" in labels
     # geopandas draws polygons into a PatchCollection, not into axes.patches.
     hatches = {
         collection.get_hatch()
@@ -2058,6 +2058,7 @@ def test_the_priority_map_explains_both_hatches_in_the_footer(
     text = " ".join(_figure_text(figure).split())
     # Flagged, not removed - the floor gates nothing that enters the score.
     assert "FLAGGED, not removed" in text
+    assert "less of their land was classified" in text
     assert "wetland protection is an existing policy instrument" in text
 
 

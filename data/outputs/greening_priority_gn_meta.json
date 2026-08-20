@@ -96,10 +96,10 @@
     "euclidean_not_network": "The 300 m of the 3-30-300 rule is a WALKING distance. These service areas are straight-line, so they ignore the Kelani River, Beira Lake, the coastal railway and walled compounds, and therefore OVERSTATE access everywhere by an unknown amount. Each result is reported beside a 231 m variant (a 1.3 detour ratio); the gap between the two is the size of the uncertainty. Green space is also counted whether it is public or private, so compliance is an UPPER BOUND, and the '3 trees from every window' component cannot be measured from satellite data at all and is reported as unmeasured.",
     "mcda_weights_are_judgements": "The AHP criterion weights are JUDGEMENTS, not measurements. They were argued by the analyst from the literature and from this project's own measurements, not elicited from stakeholders, and a different defensible set of judgements gives a different ranking. The consistency ratio tests only whether the judgements are self-consistent, never whether they are right. The criteria are also strongly intercorrelated over Colombo, so the leave-one-out ablation - not the weights - is what says how much the method adds over ranking by land surface temperature alone."
   },
-  "score_gap_at_cut": 0.003207572307870721,
+  "score_gap_at_cut": 0.0024168997344929943,
   "tied_at_cut": 0,
   "n_priority": 60,
-  "n_eligible": 534,
+  "n_eligible": 557,
   "normalisation_sensitivity_rho": 0.9962465656130912,
   "sensor_sensitivity_rho": 0.9998295219155652,
   "ahp_vs_topsis_rho": 0.9861316946327109,

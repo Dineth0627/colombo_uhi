@@ -161,6 +161,11 @@ def _synthetic(params: dict[str, Any]) -> dict[str, Any]:
     # harbour: the cells that must NOT count against a zone's land coverage.
     water = np.zeros((FINE_ROWS, FINE_COLS), dtype=bool)
     water[:, :20] = True
+    # A strip of GN polygon that falls OUTSIDE the exported region. The export is
+    # clipped to the GAUL district while the polygons come from COD-AB, and runs
+    # 4-6 counted that gap as land the classifier had failed to see.
+    in_region = np.ones((FINE_ROWS, FINE_COLS), dtype=bool)
+    in_region[:, -25:] = False
 
     population = rng.lognormal(4.0, 0.8, (COARSE_ROWS, COARSE_COLS))
     pop_observed = np.ones((COARSE_ROWS, COARSE_COLS), dtype=bool)
@@ -207,10 +212,11 @@ def _synthetic(params: dict[str, Any]) -> dict[str, Any]:
             "green": green & observed,
             "canopy": canopy & observed,
             "water": water,
+            "in_region": in_region,
             "observed": observed,
-            "land": ~water,
+            "land": in_region & ~water,
         },
-        "green_profile": _profile(10.0, FINE_ROWS, FINE_COLS, 4),
+        "green_profile": _profile(10.0, FINE_ROWS, FINE_COLS, 5),
         "population": population,
         "pop_observed": pop_observed,
         "pop_profile": _profile(100.0, COARSE_ROWS, COARSE_COLS, 2),

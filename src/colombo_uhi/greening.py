@@ -143,12 +143,27 @@ WETLAND_STATUSES: tuple[str, ...] = ("within", "adjacent", "neither")
 #: Band order :func:`green_canopy_image` produces, and the order the exported
 #: GeoTIFF must be read back in.
 #:
-#: ``water`` is not decoration. Colab run 3 measured what its absence costs: the
-#: land-coverage floor was computed against the whole rasterised polygon, so it
-#: reproduced the Phase 5 fraction to 16 decimal places for 555 of 557 zones and
-#: excluded Pettah and Lunupokuna from the priority list on the strength of the
-#: harbour inside their polygons.
-GREEN_CANOPY_BANDS: tuple[str, ...] = ("green", "canopy", "water", "observed")
+#: Neither ``water`` nor ``in_region`` is decoration; each cost a Colab run.
+#:
+#: ``water`` (run 3): the land-coverage floor was computed against the whole
+#: rasterised polygon, so it reproduced the Phase 5 fraction to sixteen decimal
+#: places and flagged Pettah and Lunupokuna on the strength of the harbour inside
+#: their polygons.
+#:
+#: ``in_region`` (run 6): the export is clipped to ``prediction.work_region``,
+#: which is the **GAUL** district (685.6 km2), while the GN polygons come from the
+#: uploaded **COD-AB** asset (699 km2). The 13.4 km2 of GN area outside the GAUL
+#: clip has no exported data, so it read as *land the classifier did not see* -
+#: and no water mask could fix that, because those cells are not water inside the
+#: export, they are outside it. All 23 flagged divisions were boundary divisions:
+#: the harbour coast, the Kelani, and the eastern district edge.
+GREEN_CANOPY_BANDS: tuple[str, ...] = (
+    "green",
+    "canopy",
+    "water",
+    "in_region",
+    "observed",
+)
 
 #: Band order :func:`population_image` produces.
 POPULATION_BANDS: tuple[str, ...] = ("population", "observed")
@@ -3434,9 +3449,9 @@ def green_canopy_image(
         scheme: Override for ``greening.landcover_scheme``.
 
     Returns:
-        Four-band ``ee.Image`` in :data:`GREEN_CANOPY_BANDS` order - ``green``,
-        ``canopy``, ``water`` and ``observed`` - carrying ``scheme`` and ``year``
-        properties.
+        Five-band ``ee.Image`` in :data:`GREEN_CANOPY_BANDS` order - ``green``,
+        ``canopy``, ``water``, ``in_region`` and ``observed`` - carrying
+        ``scheme`` and ``year`` properties.
     """
     import ee  # Deferred: see module docstring.
 
@@ -3505,7 +3520,18 @@ def green_canopy_image(
         )
     water = water.rename("water").toByte()
 
-    return ee.Image.cat([green, canopy, water, observed]).set(
+    # *** WHICH CELLS THE EXPORT ACTUALLY COVERS. ***
+    # The clip region is prediction.work_region - the GAUL district - while the
+    # GN polygons come from the uploaded COD-AB asset. The two disagree by
+    # 13.4 km2, mostly along the harbour coast and the eastern district edge, and
+    # without this band those cells are indistinguishable from land the
+    # classifier failed to classify. Masked pixels export as 0, so this is 1
+    # inside the region and 0 outside it.
+    in_region = ee.Image.constant(1).rename("in_region").toByte()
+    if region is not None:
+        in_region = in_region.clip(region)
+
+    return ee.Image.cat([green, canopy, water, in_region, observed]).set(
         {"scheme": resolved_scheme, "year": int(resolved_year)}
     )
 
@@ -3682,8 +3708,8 @@ def read_green_canopy_raster(
     Returns:
         ``(bands, profile)`` where ``bands`` maps each of
         :data:`GREEN_CANOPY_BANDS` to a boolean array, plus a derived ``land``
-        band (``not water``) - the denominator the coverage floor must be taken
-        against.
+        band (``in_region AND NOT water``) - the denominator the coverage floor
+        must be taken against.
 
     Raises:
         ValueError: If the file does not carry exactly three bands.
@@ -3698,10 +3724,13 @@ def read_green_canopy_raster(
     # A cell the classifier never saw is neither green nor not-green.
     bands["green"] = bands["green"] & bands["observed"]
     bands["canopy"] = bands["canopy"] & bands["observed"]
-    # The land denominator the coverage floor must be taken against. Derived here
-    # so no caller has to remember to negate the water band - forgetting exactly
-    # that is what made the run-2 fix inert.
-    bands["land"] = ~bands["water"]
+
+    # The land denominator the coverage floor must be taken against: inside the
+    # exported region AND not water. Derived here so no caller has to assemble it
+    # - forgetting to negate the water band is what made the run-2 fix inert, and
+    # forgetting the region is what kept 23 boundary divisions flagged through
+    # runs 4, 5 and 6.
+    bands["land"] = bands["in_region"] & ~bands["water"]
     return bands, profile
 
 

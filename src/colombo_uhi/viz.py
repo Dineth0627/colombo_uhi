@@ -3456,8 +3456,10 @@ def build_greening_priority_map_figure(
         "Outlined divisions are the exported top-N priority set. Divisions "
         "hatched '///' are within or beside mapped wetland, where wetland "
         "protection is an existing policy instrument; divisions hatched 'xxx' "
-        "fell below the land-coverage floor - they are FLAGGED, not removed, "
-        "because that floor gates nothing that enters the score.",
+        "fell below the land-cover coverage floor: less of their land was "
+        "classified than the floor requires. They are FLAGGED, not removed, "
+        "because that floor gates nothing that enters the score - every "
+        "criterion carries its own minimum-pixel gate.",
     )
     footer = greening_caption(ahp_report, params, extra=extra)
     # This map carries TWO legends below the axes - a continuous colourbar for
@@ -3536,7 +3538,7 @@ def build_greening_priority_map_figure(
                     facecolor="none",
                     edgecolor="#666666",
                     hatch="xxx",
-                    label="Below land-coverage floor",
+                    label="Land-cover coverage below floor",
                 )
             )
     if handles:

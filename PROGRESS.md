@@ -1,6 +1,74 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 7 **Colab run 5 — the ratio is right; JRC does not map the ocean**. 1474 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 7 **Colab run 6 — DELIVERABLE COMPLETE. Pettah is rank 16**. 1476 tests pass, 3 skip)_
+
+### Colab run 6 (2026-08-20) — the top-60 is right, and the flag finally has its cause
+
+**The deliverable is done.** All 27 cells, zero errors, and the priority list is now what it
+should always have been:
+
+| rank | division | LST °C | canopy % |
+|---|---|---|---|
+| 1 | Kochchikade South | 41.15 | 0.00 |
+| 2 | New Bazaar | 42.74 | 0.00 |
+| 3 | Aluthkade East | 41.15 | 0.00 |
+| … | | | |
+| **16** | **Pettah** | 41.20 | 0.14 |
+| **50** | **Lunupokuna** | — | — |
+
+Pettah and Lunupokuna are in the top 60, carrying their coverage flag rather than being
+deleted by it. The "flag, do not delete" decision is what fixed the deliverable — not the
+water mask.
+
+#### D1 — the coverage flag: the cause was never water
+
+The combined mask found 11.1 km² against JRC's 8.3, and **the below-floor set did not change
+at all**: the same 23 divisions, the same list. Two water masks, no movement — so water was
+never the mechanism.
+
+The cause is a **boundary-source mismatch**. `prediction.work_region` is the **GAUL** district
+(`FAO/GAUL_SIMPLIFIED_500m`, measured 685.6 km²); the GN polygons come from the uploaded
+**COD-AB** asset (699 km²). The export is clipped to the former and the zones are burned from
+the latter, so **13.4 km² of GN area has no exported data** — and `read_green_canopy_raster`
+fills masked cells with 0, making them indistinguishable from land the classifier failed to
+classify.
+
+The signature is unmistakable once looked for: all 23 flagged divisions are **boundary**
+divisions — the harbour coast (Fort, Pettah, Lunupokuna, Sammanthranapura, Galle Face), the
+Kelani (Halmulla, which is the Colombo/Gampaha boundary), and the eastern district edge
+(Homagama, Seethawaka). 13.4 km² over 23 divisions is ~0.2 km² each; Pettah is 0.92 km² and
+was short by 0.20 km². It fits quantitatively.
+
+**The evidence was on screen from run 2 onward** and I read past it six times: the region
+guard printed `685.6 km2, -1.9% from the expected 699` and passed, every run.
+
+**Fixed:** `green_canopy_image` emits a fifth band, `in_region` — constant 1 clipped to the
+export region — and `read_green_canopy_raster` derives
+``land = in_region AND NOT water``. Cells the export never covered leave the denominator
+instead of counting against it.
+
+The map hatch is relabelled from "Below land-coverage floor" to "Land-cover coverage below
+floor", and its footer now states what the flag means rather than only that it exists.
+
+#### The science, unchanged across four runs
+
+CR 0.0081, PC1 **91.0 %**, effective dimensionality 1.51, ablation ρ(full, LST-only) =
+**0.9768**, sensor ρ 0.9998, normalisation ρ 0.9962. Identical in runs 3, 4, 5 and 6 under
+four different coverage regimes. **The headline finding is independent of every one of these
+fixes**, which is the strongest thing that can be said for it.
+
+#### Run 7 — the last one
+
+Re-export the 10 m green/canopy raster (Part 1 **Step 6 only**, ~7 min — five bands now),
+then Part 2.
+
+| # | Check |
+|---|---|
+| 1 | Step 6 lists five bands including `in_region` |
+| 2 | Step 11 reports the GN area outside the export as **~13 km²** |
+| 3 | The below-floor count falls from 23 to a handful — anything left is a division Dynamic World genuinely did not classify |
+| 4 | Pettah and Lunupokuna stay in the top 60, now **without** the flag |
+| 5 | CR 0.0081, PC1 91.0 %, ablation ρ 0.9768 — unchanged |
 
 ### Colab run 5 (2026-08-20) — the coverage floor, closed for good
 

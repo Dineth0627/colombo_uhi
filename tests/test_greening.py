@@ -3020,3 +3020,46 @@ def test_zone_coverage_rejects_a_shape_mismatch(params: dict[str, Any]) -> None:
             10.0,
             params,
         )
+
+
+def test_land_excludes_what_the_export_never_covered(params: dict[str, Any]) -> None:
+    """Colab run 6: the export region and the GN polygons come from two sources.
+
+    ``prediction.work_region`` is the GAUL district (685.6 km2); the GN polygons
+    are the uploaded COD-AB asset (699 km2). The 13.4 km2 outside the clip has no
+    exported data, and through runs 4-6 it read as *land the classifier did not
+    see* - which no water mask could fix, because those cells are not water
+    inside the export, they are outside it.
+    """
+    outside = np.ones((10, 10), dtype=bool)
+    outside[:, :3] = False          # beyond the clip
+    water = np.zeros((10, 10), dtype=bool)
+    water[:, 3:5] = True            # real water, inside the clip
+    observed = outside & ~water     # the classifier saw all the remaining land
+
+    bands = {
+        "in_region": outside,
+        "water": water,
+        "observed": observed,
+        "land": outside & ~water,
+    }
+    result = greening.zone_coverage(
+        bands, np.ones((10, 10), dtype=int), {1: "COASTAL"}, 10.0, params
+    )
+    # 100 cells: 30 outside the clip, 20 water, 50 land - all of it classified.
+    assert result.loc[0, "land_area_ha"] == pytest.approx(0.5)
+    assert result.loc[0, "land_observed_fraction"] == pytest.approx(1.0)
+    assert not bool(result.loc[0, "below_land_coverage_floor"])
+
+
+def test_the_read_derives_land_from_region_and_water() -> None:
+    """``land`` must be assembled once, on read, not by each caller.
+
+    Forgetting to negate the water band made the run-2 fix inert; forgetting the
+    region kept 23 boundary divisions flagged through three more runs.
+    """
+    source = (repo_root() / "src" / "colombo_uhi" / "greening.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'bands["land"] = bands["in_region"] & ~bands["water"]' in source
+    assert "in_region" in greening.GREEN_CANOPY_BANDS
