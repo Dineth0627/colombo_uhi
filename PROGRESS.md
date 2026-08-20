@@ -1,6 +1,122 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-19 (Phase 7 **Colab run 1 — Part 1 complete, five defects fixed**. 1443 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 7 **Colab run 2 — Part 1 signed off, Part 2 reaches Step 10**. 1458 tests pass, 3 skip)_
+
+### Colab run 2 (2026-08-20) — every run-1 fix held; the grids do not nest
+
+**Part 1 is done.** All six exports COMPLETED, and every run-1 defect is closed:
+
+| Run 1 defect | Run 2 result |
+|---|---|
+| WDPA rasterised to 0.00 km² and was dropped | **20.28 km²** — four wetland sites in, six forest reserves out |
+| Population export FAILED on mixed dtypes | **COMPLETED** in 15 s |
+| Discovery globs matched nothing | All eight products resolved |
+| `suffix="oli"` lost the level marker | `zone_covariates_..._gn_2020s_oli.csv` |
+
+The WDPA probe now reads exactly as intended:
+
+```
+INCLUDED as wetland:
+  + Sri Jayawardanapura  [Sanctuary]
+  + Bellanwila - Attidiya  [Sanctuary]
+  + Thalangama EPA  [Environmental Protection Area (EPA)]
+  + Bolgoda EPA  [Environmental Protection Area (EPA)]
+EXCLUDED - protected, but not wetland:
+  - Indikada Mukalana, Kurana Madakada P.R., Mitirigala,
+    Kananpella, Labugama Kalatuwawa, Miriyagalla
+```
+
+Step 1 reproduced the pin exactly (CR **0.0081**, λmax 5.036357), the region guard passed at
+685.6 km², and Dynamic World 2024 covered **99.96 %** against 2016's **21.6 %** — an
+independent re-confirmation of Phase 5's exclusion of 2016. Step 9 joined 557 zones with
+zero loss in either direction.
+
+#### D1 — the 10 m and 100 m grids do not nest, and the guard caught it
+
+Part 2 stopped at Step 10:
+
+```
+ValueError: the fine grid is (2957, 4219) but a 10x refinement of the coarse grid
+(297, 423) would be (2970, 4230).
+```
+
+**`require_integer_refinement` did exactly its job** — it refused to block-average two
+grids that do not nest, rather than trimming the remainder and misregistering the service
+mask against the population by up to a coarse cell, a third of the 300 m the rule is about.
+
+The cause is not a bug in either export. **Earth Engine snaps each export grid to its own
+scale, independently per task**, so a 10 m and a 100 m raster over the *same* region need
+not nest:
+
+| grid | shape | extent |
+|---|---|---|
+| green/canopy @ 10 m | 2957 × 4219 | 29 570 × 42 190 m |
+| population @ 100 m | 297 × 423 | 29 700 × 42 300 m |
+
+The coarse grid overhangs by **130 m (Y) and 110 m (X)** — at most one coarse cell per
+edge. Cropping to the common extent, snapped to whole coarse cells, keeps **295 × 421** and
+drops **1.14 % (14.36 km²)**. A boundary-snapping artefact, not a spatial shift.
+
+**Fixed at read time, not at export time.** `greening.align_fine_to_coarse` works in **world
+coordinates** from each profile's affine transform, not from shapes — which is what makes
+it correct when the two *origins* differ rather than merely the extents. EE snaps each grid
+to a multiple of its own scale, so a 100 m origin and a 10 m origin can sit up to 90 m
+apart, and no comparison of shapes can see that. It refuses a rotated grid, a pixel-size
+mismatch, disjoint extents, a sub-cell origin offset, and a trim above
+`greening.grid_alignment.max_dropped_fraction` (5 %) — because alignment must be a **trim,
+not a rescue**: losing 1 % at the edges is snapping, losing 30 % means the two rasters
+describe different places and cropping would hide it.
+
+`require_integer_refinement` is unchanged and still runs, now as a **post-condition**.
+Alignment must satisfy it, never bypass it, and a test closes that loop.
+
+Two practical consequences: **no Part 1 re-run is needed** — the fix uses the rasters
+already downloaded, and the 10 m exports cost 434 s and 225 s — and it is the more permanent
+fix, since any future pairing of two EE scales hits the same thing.
+
+In Step 10 the masks are still built on the **full** fine grid and cropped afterwards, so
+the distance transform sees green cells beyond the trim line; cropping first would shrink
+the service areas along the new edge.
+
+#### D2 — the notebook test could not have caught this
+
+The synthetic profiles carried `"transform": None` and shapes that nested exactly. The
+fixture now uses **real affine transforms and deliberately non-nesting shapes** (397 × 497
+against 40 × 50, a 4.45 % trim), so the test reproduces run 2's failure and then proves the
+fix. Two further fixture faults surfaced once it did: the fabricated `landscape_area_ha` was
+independent of the zone raster, which put **every** zone below the coverage floor and left
+the top-N table empty (the writer correctly refused); and the green patches no longer scaled
+to the larger grid, collapsing 3-30-300 to a single category. Land area is now derived from
+the same zone bands with three zones pushed under deliberately, and the green structure
+scales — so the run exercises 21 ok / 3 below floor and four of the five categories.
+
+#### One thing to watch in run 3 — not a defect
+
+Step 10 measured **3,023,213 qualifying green cells = 302 km²** of a 686 km² district, and
+**6.33 M of 12.47 M** bounding-box cells within 300 m of a patch ≥ 0.5 ha. Colombo is ~44 %
+green by Dynamic World, consistent with Phase 5.
+
+So `green_access_deficit` may carry very little variance: if nearly every division is within
+300 m of *something* green, the criterion cannot discriminate and its 0.109 weight does no
+work. That is the `public_only: false` caveat becoming visible as a number — private
+gardens, cantonments and golf courses all count. **No code change**: Step 11's correlation
+matrix and Step 14's ablation are built to surface exactly this, and it belongs in the
+report as a measured property of the criterion.
+
+#### Run 3
+
+**Part 1 does not need re-running.** Re-run the clone cell, Step 0, Step 1, then Part 2 from
+the discovery cell. What it must establish:
+
+| # | Check |
+|---|---|
+| 1 | Step 10 prints the trim as ~1.1 % and continues; the refinement guard passes as a post-condition |
+| 2 | The five 3-30-300 categories are non-degenerate; the 231 m column is a strict subset of the 300 m one |
+| 3 | Step 11 prints the status-change count, and **Pettah and Lunupokuna survive** |
+| 4 | Step 11's PC1 share, and whether `green_access_deficit` discriminates at all |
+| 5 | Step 14's ablation verdict against the LST-only baseline — reported either way |
+| 6 | Step 15 flags priority divisions within/beside wetland, now that WDPA contributes 20.28 km² |
+| 7 | Step 18 produces **five refusals**; Step 19 writes seven CSVs plus `_meta.json` sidecars |
 
 ### Colab run 1 (2026-08-19) — Part 1 ran end to end; five defects, one of them silent
 

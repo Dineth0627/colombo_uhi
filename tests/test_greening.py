@@ -2717,3 +2717,173 @@ def test_the_wdpa_designation_filter_is_configured(params: dict[str, Any]) -> No
         # The two that carry Colombo's wetland sanctuaries and EPAs.
         assert "Sanctuary" in designations
         assert "Environmental Protection Area (EPA)" in designations
+
+
+# =============================================================================
+# Grid alignment - Colab run 2
+# =============================================================================
+# Earth Engine snaps each export grid to ITS OWN scale, independently per task,
+# so a 10 m raster and a 100 m raster over the same region need not nest. Run 2
+# stopped on exactly that.
+
+
+def _profile(x0: float, y0: float, pixel: float, height: int, width: int) -> dict:
+    """A north-up rasterio profile at a given origin and pixel size."""
+    pytest.importorskip("rasterio")
+    from rasterio.transform import from_origin
+
+    return {
+        "transform": from_origin(x0, y0, pixel, pixel),
+        "height": height,
+        "width": width,
+        "crs": "EPSG:32644",
+    }
+
+
+#: Run 2's measured geometry, shared origin.
+RUN2_ORIGIN = (400000.0, 800000.0)
+RUN2_FINE = (2957, 4219)
+RUN2_COARSE = (297, 423)
+
+
+def test_an_exact_multiple_needs_no_trim(params: dict[str, Any]) -> None:
+    fine = _profile(*RUN2_ORIGIN, 10.0, 300, 400)
+    coarse = _profile(*RUN2_ORIGIN, 100.0, 30, 40)
+    report = greening.align_fine_to_coarse(fine, coarse, 10, params)
+    assert report["fine_window"] == (0, 0, 300, 400)
+    assert report["coarse_window"] == (0, 0, 30, 40)
+    assert report["dropped_fraction"] == 0.0
+    assert report["dropped_coarse_cells"] == 0
+
+
+def test_run_2_geometry_aligns_to_295_by_421(params: dict[str, Any]) -> None:
+    """The measured case: a 130 m / 110 m overhang, one coarse cell per edge."""
+    fine = _profile(*RUN2_ORIGIN, 10.0, *RUN2_FINE)
+    coarse = _profile(*RUN2_ORIGIN, 100.0, *RUN2_COARSE)
+    report = greening.align_fine_to_coarse(fine, coarse, 10, params)
+
+    assert report["coarse_window"] == (0, 0, 295, 421)
+    assert report["fine_window"] == (0, 0, 2950, 4210)
+    assert report["dropped_coarse_cells"] == 297 * 423 - 295 * 421
+    assert report["dropped_fraction"] == pytest.approx(0.0114, abs=5e-4)
+    assert report["dropped_area_km2"] == pytest.approx(14.36, abs=0.01)
+
+
+def test_alignment_makes_the_refinement_guard_pass(params: dict[str, Any]) -> None:
+    """Closing the loop: the guard that caught run 2 becomes a post-condition.
+
+    Alignment must satisfy ``require_integer_refinement``, not bypass it.
+    """
+    fine = _profile(*RUN2_ORIGIN, 10.0, *RUN2_FINE)
+    coarse = _profile(*RUN2_ORIGIN, 100.0, *RUN2_COARSE)
+    report = greening.align_fine_to_coarse(fine, coarse, 10, params)
+
+    fine_array = greening.crop_to_window(np.zeros(RUN2_FINE), report["fine_window"])
+    coarse_array = greening.crop_to_window(
+        np.zeros(RUN2_COARSE), report["coarse_window"]
+    )
+    greening.require_integer_refinement(fine_array.shape, coarse_array.shape, 10)
+
+
+def test_offset_origins_still_align(params: dict[str, Any]) -> None:
+    """The case a shape comparison cannot see.
+
+    Earth Engine snaps each grid to a multiple of its own scale, so a 100 m
+    origin and a 10 m origin can sit up to 90 m apart. Alignment works in world
+    coordinates precisely so that an *offset* is not mistaken for an *overhang*.
+    """
+    fine = _profile(400000.0, 800000.0, 10.0, 500, 500)
+    # Coarse origin 40 m east and 40 m south - still on the fine grid.
+    coarse = _profile(400040.0, 799960.0, 100.0, 48, 48)
+    report = greening.align_fine_to_coarse(fine, coarse, 10, params)
+
+    fine_transform = tuple(report["fine_profile"]["transform"])
+    coarse_transform = tuple(report["coarse_profile"]["transform"])
+    # Both cropped grids must start at the SAME world corner, or they do not nest.
+    assert fine_transform[2] == pytest.approx(coarse_transform[2])
+    assert fine_transform[5] == pytest.approx(coarse_transform[5])
+    assert report["origin_offset_m"] == (pytest.approx(40.0), pytest.approx(-40.0))
+    assert report["fine_profile"]["height"] == report["coarse_profile"]["height"] * 10
+    assert report["fine_profile"]["width"] == report["coarse_profile"]["width"] * 10
+
+
+def test_a_pixel_size_mismatch_names_both_sizes(params: dict[str, Any]) -> None:
+    fine = _profile(*RUN2_ORIGIN, 10.0, 300, 300)
+    coarse = _profile(*RUN2_ORIGIN, 90.0, 30, 30)
+    with pytest.raises(ValueError, match="not a fine and a coarse view"):
+        greening.align_fine_to_coarse(fine, coarse, 10, params)
+
+
+def test_a_sub_cell_origin_offset_refuses(params: dict[str, Any]) -> None:
+    # 5 m is half a fine cell: no integer crop can make these nest.
+    fine = _profile(400000.0, 800000.0, 10.0, 500, 500)
+    coarse = _profile(400005.0, 800000.0, 100.0, 48, 48)
+    with pytest.raises(ValueError, match="not a whole"):
+        greening.align_fine_to_coarse(fine, coarse, 10, params)
+
+
+def test_a_rotated_grid_refuses_rather_than_mis_cropping(
+    params: dict[str, Any],
+) -> None:
+    # A row/column crop of a rotated raster is not a rectangle on the ground.
+    fine = _profile(*RUN2_ORIGIN, 10.0, 300, 300)
+    rotated = dict(fine)
+    rotated["transform"] = (10.0, 0.5, 400000.0, 0.5, -10.0, 800000.0)
+    coarse = _profile(*RUN2_ORIGIN, 100.0, 30, 30)
+    with pytest.raises(ValueError, match="rotated or sheared"):
+        greening.align_fine_to_coarse(rotated, coarse, 10, params)
+
+
+def test_a_profile_without_a_transform_refuses(params: dict[str, Any]) -> None:
+    # Shapes alone cannot tell a 130 m overhang from a 130 m offset.
+    coarse = _profile(*RUN2_ORIGIN, 100.0, 30, 30)
+    with pytest.raises(ValueError, match="WORLD coordinates"):
+        greening.align_fine_to_coarse(
+            {"transform": None, "height": 300, "width": 300}, coarse, 10, params
+        )
+
+
+def test_disjoint_grids_refuse(params: dict[str, Any]) -> None:
+    fine = _profile(400000.0, 800000.0, 10.0, 300, 300)
+    coarse = _profile(900000.0, 700000.0, 100.0, 30, 30)
+    with pytest.raises(ValueError, match="do not describe the same place"):
+        greening.align_fine_to_coarse(fine, coarse, 10, params)
+
+
+def test_too_large_a_trim_refuses(params: dict[str, Any]) -> None:
+    """Alignment must be a trim, not a rescue.
+
+    Losing about one cell per edge is Earth Engine snapping. Losing most of the
+    grid means the two rasters describe different places, and cropping would hide
+    that rather than fix it.
+    """
+    fine = _profile(400000.0, 800000.0, 10.0, 400, 400)
+    # Overlaps by only a corner.
+    coarse = _profile(403000.0, 797000.0, 100.0, 60, 60)
+    with pytest.raises(ValueError, match="above the .* ceiling"):
+        greening.align_fine_to_coarse(fine, coarse, 10, params)
+
+
+def test_a_rejected_factor_refuses(params: dict[str, Any]) -> None:
+    fine = _profile(*RUN2_ORIGIN, 10.0, 300, 300)
+    coarse = _profile(*RUN2_ORIGIN, 100.0, 30, 30)
+    with pytest.raises(ValueError, match=">= 1"):
+        greening.align_fine_to_coarse(fine, coarse, 0, params)
+
+
+def test_crop_to_window_returns_the_expected_sub_array() -> None:
+    array = np.arange(100).reshape(10, 10)
+    cropped = greening.crop_to_window(array, (2, 3, 4, 5))
+    assert cropped.shape == (4, 5)
+    assert cropped[0, 0] == array[2, 3]
+    assert cropped[-1, -1] == array[5, 7]
+
+
+def test_crop_to_window_refuses_a_window_off_the_edge() -> None:
+    with pytest.raises(ValueError, match="runs off"):
+        greening.crop_to_window(np.zeros((10, 10)), (8, 0, 5, 5))
+
+
+def test_crop_to_window_refuses_an_empty_window() -> None:
+    with pytest.raises(ValueError, match="positive region"):
+        greening.crop_to_window(np.zeros((10, 10)), (0, 0, 0, 5))

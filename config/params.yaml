@@ -1992,6 +1992,27 @@ greening:
                                         # quoted with every 3-30-300 number.
   population_scale_m: 100               # WorldPop native. The 300 rule counts RESIDENTS, so the
                                         # 10 m service mask is block-averaged onto this grid.
+  grid_alignment:
+    max_dropped_fraction: 0.05    # *** [MEASURED — Colab run 2] EARTH ENGINE SNAPS EACH EXPORT
+                                  # GRID TO ITS OWN SCALE, INDEPENDENTLY PER TASK. *** A 10 m
+                                  # grid and a 100 m grid over the SAME region therefore need
+                                  # not nest, and over Colombo they do not:
+                                  #     green/canopy @  10 m   2957 x 4219 = 29570 x 42190 m
+                                  #     population  @ 100 m     297 x  423 = 29700 x 42300 m
+                                  # The coarse grid overhangs the fine one by 130 m (Y) and
+                                  # 110 m (X) - at most ONE COARSE CELL PER EDGE. Cropping both
+                                  # to their common extent, snapped to whole coarse cells,
+                                  # keeps 295 x 421 and drops 1.14 %. That is a boundary
+                                  # snapping artefact, not a spatial shift, and
+                                  # greening.align_fine_to_coarse trims it at READ time so no
+                                  # re-export is needed.
+                                  #
+                                  # THIS THRESHOLD IS WHAT KEEPS THE TRIM HONEST. Losing ~1 %
+                                  # at the edges is snapping. Losing 30 % would mean the two
+                                  # rasters describe different places, and cropping would hide
+                                  # that rather than fix it - so above this fraction it RAISES.
+                                  # require_integer_refinement is unchanged and still runs
+                                  # afterwards, as a post-condition rather than a blocker.
   min_scored_fraction: 0.80             # refuse to publish a ranking if fewer than this share of
                                         # zones produced a score at all
 

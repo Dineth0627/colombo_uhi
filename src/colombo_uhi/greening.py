@@ -2733,6 +2733,258 @@ def require_integer_refinement(
         )
 
 
+def _grid_geometry(
+    profile: Mapping[str, Any], label: str
+) -> tuple[float, float, float, float, int, int]:
+    """Origin, pixel size and shape of a north-up, axis-aligned raster profile.
+
+    Args:
+        profile: A rasterio profile.
+        label: Name used in error messages.
+
+    Returns:
+        ``(x0, y0, pixel_x, pixel_y, height, width)``, where ``(x0, y0)`` is the
+        upper-left corner in world coordinates and both pixel sizes are positive.
+
+    Raises:
+        ValueError: If the profile is incomplete, or the transform is rotated or
+            sheared - in which case a row/column crop is not a rectangle on the
+            ground and cropping would silently misplace the data.
+    """
+    for key in ("transform", "height", "width"):
+        if key not in profile or profile[key] is None:
+            raise ValueError(
+                f"the {label} profile has no usable {key!r}. Grid alignment works "
+                "in WORLD coordinates, not on shapes, so it needs the affine "
+                "transform - shapes alone cannot tell a 130 m overhang from a "
+                "130 m offset."
+            )
+
+    values = [float(value) for value in tuple(profile["transform"])[:6]]
+    pixel_x, row_rotation, x0, col_rotation, pixel_y, y0 = values
+
+    if abs(row_rotation) > 1e-9 or abs(col_rotation) > 1e-9:
+        raise ValueError(
+            f"the {label} grid is rotated or sheared (rotation terms "
+            f"{row_rotation}, {col_rotation}). A row/column crop of a rotated "
+            "raster is not a rectangle on the ground, so alignment refuses "
+            "rather than silently misplacing the data."
+        )
+    if pixel_x <= 0 or pixel_y >= 0:
+        raise ValueError(
+            f"the {label} grid is not north-up (pixel size {pixel_x}, {pixel_y}); "
+            "alignment assumes x increases with column and y decreases with row"
+        )
+    return x0, y0, pixel_x, -pixel_y, int(profile["height"]), int(profile["width"])
+
+
+def crop_to_window(
+    array: "np.ndarray", window: tuple[int, int, int, int]
+) -> "np.ndarray":
+    """Crop an array to ``(row_off, col_off, height, width)``.
+
+    Args:
+        array: The array to crop; trailing dimensions are preserved.
+        window: Offsets and size, as :func:`align_fine_to_coarse` returns.
+
+    Returns:
+        The cropped view.
+
+    Raises:
+        ValueError: If the window is not positive or runs off the array.
+    """
+    import numpy as np  # Deferred: see module docstring.
+
+    values = np.asarray(array)
+    row_off, col_off, height, width = (int(value) for value in window)
+    if row_off < 0 or col_off < 0 or height <= 0 or width <= 0:
+        raise ValueError(f"window {tuple(window)} is not a positive region")
+    if row_off + height > values.shape[0] or col_off + width > values.shape[1]:
+        raise ValueError(
+            f"window {tuple(window)} runs off an array of shape {values.shape[:2]}"
+        )
+    return values[row_off : row_off + height, col_off : col_off + width]
+
+
+def align_fine_to_coarse(
+    fine_profile: Mapping[str, Any],
+    coarse_profile: Mapping[str, Any],
+    factor: int,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Crop two grids to a common extent on which the fine one nests in the coarse.
+
+    .. warning::
+        **Earth Engine snaps each export grid to its own scale, independently per
+        task.** A 10 m raster and a 100 m raster exported over the *same* region
+        therefore need not nest. Colab run 2 measured it over Colombo: a
+        ``2957 x 4219`` green/canopy grid at 10 m against a ``297 x 423``
+        population grid at 100 m, the coarse one overhanging by 130 m in Y and
+        110 m in X - one coarse cell per edge, 1.14 % of cells.
+
+    The work is done in **world coordinates**, from each profile's affine
+    transform, rather than from shapes. That is what makes it correct when the
+    two *origins* differ rather than merely the extents: Earth Engine snaps each
+    grid to a multiple of its own scale, so a 100 m origin and a 10 m origin can
+    sit up to 90 m apart, and no comparison of shapes can see that.
+
+    The common extent is snapped **inward to whole coarse cells**, so the cropped
+    grids nest by construction and :func:`require_integer_refinement` passes as a
+    post-condition rather than being bypassed.
+
+    Args:
+        fine_profile: Rasterio profile of the fine grid.
+        coarse_profile: Rasterio profile of the coarse grid.
+        factor: Expected refinement, e.g. 10 for 10 m against 100 m.
+        params: Parsed params mapping, for
+            ``greening.grid_alignment.max_dropped_fraction``.
+
+    Returns:
+        Mapping with ``fine_window`` and ``coarse_window`` as
+        ``(row_off, col_off, height, width)``, the cropped ``fine_profile`` and
+        ``coarse_profile``, and ``dropped_coarse_cells``, ``dropped_fraction``,
+        ``dropped_area_km2``, ``factor`` and ``origin_offset_m``.
+
+    Raises:
+        ValueError: If a profile is unusable, the coarse pixel size is not
+            exactly ``factor`` times the fine one, the grids do not overlap, the
+            coarse origin does not lie on the fine grid, or the trim would
+            discard more than ``max_dropped_fraction`` of the coarse cells -
+            which would make this a rescue of two rasters describing different
+            places rather than a boundary trim.
+    """
+    step = int(factor)
+    if step < 1:
+        raise ValueError(f"the refinement factor must be >= 1; got {factor}")
+
+    fine_x0, fine_y0, fine_px, fine_py, fine_h, fine_w = _grid_geometry(
+        fine_profile, "fine"
+    )
+    coarse_x0, coarse_y0, coarse_px, coarse_py, coarse_h, coarse_w = _grid_geometry(
+        coarse_profile, "coarse"
+    )
+
+    tolerance = 1e-6
+    for axis, fine_size, coarse_size in (
+        ("x", fine_px, coarse_px),
+        ("y", fine_py, coarse_py),
+    ):
+        if abs(coarse_size - fine_size * step) > tolerance:
+            raise ValueError(
+                f"the coarse {axis} pixel is {coarse_size} m but {step}x the fine "
+                f"{axis} pixel ({fine_size} m) is {fine_size * step} m. These are "
+                "not a fine and a coarse view of one grid, and no crop makes them "
+                "nest."
+            )
+
+    # World extents. Origin is upper-left, so y decreases with row.
+    fine_right = fine_x0 + fine_w * fine_px
+    fine_bottom = fine_y0 - fine_h * fine_py
+    coarse_right = coarse_x0 + coarse_w * coarse_px
+    coarse_bottom = coarse_y0 - coarse_h * coarse_py
+
+    left, right = max(fine_x0, coarse_x0), min(fine_right, coarse_right)
+    top, bottom = min(fine_y0, coarse_y0), max(fine_bottom, coarse_bottom)
+    if right - left < coarse_px or top - bottom < coarse_py:
+        raise ValueError(
+            f"the two grids overlap by {max(right - left, 0.0):.1f} x "
+            f"{max(top - bottom, 0.0):.1f} m, less than one coarse cell "
+            f"({coarse_px} x {coarse_py} m). They do not describe the same place."
+        )
+
+    # Snap the overlap inward to whole COARSE cells, measured from the coarse
+    # origin, so the crop lands on real coarse-cell boundaries.
+    col_start = math.ceil((left - coarse_x0) / coarse_px - tolerance)
+    row_start = math.ceil((coarse_y0 - top) / coarse_py - tolerance)
+    col_stop = math.floor((right - coarse_x0) / coarse_px + tolerance)
+    row_stop = math.floor((coarse_y0 - bottom) / coarse_py + tolerance)
+
+    coarse_cols, coarse_rows = col_stop - col_start, row_stop - row_start
+    if coarse_cols < 1 or coarse_rows < 1:
+        raise ValueError(
+            "the common extent holds no whole coarse cell once snapped to the "
+            f"coarse grid ({coarse_rows} x {coarse_cols})"
+        )
+
+    # The same corner, expressed on the fine grid. The coarse origin must land on
+    # a fine cell boundary or no integer crop can make the two nest.
+    crop_x = coarse_x0 + col_start * coarse_px
+    crop_y = coarse_y0 - row_start * coarse_py
+    fine_col = (crop_x - fine_x0) / fine_px
+    fine_row = (fine_y0 - crop_y) / fine_py
+    if abs(fine_col - round(fine_col)) > 1e-6 or abs(fine_row - round(fine_row)) > 1e-6:
+        raise ValueError(
+            "the coarse grid origin is offset from the fine grid by "
+            f"{(fine_col - round(fine_col)) * fine_px:.3f} x "
+            f"{(fine_row - round(fine_row)) * fine_py:.3f} m, which is not a whole "
+            "number of fine cells. No integer crop makes these nest; re-export "
+            "both with an explicit crsTransform."
+        )
+
+    fine_window = (
+        int(round(fine_row)),
+        int(round(fine_col)),
+        int(coarse_rows * step),
+        int(coarse_cols * step),
+    )
+    coarse_window = (int(row_start), int(col_start), int(coarse_rows), int(coarse_cols))
+
+    total = coarse_h * coarse_w
+    kept = coarse_rows * coarse_cols
+    dropped_fraction = float((total - kept) / total) if total else 1.0
+
+    ceiling = (
+        float(params["greening"]["grid_alignment"]["max_dropped_fraction"])
+        if params is not None
+        else 1.0
+    )
+    if dropped_fraction > ceiling:
+        raise ValueError(
+            f"aligning these grids would discard {dropped_fraction:.1%} of the "
+            f"coarse cells, above the {ceiling:.0%} ceiling in "
+            "greening.grid_alignment.max_dropped_fraction. A trim of about one "
+            "cell per edge is Earth Engine snapping each scale to its own grid; "
+            "a loss this large means the two rasters describe different places, "
+            "and cropping would hide that rather than fix it."
+        )
+
+    def _cropped(
+        profile: Mapping[str, Any],
+        x: float,
+        y: float,
+        rows: int,
+        cols: int,
+        px: float,
+        py: float,
+    ) -> dict[str, Any]:
+        out = dict(profile)
+        out["height"], out["width"] = int(rows), int(cols)
+        transform = profile["transform"]
+        # Rebuild through the transform's own class where it has one (rasterio's
+        # Affine), so the cropped profile stays a drop-in for the original.
+        try:
+            out["transform"] = type(transform)(px, 0.0, x, 0.0, -py, y)
+        except Exception:  # pragma: no cover - a plain tuple in a test fixture
+            out["transform"] = (px, 0.0, x, 0.0, -py, y)
+        return out
+
+    return {
+        "fine_window": fine_window,
+        "coarse_window": coarse_window,
+        "fine_profile": _cropped(
+            fine_profile, crop_x, crop_y, fine_window[2], fine_window[3], fine_px, fine_py
+        ),
+        "coarse_profile": _cropped(
+            coarse_profile, crop_x, crop_y, coarse_rows, coarse_cols, coarse_px, coarse_py
+        ),
+        "factor": step,
+        "dropped_coarse_cells": int(total - kept),
+        "dropped_fraction": dropped_fraction,
+        "dropped_area_km2": float((total - kept) * coarse_px * coarse_py / 1e6),
+        "origin_offset_m": (float(coarse_x0 - fine_x0), float(coarse_y0 - fine_y0)),
+    }
+
+
 def block_mean(array: "np.ndarray", factor: int) -> "np.ndarray":
     """Exact block mean, aggregating a fine grid onto a coarse one.
 

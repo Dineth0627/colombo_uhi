@@ -80,10 +80,35 @@ NOTEBOOK_CELLS: tuple[str, ...] = (
 #: from a Phase 6 projected product - Track B never beat a no-change map.
 CRITERION_CELLS: tuple[str, ...] = ("cell28", "cell32", "cell34")
 
-FINE_ROWS, FINE_COLS = 120, 160
+# *** THESE GRIDS DELIBERATELY DO NOT NEST. ***
+# Earth Engine snaps each export grid to its own scale, so the 10 m and 100 m
+# rasters over Colombo came back as 2957 x 4219 against 297 x 423 - the coarse
+# grid overhanging by one cell per edge. Colab run 2 stopped on exactly that, and
+# this fixture could not have caught it: it carried nesting shapes and
+# `"transform": None`. It now mirrors the real failure at a testable size, so
+# Step 10's alignment is exercised rather than assumed.
 FACTOR = 10
-COARSE_ROWS, COARSE_COLS = FINE_ROWS // FACTOR, FINE_COLS // FACTOR
+COARSE_ROWS, COARSE_COLS = 40, 50
+FINE_ROWS, FINE_COLS = COARSE_ROWS * FACTOR - 3, COARSE_COLS * FACTOR - 3  # 397 x 497
+#: Shapes both grids are cropped to once aligned.
+ALIGNED_COARSE = (COARSE_ROWS - 1, COARSE_COLS - 1)
+ALIGNED_FINE = (ALIGNED_COARSE[0] * FACTOR, ALIGNED_COARSE[1] * FACTOR)
+#: Shared world origin, in the analysis CRS.
+ORIGIN_X, ORIGIN_Y = 400000.0, 800000.0
 N_ZONES = 24
+
+
+def _profile(pixel: float, height: int, width: int, count: int) -> dict[str, Any]:
+    """A real north-up profile, so grid alignment has a transform to work from."""
+    from rasterio.transform import from_origin
+
+    return {
+        "transform": from_origin(ORIGIN_X, ORIGIN_Y, pixel, pixel),
+        "height": height,
+        "width": width,
+        "crs": "EPSG:32644",
+        "count": count,
+    }
 
 
 def _zone_frame(prefix: str, count: int) -> "gpd.GeoDataFrame":
@@ -125,10 +150,10 @@ def _synthetic(params: dict[str, Any]) -> dict[str, Any]:
     # A green/canopy raster with real structure: patches large enough to qualify
     # in some places and speckle too small in others.
     green = np.zeros((FINE_ROWS, FINE_COLS), dtype=bool)
-    green[10:40, 10:50] = True   # a large park
-    green[70:78, 100:108] = True  # a smaller one, still over 0.5 ha
-    green[90:92, 20:22] = True    # speckle, well under 0.5 ha
-    green |= rng.random((FINE_ROWS, FINE_COLS)) < 0.05
+    green[: FINE_ROWS // 3, : FINE_COLS // 2] = True          # a large park
+    green[FINE_ROWS // 2 : FINE_ROWS // 2 + 40, -80:] = True  # a smaller one, still >= 0.5 ha
+    green[-3:, :3] = True                                     # speckle, well under 0.5 ha
+    green |= rng.random((FINE_ROWS, FINE_COLS)) < 0.02
     canopy = green & (rng.random((FINE_ROWS, FINE_COLS)) < 0.7)
     observed = np.ones((FINE_ROWS, FINE_COLS), dtype=bool)
     observed[:4, :] = False  # a strip the classifier never saw
@@ -179,30 +204,12 @@ def _synthetic(params: dict[str, Any]) -> dict[str, Any]:
             "canopy": canopy & observed,
             "observed": observed,
         },
-        "green_profile": {
-            "width": FINE_COLS,
-            "height": FINE_ROWS,
-            "transform": None,
-            "crs": "EPSG:32644",
-            "count": 3,
-        },
+        "green_profile": _profile(10.0, FINE_ROWS, FINE_COLS, 3),
         "population": population,
         "pop_observed": pop_observed,
-        "pop_profile": {
-            "width": COARSE_COLS,
-            "height": COARSE_ROWS,
-            "transform": None,
-            "crs": "EPSG:32644",
-            "count": 2,
-        },
+        "pop_profile": _profile(100.0, COARSE_ROWS, COARSE_COLS, 2),
         "wetland_bands": wetland_bands,
-        "wetland_profile": {
-            "width": FINE_COLS,
-            "height": FINE_ROWS,
-            "transform": None,
-            "crs": "EPSG:32644",
-            "count": len(wetland_bands),
-        },
+        "wetland_profile": _profile(10.0, FINE_ROWS, FINE_COLS, len(wetland_bands)),
         "covariates_gn": _covariates(zone_ids, 1),
         "covariates_ds": _covariates(ds_ids, 2),
         "covariates_oli": _covariates(zone_ids, 3),
@@ -226,20 +233,25 @@ def _synthetic(params: dict[str, Any]) -> dict[str, Any]:
 def _zone_codes(profile: Any, geometry: Any, params: Any, **kwargs: Any) -> Any:
     """Deterministic zone raster: horizontal bands, one per zone.
 
-    Substituted for ``greening.zone_raster`` because the synthetic profiles carry
-    no affine transform. ``zone_raster`` itself is tested for real in
+    Substituted for ``greening.zone_raster`` so the notebook test does not depend
+    on real polygon rasterisation; ``zone_raster`` itself is tested for real in
     ``tests/test_greening.py``.
+
+    The bands are laid out by FRACTION of height rather than by a fixed row
+    count, so the fine and coarse rasters describe the same geography despite
+    having different shapes - which is what makes the population-weighted share
+    comparable against the area share.
     """
     height = int(profile["height"])
     width = int(profile["width"])
     ids = [str(value) for value in geometry["zone_id"]]
     codes = np.zeros((height, width), dtype=np.int32)
-    per = max(height // max(len(ids), 1), 1)
+    per = height / max(len(ids), 1)
     for index in range(len(ids)):
-        low = index * per
+        low, high = int(index * per), int((index + 1) * per)
         if low >= height:
             break
-        codes[low : min(low + per, height), :] = index + 1
+        codes[low : min(max(high, low + 1), height), :] = index + 1
     return codes, {index + 1: value for index, value in enumerate(ids)}
 
 
@@ -350,12 +362,17 @@ def test_every_part_2_notebook_cell_executes(
     outputs = tmp_path / "data/outputs"
     (outputs / "gn_divisions_colombo.geojson").touch()
     (outputs / "ds_divisions_colombo.geojson").touch()
+    aligned_fine = _profile(10.0, *ALIGNED_FINE, 3)
+    aligned_codes, aligned_labels = _zone_codes(aligned_fine, state["zones"], params)
+    land_area = greening.zone_land_area(aligned_codes, aligned_labels, 10.0)
+    classified = land_area["land_area_ha"].to_numpy() * 0.97
+    classified[:3] *= 0.5  # three zones genuinely below the floor
     landscape = pd.DataFrame(
         {
             "scheme": ["dynamic_world"] * N_ZONES,
             "year": [int(params["greening"]["landcover_year"])] * N_ZONES,
-            "zone_id": list(state["zones"]["zone_id"]),
-            "landscape_area_ha": np.linspace(20.0, 60.0, N_ZONES),
+            "zone_id": list(land_area["zone_id"]),
+            "landscape_area_ha": classified,
             "observed_fraction": np.linspace(0.6, 1.0, N_ZONES),
         }
     )
@@ -423,6 +440,29 @@ def test_every_part_2_notebook_cell_executes(
     assert set(namespace["COMPLIANCE"]["compliance"]) <= set(
         greening.COMPLIANCE_CATEGORIES
     )
+    # Non-degenerate: a fixture that lands every zone in one category would run
+    # the cell without exercising the verdict.
+    assert namespace["COMPLIANCE"]["compliance"].nunique() >= 3
+
+    # *** THE RUN-2 FAILURE, REPRODUCED AND FIXED. ***
+    # The fixture grids deliberately do not nest, so Step 10 must have trimmed
+    # them; if this ever reads 0 the fixture has drifted back to nesting shapes
+    # and stopped testing the alignment at all.
+    alignment = namespace["ALIGNMENT"]
+    assert alignment["dropped_fraction"] > 0
+    assert alignment["fine_window"][2:] == ALIGNED_FINE
+    assert alignment["coarse_window"][2:] == ALIGNED_COARSE
+    assert namespace["SERVICE"].shape == ALIGNED_FINE
+    assert namespace["POPULATION"].shape == ALIGNED_COARSE
+    # And the guard that caught run 2 passed as a post-condition rather than
+    # being bypassed.
+    greening.require_integer_refinement(
+        namespace["SERVICE"].shape, namespace["POPULATION"].shape, FACTOR
+    )
+
+    # Both sides of the land-coverage floor were exercised.
+    prep = namespace["PREP_REPORT"]
+    assert prep["n_ok"] > 0 and prep["n_below_floor"] > 0
     assert namespace["CIRCULARITY"]["independence"] == greening.NOT_INDEPENDENT
     assert not namespace["ABLATION"].empty
     assert "WETLAND" in namespace and not namespace["WETLAND"].empty

@@ -1639,3 +1639,17 @@ def test_the_wdpa_source_names_the_properties_the_filter_needs(
     for key in ("name_property", "designation_property"):
         assert isinstance(wdpa[key], str) and wdpa[key]
     assert "designations_include" in wdpa
+
+
+def test_grid_alignment_ceiling_is_configured(params: dict[str, Any]) -> None:
+    # [MEASURED - Colab run 2] Earth Engine snaps each export grid to its own
+    # scale, so the 10 m and 100 m rasters overhang by one coarse cell per edge -
+    # 1.14 % of cells. The ceiling is what keeps the crop a TRIM: a much larger
+    # loss would mean the two rasters describe different places, and cropping
+    # would hide that rather than fix it.
+    fraction = params["greening"]["grid_alignment"]["max_dropped_fraction"]
+    assert 0.0 < float(fraction) < 1.0
+    assert float(fraction) >= 0.0114, (
+        "the ceiling must clear the 1.14 % trim measured over Colombo, or the "
+        "run cannot proceed on its own exports"
+    )
