@@ -98,8 +98,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 │   │                        #           scenarios, and the validation export guard
 │   └── greening.py          # Phase 7 — AHP (power iteration + CR), TOPSIS, criterion
 │                            #           prep, 3-30-300, wetland cross, guarded writers
-├── notebooks/               # 00–06 written + Colab-verified; 07 written, awaiting Colab;
-│                            # 08 is a stub
+├── notebooks/               # 00–07 written + Colab-verified; 08 is a stub
 ├── docs/
 │   └── molusce_handoff.md   # Phase 6 — CA-Markov handoff to MOLUSCE in QGIS
 ├── data/
@@ -121,7 +120,7 @@ normal. Within a session `init_ee()` is idempotent and never re-prompts.
 | 4 | `04_trend_analysis` | MK + Sen's slope, BH-FDR, decadal, modified MK | ✅ done + Colab-verified |
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR, MAUP, landscape metrics | ✅ done + Colab-verified |
 | 6 | `06_prediction` | RF + CA-Markov scenario projection, spatially blocked validation, greening counterfactual, MOLUSCE handoff | ✅ done + Colab-verified |
-| 7 | `07_greening_priority` | MCDA/AHP weighted overlay (CR 0.0081), TOPSIS cross-check, 3-30-300 compliance, Ramsar wetland cross, ranked priority table | 🔄 **written, awaiting Colab** |
+| 7 | `07_greening_priority` | MCDA/AHP weighted overlay (CR 0.0081), TOPSIS cross-check, 3-30-300 compliance, Ramsar wetland cross, ranked priority table | ✅ done + Colab-verified |
 | 8 | `08_figures_for_report` | final figures | ⬜ |
 
 ## Running tests locally

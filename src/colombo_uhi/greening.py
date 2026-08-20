@@ -3950,9 +3950,24 @@ def zone_coverage(
     # DataFrame.merge does NOT carry .attrs, so the counts land_observed_fraction
     # recorded would be silently dropped - and the notebook prints them.
     result.attrs.update(fractions.attrs)
-    result.attrs["water_area_km2"] = float(
-        (~land).sum() * (float(cell_size_m) ** 2) / 1e6
-    )
+
+    # Areas reported WITHIN the zones, not over the raster's bounding box. Colab
+    # run 7 printed 569.8 km2 of "water" and 558.7 km2 "outside the region" for a
+    # 686 km2 district: both were arithmetically right and both were labelled
+    # wrong. `~land` is "outside the region OR water", and the bounding box is
+    # 1242 km2, most of it neither zone nor district.
+    in_zone = codes > 0
+    cell_km2 = (float(cell_size_m) ** 2) / 1e6
+    result.attrs["non_land_area_km2"] = float((~land & in_zone).sum() * cell_km2)
+    if "water" in bands:
+        result.attrs["water_area_km2"] = float(
+            (np.asarray(bands["water"], dtype=bool) & in_zone).sum() * cell_km2
+        )
+    if "in_region" in bands:
+        result.attrs["outside_region_area_km2"] = float(
+            (~np.asarray(bands["in_region"], dtype=bool) & in_zone).sum() * cell_km2
+        )
+    result.attrs["zone_area_km2"] = float(in_zone.sum() * cell_km2)
     return result
 
 

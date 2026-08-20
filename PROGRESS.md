@@ -1,6 +1,91 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 7 **Colab run 6 — DELIVERABLE COMPLETE. Pettah is rank 16**. 1476 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 7 **SIGNED OFF** — Colab run 7, every check closed. 1477 tests pass, 3 skip)_
+
+### Colab run 7 (2026-08-20) — PHASE 7 SIGNED OFF
+
+All 27 cells, zero errors. Every check on the run-6 list closed:
+
+```
+bands: ['green', 'canopy', 'water', 'in_region', 'observed']
+median land coverage across zones: 1.0000
+below the LAND floor: 1 zone     (was 23)
+zones whose status changes:      21
+still below the floor: LK1112405 (Weniwelkola)
+```
+
+**The coverage flag now has one member district-wide**, and it is a division Dynamic World
+genuinely did not classify — not a coastline artefact. The top-60 contains **zero flagged
+rows**. Pettah is rank 16 and Lunupokuna 50, both unflagged.
+
+#### The deliverable
+
+| rank | division | LST °C | canopy % |
+|---|---|---|---|
+| 1 | Kochchikade South | 41.15 | 0.00 |
+| 2 | New Bazaar | 42.74 | 0.00 |
+| 3 | Aluthkade East | 41.15 | 0.00 |
+| 4 | Kochchikade North | 40.99 | 0.00 |
+| 5 | Maligakanda | 41.23 | 0.00 |
+
+The CMC core at 41–43 °C with **zero tree-class canopy**, none of the 60 meeting the 30 %
+target, 45 of 60 within or beside mapped wetland.
+
+#### One defect, cosmetic: two mislabelled diagnostics
+
+Run 7 printed *"water inside the analysis grid: 569.8 km²"* and *"GN area OUTSIDE the
+exported region: 558.7 km²"* for a 686 km² district. Both numbers were arithmetically
+correct and both were labelled wrong: `~land` is "outside the region **or** water", and both
+were taken over the raster's **1242 km² bounding box** rather than over the divisions.
+`zone_coverage` now reports `water_area_km2`, `outside_region_area_km2` and
+`zone_area_km2` separately and **within the zones**. No re-run needed — the science and the
+deliverable were never affected.
+
+#### The finding, stable across five runs
+
+| | run 3 | run 4 | run 5 | run 6 | run 7 |
+|---|---|---|---|---|---|
+| AHP CR | 0.0081 | 0.0081 | 0.0081 | 0.0081 | 0.0081 |
+| PC1 share | 91.0 % | 91.0 % | 91.0 % | 91.0 % | 91.0 % |
+| ablation ρ (full vs LST-only) | 0.9768 | 0.9768 | 0.9768 | 0.9768 | 0.9768 |
+| sensor ρ | 0.9998 | — | — | — | 0.9998 |
+| zones below floor | 22 | 15 | 23 | 23 | **1** |
+
+**The headline finding did not move while the coverage flag went from 22 zones to 1.** That
+independence is the strongest thing that can be said for it.
+
+#### What the report must say
+
+1. **The MCDA reproduces a ranking by land surface temperature alone** (ρ = 0.9768, PC1
+   91.0 %, effective dimensionality 1.51). This is a finding about Colombo, not a fault in
+   the method — the five criteria are one latent variable here. The ranking is still the
+   right product; it is simply not adding what a five-criterion MCDA is normally assumed to.
+2. **The weights are judgements, not measurements** — the analyst's, argued from the
+   literature, not elicited. CR tests self-consistency, never correctness.
+3. **3-30-300 compliance is an upper bound**: private gardens, cantonments and golf courses
+   all count. The "3" was never measured.
+4. **The 300 m is straight-line**, bounded by the 231 m detour column.
+5. **No official Colombo Wetland Complex boundary exists** in any free dataset; the layer is
+   three EO proxies plus WDPA's four legally designated wetland sites.
+6. **Agreement with Phase 5 is not validation** (ρ = 0.9845, `NOT_INDEPENDENT`).
+7. **Everything is a property of the GN aggregation** (`caveats.zonal_not_pixel`); the DS
+   re-run gives ρ = 0.9056 between a division's rank and its parent's.
+
+#### Six things that would have shipped a confident wrong answer
+
+1. Zone-mean UTFVI (ρ = +1.000000 with LST) — caught before any code was written.
+2. An empty WDPA raster reading as an honest zero, losing the only legally designated
+   wetland source while the probe listed ten sites by name.
+3. A population export that failed on mixed band dtypes.
+4. Two Earth Engine grids that do not nest, which would have misregistered the service mask
+   by up to a third of the 300 m the rule is about.
+5. A coverage ratio spanning two products from two phases.
+6. A boundary-source mismatch (GAUL 685.6 km² against COD-AB 699 km²) that flagged 23
+   coastal and edge divisions as unobserved and, for three runs, deleted Pettah from the
+   deliverable.
+
+Numbers 5 and 6 each took three runs to find because I read past the same evidence —
+the region guard printed `685.6 km2, -1.9%` and passed on every run from 2 onward.
 
 ### Colab run 6 (2026-08-20) — the top-60 is right, and the flag finally has its cause
 
@@ -531,7 +616,7 @@ the single-sensor table its proper name.
 | 4 | Trend analysis (MK/Sen + FDR) | ✅ **done + Colab-verified (runs 14–18).** MODIS Terra night = trend evidence; class contrasts stable across 2 configs; Landsat = quantified negative result (detection limit 0.33 °C/yr) |
 | 5 | Spatial statistics (Gi*, Moran, EHSA, GWR) | ✅ **done + Colab-verified (runs 1–5).** MGWR bandwidths span 19–556 (NDBI local, built_fraction global); spatial error model at GN (λ=0.711) vs OLS at DS; DS Gi\* = 0 hot spots. Green space FRAGMENTING: same area (+1.0%), +20.8% patches, −16.3% mean patch size. 770 tests pass locally |
 | 6 | Scenario projection (RF + CA-Markov) | ✅ **done + Colab-verified (runs 1–6).** Track A validated: held-out RMSE **1.13 °C**, R² **0.894** on 212 blocks, led by NDBI / built fraction / LCZ. Track B a measured **negative result**: reproduces the quantity of land-cover change, cannot allocate it, never beats a no-change map across 2 schemes × 2 intervals. Greening counterfactual **−0.84 °C** mean inside priority zones at a 20 % canopy shift, validated and exported. 1093 tests pass, 15 skip |
-| 7 | Greening priority (MCDA/AHP) | 🔄 **written, awaiting Colab.** AHP CR **0.0081** (12× margin), TOPSIS cross-check, 3-30-300, Ramsar wetland cross. 335 new tests; notebook 07's Part 2/3 cells execute for real, figures included |
+| 7 | Greening priority (MCDA/AHP) | ✅ **done + Colab-verified** (run 7). AHP CR **0.0081**, TOPSIS cross-check, 3-30-300, Ramsar wetland cross. **Headline: the MCDA reproduces a ranking by LST alone (ρ = 0.9768, PC1 91.0 %)** |
 | 8 | Report figures | ⬜ |
 
 ---

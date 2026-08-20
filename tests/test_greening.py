@@ -2996,10 +2996,49 @@ def test_zone_coverage_still_flags_a_genuinely_unseen_zone(
     assert bool(result.loc[0, "below_land_coverage_floor"])
 
 
-def test_zone_coverage_records_the_water_area(params: dict[str, Any]) -> None:
+def test_zone_coverage_reports_areas_within_the_zones(params: dict[str, Any]) -> None:
+    """Colab run 7 printed 569.8 km2 of "water" for a 686 km2 district.
+
+    The number was arithmetically right and the label was wrong: it was
+    ``(~land).sum()`` - "outside the region OR water" - taken over the raster's
+    1242 km2 bounding box rather than over the divisions.
+    """
     bands, zones, labels = coverage_setup()
+    # 20x20 grid, zone 1 is rows 0-9. Water: rows 0-9, cols 0-3 = 40 cells.
+    # Everything is inside the region here.
+    bands = dict(bands)
+    bands["water"] = ~bands["land"]
+    bands["in_region"] = np.ones_like(bands["land"])
     result = greening.zone_coverage(bands, zones, labels, 10.0, params)
+
+    assert result.attrs["zone_area_km2"] == pytest.approx(400 * 100 / 1e6)
     assert result.attrs["water_area_km2"] == pytest.approx(40 * 100 / 1e6)
+    assert result.attrs["outside_region_area_km2"] == pytest.approx(0.0)
+    assert result.attrs["non_land_area_km2"] == pytest.approx(40 * 100 / 1e6)
+
+
+def test_outside_region_and_water_are_reported_separately(
+    params: dict[str, Any],
+) -> None:
+    # They are different things and they were being summed under one label.
+    grid = np.ones((10, 10), dtype=bool)
+    water = np.zeros((10, 10), dtype=bool)
+    water[:, :2] = True          # 20 cells of water
+    in_region = np.ones((10, 10), dtype=bool)
+    in_region[:, -3:] = False    # 30 cells beyond the clip
+    land = in_region & ~water
+    bands = {
+        "observed": land,
+        "land": land,
+        "water": water,
+        "in_region": in_region,
+    }
+    result = greening.zone_coverage(
+        bands, np.ones((10, 10), dtype=int), {1: "EDGE"}, 10.0, params
+    )
+    assert result.attrs["water_area_km2"] == pytest.approx(20 * 100 / 1e6)
+    assert result.attrs["outside_region_area_km2"] == pytest.approx(30 * 100 / 1e6)
+    assert result.attrs["non_land_area_km2"] == pytest.approx(50 * 100 / 1e6)
 
 
 def test_zone_coverage_rejects_a_missing_band(params: dict[str, Any]) -> None:
