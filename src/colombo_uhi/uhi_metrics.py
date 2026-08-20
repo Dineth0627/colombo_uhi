@@ -2072,6 +2072,31 @@ def _reflectance_composite(
     return scenes.reduce(reducer).rename(sr_bands)
 
 
+def missing_reflectance_bands(
+    collection: "ee.ImageCollection", params: dict[str, Any]
+) -> list[str]:
+    """Harmonised reflectance bands the collection's first image does not carry.
+
+    Costs one round trip, so it is called only when something has ALREADY
+    failed - see :func:`sample_drivers`.
+
+    Args:
+        collection: A Landsat collection.
+        params: Parsed params mapping.
+
+    Returns:
+        The absent band names, in configured order; empty when all are present.
+        Also empty if the check itself cannot run, because a diagnostic must
+        never replace the original error with one of its own.
+    """
+    wanted = list(params["landsat_c2l2"]["harmonised_sr_bands"])
+    try:
+        present = set(collection.first().bandNames().getInfo() or [])
+    except Exception:  # noqa: BLE001 - diagnostics never mask the real error
+        return []
+    return [band for band in wanted if band not in present]
+
+
 def sample_drivers(
     source: str | Mapping[str, Any],
     params: dict[str, Any],
@@ -2109,7 +2134,7 @@ def sample_drivers(
     scale = int(cfg["sample_scale_m"] if scale_m is None else scale_m)
 
     stack = driver_stack(source, params, year, region, collection=collection)
-    features = stack.sample(
+    sampler = stack.sample(
         region=region,
         scale=scale,
         numPixels=count,
@@ -2117,7 +2142,27 @@ def sample_drivers(
         dropNulls=True,
         geometries=False,
         tileScale=params["composites"]["tile_scale"],
-    ).getInfo()["features"]
+    )
+    try:
+        features = sampler.getInfo()["features"]
+    except Exception as error:  # noqa: BLE001 - re-raised below, never swallowed
+        # Earth Engine is lazy, so a collection built WITHOUT surface
+        # reflectance does not fail where it was built - it fails here, once per
+        # year, with a message about a missing band and no hint about which
+        # collection is at fault. The diagnostic costs a round trip, so it runs
+        # only now that something has already gone wrong.
+        if collection is not None:
+            absent = missing_reflectance_bands(collection, params)
+            if absent:
+                raise ValueError(
+                    f"the collection passed to sample_drivers carries no "
+                    f"{absent} band(s), which the spectral indices need. "
+                    "uhi_metrics.source_collection builds with include_sr=False "
+                    "on purpose - SUHII needs LST only. Pass collection=None, "
+                    "or build one with landsat.harmonised_collection("
+                    "params, region=..., include_st_qa=False)."
+                ) from error
+        raise
 
     frame = pd.DataFrame([feature["properties"] for feature in features])
     frame[params["composites"]["year_property"]] = int(year)

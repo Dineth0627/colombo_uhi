@@ -1,6 +1,91 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 8 **WRITTEN, awaiting the Colab run**. 1567 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 8 — Colab run 1: Part 1 clean, Step 3 fixed, **Part 2 not yet run**. 1571 tests pass, 3 skip)_
+
+### Colab run 1 (2026-08-20) — Part 1 clean, figure 7's sample wiped out by one argument
+
+Part 1 did everything it was supposed to. Exactly **three** tasks submitted and
+accepted:
+
+```
+lst_decadal_district_2000_2025_1000m_terra_day   RUNNING
+obs_count_district_2000_2025_100m_landsat_dry    READY
+utfvi_class_district_2000_2025_100m_epochs       READY
+```
+
+The region guard printed `685.6 km2 (COD-AB district is 699 km2; -1.9%)`, the
+MODIS clamp warned about 2000-02-18 exactly as designed, and the manifest listed
+all eleven figures at their resolved paths.
+
+Then Step 3 — the driver sample behind figure 7 — failed on **all 26 years** and
+died on `pd.concat`: `No objects to concatenate`.
+
+#### The cause: one argument, and the docstring said so
+
+`uhi_metrics.driver_stack` documents its own contract:
+
+> `collection`: Scene-level collection; `None` builds one **WITH surface
+> reflectance** (unlike `source_collection`, which drops it).
+
+The cell passed `collection=uhi_metrics.source_collection(...)`, which builds
+with `include_sr=False` **on purpose** — SUHII needs LST only, and carrying six
+reflectance bands through 26 years of compositing is pure waste. The spectral
+indices need exactly those bands, so `_reflectance_composite` selected
+`blue…swir2` off a collection that had none of them, every year, identically.
+
+Structural, not transient. The 503s in the log are unrelated retry noise and all
+succeeded.
+
+**Notebook 03 has had the correct call since Phase 3**: `driver_series(...)`
+with no collection argument. Phase 8 hand-rolled its own loop instead of reusing
+it, and that is the entire bug. Step 3 now calls `driver_series`, which builds
+the collection correctly and reuses it across years — and returns the per-year
+OLS and correlation tables for free.
+
+#### The defect that cost the round trip
+
+```python
+except Exception as _error:
+    print(f"  {_year}: skipped ({type(_error).__name__})")
+```
+
+Earth Engine names the missing band in its message. The notebook printed the
+exception **type** and discarded the message — 26 times. A probe cell that
+swallows the one string identifying the fault is worse than no handler at all:
+without it the first year would have failed loudly and correctly.
+
+Three things now stop this recurring:
+
+1. `sample_drivers` catches the failure, spends **one** round trip on
+   `bandNames()`, and re-raises naming the fault and the fix — "pass
+   `collection=None`, or build one with `landsat.harmonised_collection(...)`".
+   Zero cost on the happy path; it runs only once something has already gone
+   wrong, and it re-raises the original error unchanged when the collection is
+   fine, so it stays a diagnostic for one fault rather than a catch-all.
+2. Step 3 raises with an actionable message if the pooled frame comes back
+   empty, instead of letting `pd.concat` fail three lines later on a symptom.
+3. A notebook check asserts no handler anywhere discards an exception message.
+
+#### The poll cell now re-attaches
+
+`TASKS` lives in the kernel, so re-running the clone cell to pull this fix wipes
+it — and resubmitting would put two identical tasks in the same Drive folder
+writing the same filename. `exports.find_tasks` was written for exactly this
+("Colab disconnects…") and the poll cell now falls back to it by description
+prefix.
+
+#### What to run next
+
+**The three exports are still running server-side. Do not resubmit them.**
+
+1. Re-run the clone cell, then Step 0 and Step 1.
+2. Re-run the poll cell — it re-attaches by name.
+3. Run the fixed Step 3. Expect ~26 lines of `year: n=…, R2=…` and roughly
+   130 000 pooled rows. Any year that still fails will now say why.
+4. Copy the three finished rasters, plus Phase 4's `lst_trend_*` and
+   `lst_decadal_*`, into `data/interim/`, then run Part 2.
+
+The ten-point checklist below is unchanged. 1571 tests pass, 3 skip.
 
 ### Phase 8 (2026-08-20) — report outputs, written and locally verified
 

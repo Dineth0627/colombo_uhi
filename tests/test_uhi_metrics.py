@@ -838,3 +838,114 @@ def test_earthengine_backed_functions_fail_loudly_without_it(
     module = importlib.import_module("colombo_uhi.uhi_metrics")
     with pytest.raises(ImportError):
         module.built_up_fraction(params, 2020)
+
+
+# --- the driver sample's reflectance guard (Phase 8, Colab run 1) -------------
+class _Bands:
+    """Stand-in for ``collection.first().bandNames()``."""
+
+    def __init__(self, names: list[str] | None, fails: bool = False) -> None:
+        self._names = names
+        self._fails = fails
+
+    def getInfo(self) -> list[str] | None:  # noqa: N802 - Earth Engine's spelling
+        if self._fails:
+            raise RuntimeError("no network")
+        return self._names
+
+
+class _Collection:
+    """Stand-in for an ``ee.ImageCollection``; only ``first().bandNames()`` is read."""
+
+    def __init__(self, names: list[str] | None, fails: bool = False) -> None:
+        self._bands = _Bands(names, fails)
+
+    def first(self) -> "_Collection":
+        return self
+
+    def bandNames(self) -> _Bands:  # noqa: N802 - Earth Engine's spelling
+        return self._bands
+
+
+def test_missing_reflectance_bands_lists_what_is_absent(
+    params: dict[str, Any],
+) -> None:
+    wanted = list(params["landsat_c2l2"]["harmonised_sr_bands"])
+    assert uhi_metrics.missing_reflectance_bands(_Collection(wanted), params) == []
+    # What source_collection actually returns: LST only, no reflectance.
+    assert uhi_metrics.missing_reflectance_bands(
+        _Collection(["LST_C", "obs_count"]), params
+    ) == wanted
+    # Partial is still a failure, and the report names only the absent ones.
+    assert uhi_metrics.missing_reflectance_bands(
+        _Collection(["blue", "green", "red"]), params
+    ) == wanted[3:]
+
+
+def test_missing_reflectance_bands_never_masks_the_real_error(
+    params: dict[str, Any],
+) -> None:
+    # This helper runs only AFTER something has already failed. If the probe
+    # itself cannot reach Earth Engine, the caller must re-raise the original
+    # error, not one invented by the diagnostic.
+    assert uhi_metrics.missing_reflectance_bands(
+        _Collection(None, fails=True), params
+    ) == []
+    assert uhi_metrics.missing_reflectance_bands(_Collection(None), params) == list(
+        params["landsat_c2l2"]["harmonised_sr_bands"]
+    )
+
+
+class _Sampler:
+    def getInfo(self) -> Any:  # noqa: N802 - Earth Engine's spelling
+        raise RuntimeError("Image.select: Pattern 'blue' did not match any bands.")
+
+
+class _Stack:
+    def sample(self, **_: Any) -> _Sampler:
+        return _Sampler()
+
+
+def test_sample_drivers_names_the_collection_that_has_no_reflectance(
+    monkeypatch: pytest.MonkeyPatch, params: dict[str, Any]
+) -> None:
+    """The Colab run 1 failure, made legible.
+
+    ``source_collection`` builds with ``include_sr=False`` on purpose, but Earth
+    Engine is lazy, so the mismatch does not surface where the collection was
+    built - it surfaces once per year inside the sampler, as a message about a
+    missing band with no hint about which collection is at fault. All 26 years
+    failed identically and the notebook reported only the exception TYPE.
+    """
+    monkeypatch.setattr(uhi_metrics, "driver_stack", lambda *a, **k: _Stack())
+
+    with pytest.raises(ValueError) as caught:
+        uhi_metrics.sample_drivers(
+            "landsat_dry", params, 2020, object(),
+            collection=_Collection(["LST_C"]),
+        )
+    message = str(caught.value)
+    assert "include_sr=False" in message
+    assert "collection=None" in message
+    assert "harmonised_collection" in message
+    # The original Earth Engine error is chained, never discarded.
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert "did not match any bands" in str(caught.value.__cause__)
+
+
+def test_sample_drivers_re_raises_an_unrelated_failure_unchanged(
+    monkeypatch: pytest.MonkeyPatch, params: dict[str, Any]
+) -> None:
+    # A good collection that fails for some other reason - a memory limit, a
+    # timeout - must surface as itself. The guard is a diagnostic for ONE fault,
+    # not a catch-all that relabels every error as a band problem.
+    monkeypatch.setattr(uhi_metrics, "driver_stack", lambda *a, **k: _Stack())
+    good = _Collection(list(params["landsat_c2l2"]["harmonised_sr_bands"]))
+
+    with pytest.raises(RuntimeError, match="did not match any bands"):
+        uhi_metrics.sample_drivers(
+            "landsat_dry", params, 2020, object(), collection=good
+        )
+    # And with no collection supplied there is nothing to probe.
+    with pytest.raises(RuntimeError, match="did not match any bands"):
+        uhi_metrics.sample_drivers("landsat_dry", params, 2020, object())
