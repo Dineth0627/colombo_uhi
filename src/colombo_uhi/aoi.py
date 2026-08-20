@@ -964,9 +964,19 @@ def static_water_mask(
     What it does and does not capture, so the trade is explicit:
 
     * JRC ``occurrence`` is itself derived from 38 years of Landsat, so for
-      PERMANENT water — the ocean, the Colombo Port outer harbour, Beira,
-      Bolgoda and Diyawanna lakes, the Kelani — it is the authoritative source
-      and agrees closely with the combined mask.
+      permanent INLAND water — Beira, Bolgoda and Diyawanna lakes, the Kelani —
+      it agrees closely with the combined mask.
+    * *** IT DOES NOT MAP THE OCEAN, AND IT DOES NOT MAP THE COLOMBO PORT OUTER
+      HARBOUR. *** [MEASURED — Phase 7, Colab run 5] An earlier version of this
+      docstring claimed it was authoritative for both. It is not. Used as a land
+      mask over the coastal divisions it left the harbour counting as land:
+      Fort's land-coverage fraction came out at 0.767 against 0.705 on the raw
+      polygon, when removing the harbour from a 7.46 km2 polygon holding 6.89 km2
+      of it should have put Fort near 1.0. Across all 557 GN divisions only NINE
+      differed from the polygon-based fraction by more than 0.01, and the 8.3 km2
+      it did find over Colombo District is inland water.
+      **For anything coastal, use :func:`water_mask` — its MNDWI detector sees
+      the sea.**
     * It will miss seasonal, shallow or newly-impounded water that the MNDWI and
       QA_PIXEL detectors catch, and it carries no shoreline dilation.
 

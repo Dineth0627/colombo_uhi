@@ -2455,14 +2455,40 @@ def test_build_priority_frame_rejects_duplicate_zones(params: dict[str, Any]) ->
         greening.build_priority_frame(ranked, params)
 
 
-def test_top_priority_zones_excludes_flagged_by_default(
+def test_a_below_floor_zone_is_flagged_but_kept(
     full_table: "pd.DataFrame", params: dict[str, Any]
 ) -> None:
+    """[DECISION 2026-08-20, after Colab run 5] Flag, do not delete.
+
+    The land-cover coverage floor gates nothing that enters the score - every
+    criterion carries its own ``min_pixels`` gate and ``canopy_pct`` already
+    divides by observed land - yet for three consecutive runs it dropped Pettah,
+    Lunupokuna and Fort from the top-N. The flag still travels; the pipeline no
+    longer removes the division for the reader.
+    """
+    assert (
+        params["greening"]["normalisation"]["missing"][
+            "exclude_below_floor_from_top_n"
+        ]
+        is False
+    )
     frame = full_table.copy()
     frame.loc[0, "status"] = greening.STATUS_BELOW_FLOOR
     top = greening.top_priority_zones(frame, params, top_n=5)
-    assert frame.loc[0, "zone_id"] not in set(top["zone_id"])
+    assert frame.loc[0, "zone_id"] in set(top["zone_id"])
     assert len(top) == 5
+
+
+def test_an_unscorable_zone_is_still_excluded(
+    full_table: "pd.DataFrame", params: dict[str, Any]
+) -> None:
+    # insufficient_data is a different thing from below-floor: there is no score
+    # at all, so there is nothing to rank.
+    frame = full_table.copy()
+    frame.loc[0, "status"] = greening.STATUS_INSUFFICIENT
+    frame.loc[0, "score_ahp"] = np.nan
+    top = greening.top_priority_zones(frame, params, top_n=5)
+    assert frame.loc[0, "zone_id"] not in set(top["zone_id"])
 
 
 def test_top_priority_zones_can_include_flagged(

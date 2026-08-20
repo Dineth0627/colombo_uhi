@@ -99,7 +99,7 @@
   "score_gap_at_cut": 0.003207572307870721,
   "tied_at_cut": 0,
   "n_priority": 60,
-  "n_eligible": 542,
+  "n_eligible": 534,
   "normalisation_sensitivity_rho": 0.9962465656130912,
   "sensor_sensitivity_rho": 0.9998295219155652,
   "ahp_vs_topsis_rho": 0.9861316946327109,

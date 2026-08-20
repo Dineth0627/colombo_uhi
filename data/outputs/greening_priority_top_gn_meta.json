@@ -99,6 +99,6 @@
   "score_gap_at_cut": 0.003207572307870721,
   "tied_at_cut": 0,
   "n_priority": 60,
-  "n_eligible": 542,
-  "n_excluded_as_flagged": 15
+  "n_eligible": 534,
+  "n_excluded_as_flagged": 23
 }

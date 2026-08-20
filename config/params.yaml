@@ -1992,6 +1992,26 @@ greening:
                                         # quoted with every 3-30-300 number.
   population_scale_m: 100               # WorldPop native. The 300 rule counts RESIDENTS, so the
                                         # 10 m service mask is block-averaged onto this grid.
+  land_mask: "combined"           # *** [DECISION 2026-08-20, Colab run 5] MUST SEE THE SEA. ***
+                                  # The land denominator for the coverage floor, and the `water`
+                                  # band of the green/canopy export.
+                                  #   "combined"   aoi.water_mask - MNDWI OR QA_PIXEL water
+                                  #                frequency OR JRC. The MNDWI detector sees the
+                                  #                OCEAN, which is what this needs.
+                                  #   "static_jrc" aoi.static_water_mask - JRC occurrence only.
+                                  #
+                                  # Run 4 used static_jrc and it did not work. JRC Global Surface
+                                  # Water maps INLAND water and does NOT map the ocean or the
+                                  # Colombo Port outer harbour, so the harbour kept counting as
+                                  # land. Run 5 measured it: Fort came out at 0.767 against 0.705
+                                  # on the raw polygon - removing 6.89 km2 of harbour from a
+                                  # 7.46 km2 polygon should have put it near 1.0 - and only NINE
+                                  # of 557 divisions moved by more than 0.01.
+                                  #
+                                  # static_water_mask's own docstring says to use water_mask for
+                                  # single-date products. This is one static export, so the
+                                  # memory concern that motivated the cheap variant (a Landsat
+                                  # composite embedded into a 26-year series) does not apply.
   grid_alignment:
     max_dropped_fraction: 0.05    # *** [MEASURED — Colab run 2] EARTH ENGINE SNAPS EACH EXPORT
                                   # GRID TO ITS OWN SCALE, INDEPENDENTLY PER TASK. *** A 10 m
@@ -2250,9 +2270,22 @@ greening:
                                         # the count of zones that change status is printed.
                                         # Kept numerically equal to the Phase-5 floor so the two
                                         # differ only in DENOMINATOR; a test pins the equality.
-      exclude_below_floor_from_top_n: true   # flagged zones are RANKED in the full table and
-                                        # excluded from the exported top-N, with their count and
-                                        # names printed rather than dropped in silence
+      exclude_below_floor_from_top_n: false  # *** [DECISION 2026-08-20, after Colab run 5] FLAG,
+                                        # DO NOT DELETE. *** This floor gates NOTHING that enters
+                                        # the score: lst_hot, utfvi_severe_share, ndvi_deficit and
+                                        # pop_density each carry their own `min_pixels` gate,
+                                        # green_access_deficit comes from the service mask, and
+                                        # canopy_pct already divides by OBSERVED land. So a low
+                                        # land-cover coverage fraction says something about the
+                                        # land-cover raster, not about the ranking - and for three
+                                        # consecutive runs it deleted Pettah, Lunupokuna and Fort
+                                        # from the top-N: the densest, hottest, most treeless
+                                        # divisions in the district, which is precisely what a
+                                        # greening priority list exists to find.
+                                        # The flag still travels in every output row, on the map
+                                        # as a distinct hatch, and in the metadata sidecar. A
+                                        # reader can drop those divisions; the pipeline no longer
+                                        # does it for them.
     winsorise_pct: [0, 100]             # no clipping by default
 
   # ---- TOPSIS (the alternative ranking method) ------------------------------

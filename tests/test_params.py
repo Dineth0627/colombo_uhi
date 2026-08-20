@@ -1653,3 +1653,35 @@ def test_grid_alignment_ceiling_is_configured(params: dict[str, Any]) -> None:
         "the ceiling must clear the 1.14 % trim measured over Colombo, or the "
         "run cannot proceed on its own exports"
     )
+
+
+def test_the_land_mask_sees_the_ocean(params: dict[str, Any]) -> None:
+    """[MEASURED - Colab run 5] JRC alone does not map the harbour.
+
+    Fort's land-coverage fraction came out at 0.767 against 0.705 on the raw
+    polygon under the JRC-only mask; removing 6.89 km2 of harbour from a
+    7.46 km2 polygon should have put it near 1.0. Only nine of 557 divisions
+    moved by more than 0.01. The combined mask's MNDWI detector sees the sea.
+    """
+    assert params["greening"]["land_mask"] in ("combined", "static_jrc")
+    assert params["greening"]["land_mask"] == "combined", (
+        "the land denominator must see the ocean, or the Colombo Port outer "
+        "harbour counts as land and the coastal divisions are flagged as "
+        "unobserved"
+    )
+
+
+def test_a_low_coverage_zone_is_flagged_not_deleted(params: dict[str, Any]) -> None:
+    """The floor gates nothing that enters the score, so it must not delete.
+
+    Every criterion carries its own ``min_pixels`` gate and ``canopy_pct``
+    already divides by observed land, yet for three consecutive runs this floor
+    dropped Pettah, Lunupokuna and Fort from the top-N - the densest, hottest,
+    most treeless divisions in the district.
+    """
+    assert (
+        params["greening"]["normalisation"]["missing"][
+            "exclude_below_floor_from_top_n"
+        ]
+        is False
+    )

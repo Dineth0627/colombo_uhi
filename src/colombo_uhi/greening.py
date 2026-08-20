@@ -3474,19 +3474,36 @@ def green_canopy_image(
         .toByte()
     )
 
-    # *** THE LAND DENOMINATOR. ***
+    # *** THE LAND DENOMINATOR, AND IT MUST SEE THE SEA. ***
     # `observed` says the classifier produced a value; it does NOT say the cell
     # is land. Over the Colombo Port outer harbour Dynamic World produces
     # nothing at all, so a coverage fraction taken against the whole polygon
-    # counts open water as missing data. Run 3 measured the consequence: Pettah
-    # at 0.783 and Lunupokuna at 0.854 were excluded from the priority list -
-    # dense, hot, treeless CMC-core divisions - because a fifth of each polygon
-    # is harbour.
+    # counts open water as missing data - and excludes Pettah, Lunupokuna and
+    # Fort from the priority list.
     #
-    # aoi.static_water_mask is the right instrument: JRC occurrence is derived
-    # from 38 years of Landsat and is authoritative for PERMANENT water, which
-    # is exactly what the harbour, Beira, Bolgoda, Diyawanna and the Kelani are.
-    water = aoi.static_water_mask(params, region=region).rename("water").toByte()
+    # Run 4 tried aoi.static_water_mask here and it did not work: JRC Global
+    # Surface Water maps INLAND water and does not map the ocean, so the harbour
+    # still counted as land. Run 5 measured it - Fort came out at 0.767 against
+    # 0.705 on the raw polygon, and only NINE of 557 divisions moved by more
+    # than 0.01.
+    #
+    # aoi.water_mask ORs MNDWI, the QA_PIXEL water-bit frequency AND JRC, and
+    # the MNDWI detector sees the sea. Its docstring warns that it embeds a
+    # Landsat composite into every image it masks, which is why the cheap
+    # variant exists for long series - but this is ONE static export, which is
+    # the case that docstring explicitly recommends it for.
+    water_source = str(params["greening"]["land_mask"])
+    if water_source == "combined":
+        water = aoi.water_mask(params, region=region)
+    elif water_source == "static_jrc":
+        water = aoi.static_water_mask(params, region=region)
+    else:
+        raise ValueError(
+            f"greening.land_mask is {water_source!r}; expected 'combined' "
+            "(MNDWI + QA + JRC, sees the ocean) or 'static_jrc' (JRC only, "
+            "inland water, cheap enough for a long series)"
+        )
+    water = water.rename("water").toByte()
 
     return ee.Image.cat([green, canopy, water, observed]).set(
         {"scheme": resolved_scheme, "year": int(resolved_year)}

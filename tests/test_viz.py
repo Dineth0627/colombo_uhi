@@ -2056,7 +2056,8 @@ def test_the_priority_map_explains_both_hatches_in_the_footer(
         ahp_report=greening_tables["report"],
     )
     text = " ".join(_figure_text(figure).split())
-    assert "ranked but NOT exported" in text
+    # Flagged, not removed - the floor gates nothing that enters the score.
+    assert "FLAGGED, not removed" in text
     assert "wetland protection is an existing policy instrument" in text
 
 

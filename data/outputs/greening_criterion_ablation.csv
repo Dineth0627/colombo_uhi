@@ -4,5 +4,5 @@ without_lst_hot,lst_hot,4,0.319185484490906,0.9939198001649643,51,60,100.0
 without_utfvi_severe_share,utfvi_severe_share,4,0.06827939154011041,0.9997116108005469,59,60,16.0
 without_ndvi_deficit,ndvi_deficit,4,0.18400551926416747,0.9971444400048386,55,60,64.0
 without_pop_density,pop_density,4,0.319185484490906,0.990946884584184,52,60,105.0
-without_green_access_deficit,green_access_deficit,4,0.1093441202139102,0.9985261110622708,54,60,53.0
+without_green_access_deficit,green_access_deficit,4,0.1093441202139102,0.9985261110622708,55,60,53.0
 single_criterion,"utfvi_severe_share, ndvi_deficit, pop_density, green_access_deficit",1,0.6808145155090941,0.976839562692812,44,60,204.0

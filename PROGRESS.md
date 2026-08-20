@@ -1,6 +1,73 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 7 **Colab run 4 — the water band works; the coverage ratio spanned two products**. 1471 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 7 **Colab run 5 — the ratio is right; JRC does not map the ocean**. 1474 tests pass, 3 skip)_
+
+### Colab run 5 (2026-08-20) — the coverage floor, closed for good
+
+All 27 cells, zero errors. `zone_coverage` did what it was built to do: the ratio is now
+internally consistent, **median land coverage 1.0000**, numerator and denominator from one
+raster. But 23 zones still fell below the floor, Pettah among them.
+
+#### D1 — JRC Global Surface Water does not map the ocean
+
+The measurement is unambiguous:
+
+| division | polygon-based fraction | JRC-land-based fraction |
+|---|---|---|
+| Fort | 0.705 | **0.767** |
+| Pettah | 0.783 | **0.783** |
+| Lunupokuna | 0.854 | **0.852** |
+
+Only **9 of 557** divisions moved by more than 0.01, and the median difference is exactly
+zero. Fort's polygon is 7.46 km² holding 6.89 km² of harbour; removing that should have put
+it near 1.0. It did not, because the 8.3 km² of water JRC found across the district is
+**inland** — Bolgoda, the Kelani, Diyawanna, Beira.
+
+`aoi.static_water_mask`'s docstring claimed it was "the authoritative source" for "the
+ocean, the Colombo Port outer harbour". **That claim was wrong and is now corrected in
+`aoi.py`**, with run 5's numbers recorded against it. The correction matters beyond Phase 7:
+anything coastal that used the cheap mask was leaving the sea as land.
+
+**Fixed:** `greening.land_mask` selects the detector, and it is now `"combined"` —
+`aoi.water_mask`, which ORs MNDWI, the QA_PIXEL water-bit frequency and JRC. The MNDWI
+detector sees the sea. `static_water_mask`'s own docstring recommends `water_mask` for
+single-date products, and this is one static export, so the memory concern that motivated
+the cheap variant does not apply.
+
+#### D2 — the floor no longer deletes divisions
+
+Taken with the user: **flag, do not delete.**
+`exclude_below_floor_from_top_n` is now `false`.
+
+The land-cover coverage floor **gates nothing that enters the score**. `lst_hot`,
+`utfvi_severe_share`, `ndvi_deficit` and `pop_density` each carry their own `min_pixels`
+gate; `green_access_deficit` comes from the service mask; and `canopy_pct` already divides
+by *observed* land. A low land-cover coverage fraction is a statement about the land-cover
+raster, not about the ranking — and across three consecutive runs it deleted Pettah,
+Lunupokuna and Fort from the top-N: the densest, hottest, most treeless divisions in the
+district, which is exactly what a greening priority list exists to find.
+
+The flag still travels in every output row, as a distinct map hatch, and in the metadata
+sidecar. A reader can drop those divisions; the pipeline no longer does it for them. **After
+this, a sixth miss on the water mask cannot cost the deliverable.**
+
+#### The science, unchanged across three runs
+
+CR 0.0081, PC1 **91.0 %**, effective dimensionality 1.51, ablation ρ(full, LST-only) =
+**0.9768**, sensor ρ 0.9998. Identical in runs 3, 4 and 5, under three different coverage
+regimes. The headline finding does not depend on which zones were flagged.
+
+#### Run 6
+
+Re-export the 10 m green/canopy raster (Part 1 **Step 6 only**, ~7 min — the `water` band
+now comes from the combined mask), then Part 2.
+
+| # | Check |
+|---|---|
+| 1 | Step 6 reports the combined mask; Step 11's water area is **materially more than 8.3 km²** (the outer harbour alone is 6.89 km²) |
+| 2 | Fort, Pettah and Lunupokuna rise well above the floor |
+| 3 | **Pettah and Lunupokuna are in the top 60** — and would be even if they were still flagged |
+| 4 | CR 0.0081, PC1 91.0 %, ablation ρ 0.9768 — unchanged |
 
 ### Colab run 4 (2026-08-20) — the third attempt at one floor, and why the first two missed
 
