@@ -354,6 +354,30 @@ def all_terminal(statuses: Sequence[Mapping[str, Any]]) -> bool:
 # =============================================================================
 # Earth Engine exports
 # =============================================================================
+def missing_export_bands(
+    image: "ee.Image", band_order: Sequence[str]
+) -> list[str]:
+    """Bands ``band_order`` names that the image does not carry.
+
+    Costs one metadata round trip. ``bandNames`` resolves from the graph without
+    computing pixels, so it is cheap next to the export it guards.
+
+    Args:
+        image: The image about to be exported.
+        band_order: Bands the caller intends to select.
+
+    Returns:
+        The absent names, in the order requested; empty when every band is
+        present. Also empty when the check itself cannot run, because a
+        diagnostic must never replace the real failure with one of its own.
+    """
+    try:
+        present = set(image.bandNames().getInfo() or [])
+    except Exception:  # noqa: BLE001 - diagnostics never mask the real error
+        return []
+    return [band for band in band_order if band not in present]
+
+
 def image_to_drive(
     image: "ee.Image",
     product: str,
@@ -369,6 +393,7 @@ def image_to_drive(
     suffix: str | None = None,
     max_pixels: int | None = None,
     start: bool = True,
+    verify_bands: bool = True,
 ) -> "ee.batch.Task":
     """Export an image to Drive as a GeoTIFF, under the project naming convention.
 
@@ -381,6 +406,16 @@ def image_to_drive(
         adding one band upstream shifts every band index in every subsequently
         downloaded file — and a p-value band read as a slope produces a
         plausible-looking, entirely wrong map.
+
+        ``image.select`` is LAZY, so a ``band_order`` naming a band the image
+        does not carry fails inside the batch task, minutes after submission and
+        a Colab round trip away from the caller. Phase 8 lost two runs to
+        exactly that: ``trends.decadal_band_order`` describes
+        ``trends.decadal_product``, the notebook paired it with
+        ``trends.decadal_means``, and Earth Engine reported
+        ``Image.select: Band pattern 'diff_2011_2020_minus_2000_2010' did not
+        match any bands`` six minutes in. ``verify_bands`` resolves the band
+        names once and refuses before the task starts.
 
     .. note::
         Pass ``region`` as a rectangle (``geometry.bounds()``) and clip the image
@@ -403,9 +438,15 @@ def image_to_drive(
         max_pixels: Ceiling; defaults to ``composites.reduce_max_pixels``.
         start: Submit the task. ``False`` returns it unstarted, so a notebook can
             print what it would do without queueing anything.
+        verify_bands: Check ``band_order`` against the image's real bands before
+            submitting. Costs one metadata round trip; set ``False`` only when
+            that round trip is genuinely unaffordable.
 
     Returns:
         The ``ee.batch.Task``, started or not.
+
+    Raises:
+        ValueError: If ``band_order`` names a band the image does not carry.
     """
     import ee  # Deferred: see module docstring.
 
@@ -421,6 +462,22 @@ def image_to_drive(
         res_m=settings["scale_m"],
         suffix=suffix,
     )
+
+    if band_order and verify_bands:
+        absent = missing_export_bands(image, list(band_order))
+        if absent:
+            try:
+                present = image.bandNames().getInfo() or []
+            except Exception:  # noqa: BLE001 - report what we already know
+                present = []
+            raise ValueError(
+                f"export '{name}' requests band(s) {absent}, which the image "
+                f"does not carry. It has {sorted(present)}. Earth Engine would "
+                "accept this and fail inside the batch task minutes from now. "
+                "If these are decadal difference bands, build the image with "
+                "trends.decadal_product, not trends.decadal_means - "
+                "trends.decadal_band_order describes the former."
+            )
 
     payload = image.select(list(band_order)) if band_order else image
 

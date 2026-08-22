@@ -1,6 +1,104 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 8 — Colab run 2: ten of eleven figures; **figure 1 and the sign-off outstanding**. 1579 tests pass, 3 skip)_
+_Last updated: 2026-08-22 (Phase 8 — Colab run 3: the MODIS decadal export was FAILING, not lagging; **figure 1 still outstanding**. 1592 tests pass, 3 skip)_
+
+### Colab run 3 (2026-08-22) — figure 1 was never drawable, and I misread why
+
+Step 3 confirmed fixed: 120 675 sampled pixels, 26 years, R² 0.30–0.78. The poll
+cell then showed what run 2 had hidden:
+
+```
+lst_decadal_district_2000_2025_1000m_terra_day   FAILED     355.8 s
+    Image.select: Band pattern 'diff_2011_2020_min…
+obs_count_district_2000_2025_100m_landsat_dry    RUNNING   2988.7 s
+utfvi_class_district_2000_2025_100m_epochs       COMPLETED
+```
+
+**The MODIS decadal export did not lag — it fails, deterministically, every
+time.** In run 2 it read `RUNNING` when the raster was copied and I told you to
+wait for it. It had already been broken for two runs.
+
+#### The bug
+
+Step 2 built the MODIS row with `trends.decadal_means` and exported it with
+`band_order=trends.decadal_band_order(params)`.
+
+`decadal_means` returns `mean_`, `sd_` and `n_years_` per window. The band order
+also names `diff_<later>_minus_<earlier>`, `diff_se_`, `diff_z_` and
+`n_years_min_` — bands only `decadal_difference` creates. `image_to_drive` does
+`image.select(list(band_order))`, which Earth Engine evaluates **lazily**, so
+the mismatch surfaces inside the batch task six minutes after submission rather
+than at the call.
+
+`trends.decadal_product` exists for precisely this and says so:
+
+> One exportable image, banded in `decadal_band_order`. Built as a single
+> product rather than assembled in the notebook **so that the band order the
+> reader assumes and the band order the writer produces come from the same
+> place.**
+
+Notebook 04 uses it. Phase 8 reached past it and paired `decadal_means` with the
+band order belonging to the other function. Fixed: Step 2 now calls
+`decadal_product`, so both rows of figure 1 read with one band order.
+
+#### The real gap: Phase 8 had no notebook harness
+
+This is the **second** Phase 8 bug of exactly this shape — after run 1's
+`source_collection`-without-reflectance — and in both cases every `src/`
+function involved was individually correct. Phase 6 lost three runs the same way
+and the project answered with `tests/test_notebook07.py`, which executes the
+notebook's cells and AST-pins its wiring. Phase 8 shipped without an equivalent
+and duly lost two runs to the same class.
+
+New `tests/test_notebook08.py` pins the wiring, keyed on cell CONTENT rather
+than cell id (notebook 08 is generated; Colab assigns ids on execution and a
+regeneration would silently make an id-keyed test check nothing):
+
+| pin | catches |
+|---|---|
+| the decadal export calls `decadal_product`, never `decadal_means` | run 3 |
+| Step 3 calls `driver_series` and passes no `collection=` | run 1 |
+| figure 1 reads both rows with one band order | the two exports diverging |
+| every `image_to_drive` passes an explicit `band_order` | positional band reads |
+| Part 1 submits exactly three exports | silent re-export of Phase 4 products |
+| no handler discards an exception message | run 1's `type(_error).__name__` |
+| no Part 2 cell needs a Part-1-only name | the `MODIS_SCALE_M` reconnect bug |
+| every cell parses and carries the COLAB marker | — |
+
+Verified the decisive way: reverting Step 2 to `decadal_means` turns
+`test_the_decadal_export_pairs_the_band_order_with_its_own_builder` red, and
+restoring it turns it green.
+
+#### And the same failure now costs seconds, not six minutes
+
+`exports.image_to_drive` gains `verify_bands=True`. When a `band_order` is
+given it resolves `image.bandNames().getInfo()` once and refuses **before**
+`task.start()`, naming the missing bands, what the image actually carries, and
+the `decadal_product`/`decadal_means` distinction. One metadata round trip
+against a task that costs minutes and a Colab round trip to discover. The
+docstring already called `band_order` "load-bearing, not cosmetic"; it is now
+enforced rather than asserted. `missing_export_bands` returns empty if the probe
+itself fails, so a diagnostic can never replace the real error.
+
+#### Not defects
+
+* `obs_count` ran ~50 minutes and was still `RUNNING`. It **completed** in run 2
+  and its raster was found by the discovery cell — slow, not broken.
+* Run 3 re-submitted all three exports. Harmless: the names are deterministic,
+  so Drive overwrites. The `utfvi_class` and `obs_count` files already in hand
+  are fine.
+
+1592 tests pass, 3 skip.
+
+#### Run 4 — only the MODIS export needs resubmitting
+
+1. Re-run the clone cell, Step 0, Step 1.
+2. Re-run **only** the MODIS decadal export cell. It now either submits cleanly
+   or refuses immediately with both band lists.
+3. Poll to `COMPLETED`, copy from Drive, re-run the discovery cell and Part 2.
+4. **Check 4, still unanswered after three runs:** on figure 1, does the Landsat
+   row step between decades while the MODIS row does not? Every trend product in
+   this project rests on that answer.
 
 ### Colab run 2 (2026-08-20) — ten of eleven figures, and the one that was lying
 

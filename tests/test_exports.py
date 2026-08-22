@@ -192,3 +192,90 @@ def test_task_status_frame_of_no_tasks_is_empty_but_shaped() -> None:
 def test_all_terminal_recognises_the_terminal_states() -> None:
     assert exports.all_terminal([{"state": "COMPLETED"}, {"state": "FAILED"}])
     assert not exports.all_terminal([{"state": "COMPLETED"}, {"state": "RUNNING"}])
+
+
+# --- the submit-time band_order guard (Phase 8, Colab run 3) ------------------
+class _Bands:
+    """Stand-in for ``image.bandNames()``."""
+
+    def __init__(self, names: list[str] | None, fails: bool = False) -> None:
+        self._names = names
+        self._fails = fails
+
+    def getInfo(self) -> list[str] | None:  # noqa: N802 - Earth Engine's spelling
+        if self._fails:
+            raise RuntimeError("no network")
+        return self._names
+
+
+class _Image:
+    """Stand-in for an ``ee.Image``; records what was selected."""
+
+    def __init__(self, names: list[str] | None, fails: bool = False) -> None:
+        self._bands = _Bands(names, fails)
+        self.selected: list[str] | None = None
+
+    def bandNames(self) -> _Bands:  # noqa: N802 - Earth Engine's spelling
+        return self._bands
+
+    def select(self, names: list[str]) -> "_Image":
+        self.selected = list(names)
+        return self
+
+
+def test_missing_export_bands_lists_what_the_image_lacks() -> None:
+    image = _Image(["mean_2000_2010", "sd_2000_2010", "n_years_2000_2010"])
+    assert exports.missing_export_bands(image, ["mean_2000_2010"]) == []
+    # Exactly the Phase 8 case: decadal_band_order names difference bands that
+    # only decadal_product creates.
+    assert exports.missing_export_bands(
+        image, ["mean_2000_2010", "diff_2011_2020_minus_2000_2010", "diff_se"]
+    ) == ["diff_2011_2020_minus_2000_2010", "diff_se"]
+
+
+def test_missing_export_bands_never_masks_a_failure_of_its_own() -> None:
+    # The helper is a diagnostic. If it cannot reach Earth Engine it must report
+    # nothing missing, so the caller proceeds and the real error surfaces.
+    assert exports.missing_export_bands(_Image(None, fails=True), ["x"]) == []
+
+
+def test_image_to_drive_refuses_a_band_order_the_image_cannot_satisfy(
+    params: dict[str, Any],
+) -> None:
+    """Phase 8 lost two Colab runs to this exact mismatch.
+
+    ``image.select`` is lazy, so Earth Engine accepted the export and failed
+    inside the batch task six minutes later with "Band pattern
+    'diff_2011_2020_minus_2000_2010' did not match any bands". The guard makes
+    it a submit-time refusal instead.
+    """
+    image = _Image(["mean_2000_2010", "sd_2000_2010", "n_years_2000_2010"])
+
+    with pytest.raises(ValueError) as caught:
+        exports.image_to_drive(
+            image, product="lst_decadal", aoi="district", params=params,
+            region=object(),
+            band_order=["mean_2000_2010", "diff_2011_2020_minus_2000_2010"],
+            scale_m=1000, suffix="terra_day",
+        )
+    message = str(caught.value)
+    # Both lists, so the reader does not have to go and look either of them up.
+    assert "diff_2011_2020_minus_2000_2010" in message
+    assert "mean_2000_2010" in message
+    assert "decadal_product" in message and "decadal_means" in message
+    # It refused BEFORE selecting or submitting anything.
+    assert image.selected is None
+
+
+def test_image_to_drive_can_skip_the_check(params: dict[str, Any]) -> None:
+    # Opt-out exists, and taking it means the lazy failure comes back - which is
+    # the caller's choice to make, not a silent default.
+    image = _Image(["mean_2000_2010"])
+    with pytest.raises(Exception):  # noqa: B017 - the fake has no ee.batch
+        exports.image_to_drive(
+            image, product="lst_decadal", aoi="district", params=params,
+            region=object(), band_order=["diff_2011_2020_minus_2000_2010"],
+            scale_m=1000, verify_bands=False,
+        )
+    # The band order was applied unchecked, which is what verify_bands=False means.
+    assert image.selected == ["diff_2011_2020_minus_2000_2010"]
