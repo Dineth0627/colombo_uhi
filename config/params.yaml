@@ -808,9 +808,28 @@ uhi:
         scale_m: 100                    #     L7 - L8 = -2.48 degC (t=-3.6, 10 overlap years)
         sensors: ["landsat8", "landsat9"]   # = 2.4x and 3.4x the ENTIRE 26-year trend signal
         start_year: 2014                # (+0.73 degC). A Mann-Kendall fitted across those
-                                        # changeovers measures the STEP, not the climate - which is
-                                        # exactly what the pooled product did: a +1.70/-1.23 degC
-                                        # decadal zigzag and ZERO significant pixels.
+                                        # changeovers CANNOT SEPARATE the step from the climate.
+                                        #
+                                        # *** CORRECTED, Colab run 4 (Phase 8 figure 1). ***
+                                        # This comment used to say the pooled product "measures the
+                                        # STEP, not the climate", citing its +1.70/-1.23 degC
+                                        # decadal zigzag. Figure 1 put that zigzag beside MODIS
+                                        # Terra - ONE sensor, no changeover, same 26 years - and
+                                        # the two step TOGETHER:
+                                        #     Landsat pooled  +1.69 / -1.24 degC
+                                        #     MODIS Terra     +0.70 / -0.94 degC
+                                        # The single-sensor series reproduces the SHAPE at 41% and
+                                        # 76% of the amplitude, so part of the zigzag is REAL. The
+                                        # honest statement is "step plus climate, inseparable in
+                                        # the pooled series", not "step, not climate".
+                                        #
+                                        # None of this weakens the case for this source. The
+                                        # offsets themselves were measured on OVERLAPPING years
+                                        # (t=+2.7, t=-3.6), independent of the zigzag; and a series
+                                        # carrying a real signal AND a sensor step that cannot be
+                                        # told apart is precisely why the trend must be fitted
+                                        # within one sensor family. The pooled product also
+                                        # returned ZERO significant pixels.
                                         #
                                         # L8 - L9 = -0.40 degC (t=-0.67) is NEGLIGIBLE, so OLI/TIRS
                                         # pools safely. Landsat 8 opens 2013-03 and the dry window
@@ -2723,7 +2742,8 @@ caveats:
     the test can ever return; when that floor lies above the Benjamini-Hochberg
     threshold for the number of pixels tested, NO pixel can be reported
     significant whatever the temperature did. Over Colombo the single-sensor
-    12-year Landsat series is exactly this case. Where it holds, the Sen's
+    Landsat series (2014-2025, and fewer usable years than that on most pixels
+    once cloud is removed) is exactly this case. Where it holds, the Sen's
     slope field is an unconstrained estimate and its sign must NOT be read as
     cooling or warming; quote the detection limit instead, and take the trend
     evidence from the 26-year MODIS night series.

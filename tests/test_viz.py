@@ -3292,3 +3292,119 @@ def test_footers_never_break_a_hyphenated_name_across_lines(
             assert not line.rstrip().endswith(head), (
                 f"a line ends with {head!r}, splitting {name!r} across lines"
             )
+
+
+# --- figure 1's verdict must be measured, not asserted (Colab run 4) ---------
+def _row(values: list[float], shape: tuple[int, int] = (20, 30)):
+    """A decadal row whose panel means are exactly ``values``."""
+    import numpy as np
+
+    from colombo_uhi import load_params, trends
+
+    labels = [label for label, _, _ in trends.resolve_decades(None, load_params())]
+    return {
+        f"mean_{label}": np.full(shape, value)
+        for label, value in zip(labels, values)
+    }
+
+
+def test_the_decadal_comparison_reproduces_the_run_4_measurement(
+    params: dict[str, Any],
+) -> None:
+    """Colab run 4's panel means, and the reading they force.
+
+    The figure was written asserting "decade-to-decade differences in the top
+    row are dominated by these steps, NOT by climate". When it finally drew,
+    its own numbers said otherwise: MODIS Terra - one sensor, no changeover -
+    steps the same way the pooled Landsat row does.
+    """
+    comparison = viz.decadal_step_comparison(
+        {
+            "Landsat (pooled)": _row([35.12, 36.81, 35.57]),
+            "MODIS Terra (one sensor)": _row([30.84, 31.54, 30.60]),
+        },
+        params,
+    )
+    assert comparison["steps"]["Landsat (pooled)"] == pytest.approx(
+        [1.69, -1.24], abs=0.01
+    )
+    assert comparison["steps"]["MODIS Terra (one sensor)"] == pytest.approx(
+        [0.70, -0.94], abs=0.01
+    )
+    verdict = comparison["verdict"]
+    assert "STEP TOGETHER" in verdict
+    assert "NOT purely a sensor artefact" in verdict
+    # The amplitude shares are stated, so a reader can weigh "part of it".
+    assert "41%" in verdict and "76%" in verdict
+
+
+def test_the_decadal_comparison_reports_the_opposite_case_too(
+    params: dict[str, Any],
+) -> None:
+    # A single-sensor row that moves the other way is what a purely
+    # sensor-driven zigzag would look like. The verdict has to be capable of
+    # saying so, or it is decoration rather than a measurement.
+    comparison = viz.decadal_step_comparison(
+        {
+            "Landsat (pooled)": _row([35.0, 37.0, 35.0]),
+            "MODIS Terra (one sensor)": _row([31.0, 30.0, 31.0]),
+        },
+        params,
+    )
+    assert "OPPOSITE DIRECTIONS" in comparison["verdict"]
+    assert "STEP TOGETHER" not in comparison["verdict"]
+
+
+def test_the_decadal_comparison_refuses_a_single_row(params: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="pooled row and a reference row"):
+        viz.decadal_step_comparison({"only": _row([35.0, 36.0, 35.0])}, params)
+
+
+def test_the_decadal_comparison_names_the_row_missing_a_window(
+    params: dict[str, Any],
+) -> None:
+    good = _row([35.0, 36.0, 35.0])
+    partial = {key: value for key, value in list(good.items())[1:]}
+    with pytest.raises(ValueError, match="has no 'mean_"):
+        viz.decadal_step_comparison(
+            {"Landsat (pooled)": partial, "MODIS": good}, params
+        )
+
+
+def test_the_decadal_figure_states_the_comparison_in_its_footer(
+    params: dict[str, Any],
+) -> None:
+    """The footer must carry the measurement, not a conclusion written earlier."""
+    figure = viz.build_decadal_lst_panel_figure(
+        _row([35.12, 36.81, 35.57]), _row([30.84, 31.54, 30.60]), params
+    )
+    footer = " ".join(
+        " ".join(text.get_text().split()) for text in figure.texts
+    )
+    assert "+1.69" in footer and "-1.24" in footer
+    assert "+0.70" in footer and "-0.94" in footer
+    assert "STEP TOGETHER" in footer
+    # The pre-judged sentence must be gone for good.
+    assert "dominated by these steps, NOT by climate" not in footer
+
+
+def test_the_sensor_banner_no_longer_pre_judges_the_figure(
+    params: dict[str, Any],
+) -> None:
+    """The offsets are a measurement; what they explain is a separate question.
+
+    The banner may state the offsets - they were measured on overlapping years,
+    independently of this figure - but it must not announce how much of the
+    decadal step they account for, which is what the two rows are there to
+    settle.
+    """
+    import pandas as pd
+
+    offsets = pd.DataFrame([
+        {"sensor_a": "landsat5", "sensor_b": "landsat7", "n_overlap_years": 8,
+         "mean_offset": 1.783, "t_statistic": 2.72, "verdict": "material"},
+    ])
+    banner = viz.sensor_step_banner(offsets, params)
+    assert "+1.78" in banner
+    assert "OVERLAPPING years" in banner
+    assert "NOT by climate" not in banner

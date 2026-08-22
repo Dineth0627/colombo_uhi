@@ -84,7 +84,7 @@ These are reproduced verbatim from `config/params.yaml`, where they are stamped 
 
 `caveats.trend_power_floor`
 
-> A zero significant-pixel count is not the same as an absence of warming. Mann-Kendall on n observations is bounded, so there is a smallest p-value the test can ever return; when that floor lies above the Benjamini-Hochberg threshold for the number of pixels tested, NO pixel can be reported significant whatever the temperature did. Over Colombo the single-sensor 12-year Landsat series is exactly this case. Where it holds, the Sen's slope field is an unconstrained estimate and its sign must NOT be read as cooling or warming; quote the detection limit instead, and take the trend evidence from the 26-year MODIS night series.
+> A zero significant-pixel count is not the same as an absence of warming. Mann-Kendall on n observations is bounded, so there is a smallest p-value the test can ever return; when that floor lies above the Benjamini-Hochberg threshold for the number of pixels tested, NO pixel can be reported significant whatever the temperature did. Over Colombo the single-sensor Landsat series (2014-2025, and fewer usable years than that on most pixels once cloud is removed) is exactly this case. Where it holds, the Sen's slope field is an unconstrained estimate and its sign must NOT be read as cooling or warming; quote the detection limit instead, and take the trend evidence from the 26-year MODIS night series.
 
 ### Colour is not the only channel
 

@@ -4952,9 +4952,110 @@ def sensor_step_banner(
     return (
         "MEASURED INTER-SENSOR OFFSETS over the CMC dry season: "
         + "; ".join(parts)
-        + ". Decade-to-decade differences in the top row are dominated by these "
-        "steps, NOT by climate."
+        + ". These are direct measurements on OVERLAPPING years, independent of "
+        "anything on this figure. How much of the top row's decadal step they "
+        "account for is what the two rows together answer, below."
     )
+
+
+def decadal_step_comparison(
+    rows: Mapping[str, Mapping[str, Any]], params: dict[str, Any]
+) -> dict[str, Any]:
+    """Compare the decade-to-decade steps of a pooled and a single-sensor row.
+
+    Figure 1 exists to ask one question: does the pooled series step between
+    decades in a way the single-sensor series does not? The answer has to be
+    COMPUTED and reported. The first version of this figure asserted it in the
+    footer instead - "decade-to-decade differences in the top row are dominated
+    by these steps, NOT by climate" - and when the figure was finally drawn in
+    Colab run 4 its own numbers did not support that.
+
+    Args:
+        rows: Ordered mapping of row label to that row's band arrays, e.g.
+            ``{"Landsat": landsat_arrays, "MODIS": modis_arrays}``. The first
+            entry is treated as the pooled row and the second as the reference.
+        params: Parsed params mapping.
+
+    Returns:
+        Mapping with ``labels`` (the decade windows), ``means`` and ``steps``
+        per row, ``ratios`` of pooled to reference step magnitude, and a
+        ``verdict`` sentence derived from them.
+
+    Raises:
+        ValueError: If fewer than two rows are supplied, or a row is missing a
+            decade's mean band.
+    """
+    import numpy as np
+
+    from colombo_uhi import trends
+
+    if len(rows) < 2:
+        raise ValueError(
+            f"the comparison needs a pooled row and a reference row, got "
+            f"{list(rows)}"
+        )
+    labels = [label for label, _, _ in trends.resolve_decades(None, params)]
+
+    means: dict[str, list[float]] = {}
+    for name, arrays in rows.items():
+        values: list[float] = []
+        for label in labels:
+            key = f"mean_{label}"
+            if key not in arrays:
+                raise ValueError(f"row '{name}' has no '{key}' band")
+            data = np.asarray(arrays[key], dtype="float64")
+            finite = data[np.isfinite(data)]
+            values.append(float(finite.mean()) if finite.size else float("nan"))
+        means[name] = values
+
+    steps = {
+        name: [later - earlier for earlier, later in zip(values, values[1:])]
+        for name, values in means.items()
+    }
+    pooled, reference = list(rows)[0], list(rows)[1]
+    ratios = [
+        abs(a) / abs(b) if b else float("inf")
+        for a, b in zip(steps[pooled], steps[reference])
+    ]
+    same_sign = [
+        (a > 0) == (b > 0)
+        for a, b in zip(steps[pooled], steps[reference])
+        if a == a and b == b
+    ]
+
+    if same_sign and all(same_sign):
+        shares = ", ".join(
+            f"{100 / ratio:.0f}%" if ratio else "-" for ratio in ratios
+        )
+        verdict = (
+            f"THE TWO ROWS STEP TOGETHER. {reference} - one sensor, no "
+            f"changeover - reproduces the SHAPE of the pooled decadal zigzag at "
+            f"{shares} of its amplitude. The zigzag is therefore NOT purely a "
+            "sensor artefact: part of it is a real feature of the dry-season "
+            "record. The pooled series contains both and cannot separate them, "
+            "which is exactly why the trend products are fitted within one "
+            "sensor family."
+        )
+    elif same_sign and not any(same_sign):
+        verdict = (
+            f"THE TWO ROWS STEP IN OPPOSITE DIRECTIONS. {reference} does not "
+            "follow the pooled row at all, which is what a purely sensor-driven "
+            "zigzag looks like."
+        )
+    else:
+        verdict = (
+            f"THE TWO ROWS DISAGREE on the direction of at least one step, so "
+            "no single reading covers the record. Compare the per-panel means "
+            "window by window."
+        )
+
+    return {
+        "labels": labels,
+        "means": means,
+        "steps": steps,
+        "ratios": ratios,
+        "verdict": verdict,
+    }
 
 
 def build_decadal_lst_panel_figure(
@@ -5027,6 +5128,14 @@ def build_decadal_lst_panel_figure(
     cmap = _sequential_cmap(config["palette"], "report_decadal")
     norm = Normalize(vmin=low, vmax=high)
 
+    comparison = decadal_step_comparison(
+        {"Landsat (pooled)": landsat, "MODIS Terra (one sensor)": modis}, params
+    )
+    step_line = "; ".join(
+        f"{name} {' / '.join(f'{value:+.2f}' for value in values)} degC"
+        for name, values in comparison["steps"].items()
+    )
+
     footer = caveat_footer(
         params,
         ["lst_not_air_temp", "valid_obs_required", "single_overpass",
@@ -5034,6 +5143,8 @@ def build_decadal_lst_panel_figure(
     ) + "\n" + _wrap_bullets(
         [
             sensor_step_banner(sensor_offsets, params),
+            f"Decade-to-decade steps, measured off these panels: {step_line}.",
+            comparison["verdict"],
             "All six panels share ONE colour stretch of "
             f"{low:.0f}-{high:.0f} degC. Per-panel autoscaling would hide the "
             "step between the top row's decades, which is the point of drawing "
@@ -5499,7 +5610,10 @@ def build_obs_count_figure(
         ecdf.annotate(
             f"{mark}: {shares[mark]:.1%}",
             xy=(mark, shares[mark]),
-            xytext=(mark, 0.95 - 0.07 * index),
+            # Nudged off the reference line: at x == mark exactly, the dashed
+            # rule strikes through the label's first character.
+            xytext=(mark + 0.012 * (ordered.max() - ordered.min()),
+                    0.95 - 0.07 * index),
             textcoords="data",
             fontsize=7.5, color="#b2182b", ha="left", va="center",
             arrowprops={

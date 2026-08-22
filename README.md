@@ -75,7 +75,11 @@ Consequences, enforced in code:
   a spatially common-mode step cancels.
 - **Figure 1 of the report draws the pooled series anyway**, labelled as a
   sensor-step diagnostic, above a MODIS Terra row that spans all three decades
-  on one sensor. The gap between the two rows *is* the result.
+  on one sensor. Measured in Colab run 4, the two rows step **together** —
+  Landsat +1.69/−1.24 °C, MODIS +0.70/−0.94 °C — so the decadal zigzag is *not*
+  purely a sensor artefact. Part of it is real, and the pooled series cannot
+  separate the two. That is why the trend is fitted within one sensor family;
+  the offsets above were measured on overlapping years and are unaffected.
 
 ## How this repo works
 
@@ -289,7 +293,7 @@ rather than checking behaviour:
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR, MAUP, landscape metrics | ✅ done + Colab-verified |
 | 6 | `06_prediction` | RF + CA-Markov scenario projection, spatially blocked validation, greening counterfactual, MOLUSCE handoff | ✅ done + Colab-verified |
 | 7 | `07_greening_priority` | MCDA/AHP weighted overlay (CR 0.0081), TOPSIS cross-check, 3-30-300 compliance, Ramsar wetland cross, ranked priority table | ✅ done + Colab-verified |
-| 8 | `08_figures_for_report` | eleven 300 dpi report figures, colour-vision verification, generated methods and limitations, data provenance | 🟡 Colab run 3: ten of eleven drawn, **figure 1 outstanding** |
+| 8 | `08_figures_for_report` | eleven 300 dpi report figures, colour-vision verification, generated methods and limitations, data provenance | 🟡 Colab run 4: **all eleven drawn**; one re-render pending |
 
 ## The report figures
 

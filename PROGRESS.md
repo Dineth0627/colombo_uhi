@@ -1,6 +1,84 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-22 (Phase 8 — Colab run 3: the MODIS decadal export was FAILING, not lagging; **figure 1 still outstanding**. 1592 tests pass, 3 skip)_
+_Last updated: 2026-08-22 (Phase 8 — Colab run 4: **all eleven figures**; check 4 answered NO and corrected a standing claim. 1592 tests pass, 3 skip)_
+
+### Colab run 4 (2026-08-22) — all eleven figures, and check 4 answered NO
+
+Every input found, **11 of 11 figures written**, no errors. The MODIS decadal
+export completed once Step 2 used `decadal_product`.
+
+| check | result |
+|---|---|
+| 1 three tasks, all COMPLETED | ✅ |
+| 2 no missing inputs | ✅ all 16 |
+| 3 eleven PNGs at 300 dpi | ✅ (12 files; figure 5 has an EHSA companion) |
+| 4 Landsat row steps, MODIS row does not | ❌ **NO — both step. See below.** |
+| 5 saturation under 5% | ✅ figure 1 max 0.83%, figure 3 0.58% (was 17.56%) |
+| 6 zero non-exempt colour failures | ✅ |
+| 7 figure 9 priority-zone mean | ✅ −0.85 °C over 2 763 cells |
+| 8 figure 10 labels ten divisions | ✅ |
+| 9 suite green after the docs rewrite | ✅ |
+| 10 read `docs/methods.md` end to end | still yours |
+
+#### Check 4: the answer is no, and it corrects a claim this project has been making
+
+| decade | Landsat, pooled | MODIS Terra, one sensor |
+|---|---|---|
+| 2000–2010 | 35.12 °C | 30.84 °C |
+| 2011–2020 | 36.81 °C | 31.54 °C |
+| 2021–2025 | 35.57 °C | 30.60 °C |
+| **step 1** | **+1.69** | **+0.70** |
+| **step 2** | **−1.24** | **−0.94** |
+
+The Landsat row reproduces Phase 4's measured pooled zigzag almost exactly
+(+1.70 / −1.23 there, +1.69 / −1.24 here). But **MODIS Terra — one sensor, no
+changeover, the same 26 years — steps the same way**, at 41% and 76% of the
+amplitude.
+
+So the decadal zigzag is **not purely a sensor artefact**. Part of it is a real
+feature of the dry-season record, and the pooled series contains both a real
+signal and a sensor step with no way to separate them.
+
+**What this corrects.** `params.yaml` said a Mann-Kendall across the changeovers
+"measures the STEP, not the climate — which is exactly what the pooled product
+did: a +1.70/−1.23 degC decadal zigzag". That is too strong and is now corrected
+in place, with run 4's numbers recorded against it. The honest statement is
+*step plus climate, inseparable in the pooled series*.
+
+**What this does not change.** The offsets themselves (L5−L7 +1.78, t = +2.7;
+L7−L8 −2.48, t = −3.6) were measured on **overlapping years**, independently of
+the zigzag, and stand untouched. And the decision to fit within one sensor
+family is if anything better motivated: a series carrying a real signal *and* a
+sensor step that cannot be told apart is precisely one you must not fit across.
+
+**Figure 1 was asserting the answer.** Its footer read "decade-to-decade
+differences in the top row are dominated by these steps, NOT by climate" —
+written before the figure had ever drawn, and contradicted by its own panels the
+first time it did. That is the same defect as figure 2 reporting "0.0%
+significant" as though it were a measurement. New `viz.decadal_step_comparison`
+computes both rows' steps and derives the verdict; the footer now reports it,
+and can say "the two rows step in opposite directions" just as readily. The
+banner still states the measured offsets — they are a real measurement — but no
+longer announces what they explain.
+
+#### Figure 2's power floor is worse than estimated
+
+The banner measured the median tested pixel at **11 contributing years**, not
+the 12 the series spans: cloud costs most pixels a year. At n = 11 the smallest
+attainable Mann-Kendall p is **2.6e-05** against a Benjamini-Hochberg threshold
+of 8.0e-07 — **33× too large**, not the 10× I estimated at n = 12. The figure
+computes it from the raster's own `n_years` band, which is why it is right and
+my estimate was not. The `trend_power_floor` caveat no longer asserts a year
+count the data can contradict.
+
+#### The run-4 figures are already stale
+
+They were rendered before the figure 1 footer fix and the figure 3 label nudge.
+**No new exports are needed** — every raster is in Drive and `data/interim/`.
+Re-run Part 2 only (clone cell, Step 0, Step 1, then the discovery cell
+onward), which takes a couple of minutes, and bundle those.
+
+1592 tests pass, 3 skip.
 
 ### Colab run 3 (2026-08-22) — figure 1 was never drawable, and I misread why
 
