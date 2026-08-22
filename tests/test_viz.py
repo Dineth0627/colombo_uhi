@@ -3065,3 +3065,230 @@ def test_the_priority_map_carries_the_rank_needed_to_label_it(
             f"{column} is not merged into the mapped frame, so label_top_n "
             "would silently draw nothing"
         )
+
+
+# --- figure 2's power floor (Phase 8, Colab run 2) ---------------------------
+def _slope_arrays(n_years: float, n_tested: int, shape: tuple[int, int] = (300, 300)):
+    """A slope raster with a chosen number of tested pixels, none significant."""
+    import numpy as np
+
+    if n_tested > shape[0] * shape[1]:
+        raise ValueError(
+            f"cannot mark {n_tested:,} pixels as tested in a {shape} raster; "
+            "the first draft of this helper capped silently and the assertions "
+            "above it were then written against the wrong count"
+        )
+    rng = np.random.default_rng(3)
+    slope = rng.normal(-0.1, 0.1, shape)
+    tested = np.zeros(shape, dtype=bool)
+    tested.ravel()[rng.permutation(shape[0] * shape[1])[:n_tested]] = True
+    significant = np.where(tested, 0.0, np.nan)
+    return {
+        "sen_slope": np.where(tested, slope, np.nan),
+        "significant": significant,
+        "n_years": np.where(tested, n_years, np.nan),
+    }
+
+
+def test_the_slope_figure_says_so_when_the_test_had_no_power(
+    params: dict[str, Any],
+) -> None:
+    """Colab run 2 drew a strongly blue map with zero stipples, over the line
+    "0 of 62,887 fitted pixels (0.0%) survive Benjamini-Hochberg".
+
+    A reader takes that as "Colombo is cooling, and the cooling is not
+    significant". Both halves are wrong. At 12 years the smallest p-value
+    Mann-Kendall can return is ten times the correction threshold, so the test
+    had no power at all; and a Sen's slope below the detection limit says
+    nothing about sign. The figure has to lead with that, not bury it.
+    """
+    figure = viz.build_sen_slope_stipple_figure(
+        _slope_arrays(12.0, 62_887), params, title="Sen's slope"
+    )
+    assert "[NO POWER" in figure._suptitle.get_text()
+    assert figure._suptitle.get_color() == "#b2182b"
+
+    footer = " ".join(
+        " ".join(text.get_text().split()) for text in figure.texts
+    )
+    assert "THIS TEST HAD NO POWER" in footer
+    assert "Do NOT report this map as cooling" in footer
+    # The numbers on the figure are exactly what the helper computes - derived
+    # here rather than pasted, so the two cannot drift apart.
+    from colombo_uhi import trends
+
+    floor = trends.fdr_power_floor(12, 62_887, params["trends"]["fdr"]["alpha"])
+    assert not floor["can_detect"]
+    assert f"{floor['min_attainable_p']:.1e}" in footer
+    assert f"{floor['bh_threshold']:.1e}" in footer
+    assert f"{floor['ratio']:.0f}x smaller" in footer
+    # The standing caveat travels too, so the same words reach the metadata.
+    assert " ".join(params["caveats"]["trend_power_floor"].split()) in footer
+    # And the correction is named the same way throughout one footer.
+    assert "benjamini-hochberg across" not in footer
+
+
+def test_the_slope_figure_stays_quiet_when_the_test_did_have_power(
+    params: dict[str, Any],
+) -> None:
+    # 26 years over the same pixel count CAN produce a significant pixel, so
+    # nothing is claimed about power and the title is unmarked. The banner has
+    # to be a measurement, not decoration.
+    figure = viz.build_sen_slope_stipple_figure(
+        _slope_arrays(26.0, 62_887), params, title="Sen's slope"
+    )
+    assert "[NO POWER" not in figure._suptitle.get_text()
+    footer = " ".join(text.get_text() for text in figure.texts)
+    assert "NO POWER" not in footer
+
+
+def test_the_slope_figure_says_when_the_power_check_could_not_be_made(
+    params: dict[str, Any],
+) -> None:
+    # Without the year count the check cannot run. Silence would imply it
+    # passed, so the figure states that it was not made.
+    arrays = _slope_arrays(12.0, 5_000)
+    del arrays["n_years"]
+    figure = viz.build_sen_slope_stipple_figure(arrays, params, title="Sen's slope")
+    footer = " ".join(
+        " ".join(text.get_text().split()) for text in figure.texts
+    )
+    assert "was not checked" in footer
+    assert "[NO POWER" not in figure._suptitle.get_text()
+
+
+def test_the_slope_legend_never_advertises_a_marker_that_is_not_drawn(
+    params: dict[str, Any],
+) -> None:
+    import numpy as np
+
+    # Nothing significant: the entry explains, rather than showing a dot the
+    # reader will hunt for across the map and never find.
+    figure = viz.build_sen_slope_stipple_figure(
+        _slope_arrays(12.0, 62_887), params, title="Sen's slope"
+    )
+    axes = next(a for a in figure.axes if a.get_images())
+    labels = [text.get_text() for text in axes.get_legend().get_texts()]
+    assert any("no pixel is FDR-significant" in label for label in labels)
+
+    # Something significant: the marker entry comes back.
+    arrays = _slope_arrays(26.0, 62_887)
+    arrays["significant"] = np.where(
+        np.isfinite(arrays["significant"]), 1.0, np.nan
+    )
+    figure = viz.build_sen_slope_stipple_figure(arrays, params, title="Sen's slope")
+    axes = next(a for a in figure.axes if a.get_images())
+    labels = [text.get_text() for text in axes.get_legend().get_texts()]
+    assert str(params["report"]["stipple"]["label"]) in labels
+
+
+def test_the_utfvi_bars_print_the_shares_the_footer_promises(
+    params: dict[str, Any],
+) -> None:
+    """Over Colombo the distribution is bimodal - about 60% Excellent and a
+    third Worst - which leaves the four middle classes as slivers of 1.5-2.3%.
+
+    Those are exactly the classes a redistribution of heat would move through,
+    and they cannot be measured off a bar that short. The footer claimed the
+    bars repeated the shares as numbers; they did not.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(5)
+    epochs = {
+        key: rng.choice(
+            [0, 1, 2, 3, 4, 5], size=(60, 60), p=[0.60, 0.02, 0.02, 0.02, 0.02, 0.32]
+        ).astype(float)
+        for key in params["report"]["facet_epochs"]
+    }
+    figure = viz.build_utfvi_epoch_maps_figure(epochs, params)
+    bar_axes = [axes for axes in figure.axes if axes.patches and not axes.get_images()]
+    assert bar_axes, "no bar panel found"
+    for axes in bar_axes:
+        assert len(axes.texts) == 6, "every class must carry its share"
+        # A label above a full-height bar must still land inside the axes.
+        assert axes.get_ylim()[1] > 100
+
+
+def test_the_suhii_grid_labels_the_bottom_panel_of_every_column(
+    params: dict[str, Any],
+) -> None:
+    """Seven sources in a 3x3 grid left six of seven panels without years.
+
+    ``sharex`` hides tick labels on every panel outside the LAST row, but the
+    last row is partial here, so a panel can be bottom-most in its column and
+    still have its x axis hidden.
+    """
+    import pandas as pd
+
+    frame = pd.DataFrame([
+        {"year": year, "source": source, "rural_definition": method,
+         "suhii": 3.0 + 0.1 * index}
+        for index, source in enumerate(["a", "b", "c", "d", "e", "f", "g"])
+        for method in params["uhi"]["suhii"]["rural_definitions"]
+        for year in range(2000, 2026)
+    ])
+    figure = viz.build_suhii_figure(frame, params)
+    visible = [axes for axes in figure.axes if axes.get_visible()]
+    labelled = [
+        axes for axes in visible
+        if any(label.get_visible() and label.get_text()
+               for label in axes.get_xticklabels())
+    ]
+    # Three columns, so exactly three panels carry the year axis.
+    assert len(labelled) == 3, (
+        f"{len(labelled)} of {len(visible)} panels carry x tick labels; every "
+        "column's bottom-most panel must"
+    )
+
+
+def test_the_observation_count_labels_cannot_collide(
+    params: dict[str, Any],
+) -> None:
+    """Where coverage is good every reference count sits in the same flat
+    stretch of the ECDF - over Colombo all three landed at 3.6% - and labels
+    placed at their crossings smeared into "10: 4%6: 4%50: 4%".
+    """
+    import numpy as np
+
+    band = params["composites"]["obs_count_band"]
+    # Every pixel well above every reference mark, so all three shares are 0%.
+    counts = np.full((40, 40), 150.0)
+    figure = viz.build_obs_count_figure({band: counts}, params)
+    ecdf = next(
+        axes for axes in figure.axes
+        if axes.lines and not axes.get_images()
+    )
+    marks = params["report"]["obs_count_vis"]["ecdf_marks"]
+    positions = sorted(text.get_position()[1] for text in ecdf.texts)
+    assert len(positions) == len(marks)
+    gaps = [b - a for a, b in zip(positions, positions[1:])]
+    assert all(gap > 0.05 for gap in gaps), (
+        f"labels are {gaps} apart in axis fraction; they would overlap"
+    )
+
+
+def test_footers_never_break_a_hyphenated_name_across_lines(
+    params: dict[str, Any],
+) -> None:
+    """These footers are dense with hyphenated proper nouns.
+
+    ``textwrap`` splits on hyphens by default, so a figure could read
+    "Benjamini-" at the end of one line and "Hochberg" at the start of the
+    next - which is how the Phase 8 power banner first rendered.
+    """
+    names = ("Benjamini-Hochberg", "Benjamini-Yekutieli", "Mann-Kendall",
+             "Getis-Ord", "CA-Markov", "3-30-300")
+    text = viz.caveat_footer(params, sorted(params["caveats"])) + "\n" + (
+        viz._wrap_bullets([
+            "Benjamini-Hochberg and Benjamini-Yekutieli and Mann-Kendall and "
+            "Getis-Ord and CA-Markov and the 3-30-300 rule, padded out so the "
+            "wrapper has to break this bullet in several places to fit it.",
+        ])
+    )
+    for line in text.splitlines():
+        for name in names:
+            head = name.rsplit("-", 1)[0] + "-"
+            assert not line.rstrip().endswith(head), (
+                f"a line ends with {head!r}, splitting {name!r} across lines"
+            )

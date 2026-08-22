@@ -144,6 +144,12 @@ def caveat_footer(params: dict[str, Any], keys: Sequence[str]) -> str:
                 f"- {text}",
                 width=CAVEAT_WRAP_CHARS,
                 subsequent_indent="  ",
+                # These footers are dense with hyphenated proper nouns -
+                # Benjamini-Hochberg, Mann-Kendall, Getis-Ord, CA-Markov - and
+                # the default splits them at the hyphen, so a footer could read
+                # "Benjamini-" on one line and "Hochberg" on the next depending
+                # on where the wrap happened to land.
+                break_on_hyphens=False,
             )
         )
     return "\n".join(lines)
@@ -201,7 +207,12 @@ def _wrap_bullets(text: str | Sequence[str]) -> str:
     lines: list[str] = []
     for bullet in bullets:
         lines.extend(
-            textwrap.wrap(bullet, width=CAVEAT_WRAP_CHARS, subsequent_indent="  ")
+            textwrap.wrap(
+                bullet,
+                width=CAVEAT_WRAP_CHARS,
+                subsequent_indent="  ",
+                break_on_hyphens=False,   # see caveat_footer
+            )
         )
     return "\n".join(lines)
 
@@ -541,11 +552,21 @@ def build_suhii_figure(
     for axes in flat[len(keys):]:
         axes.set_visible(False)
 
+    # `sharex` hides the tick labels on every panel that is not in the LAST row
+    # of the grid - but the last row is partial here, so a panel can be the
+    # bottom-most in its column and still have its years hidden. Seven sources
+    # in a 3x3 grid left six of seven panels with an unlabelled x axis.
+    bottom_of_column = {
+        index % columns: index for index in range(len(keys))
+    }
     for index, axes in enumerate(flat[: len(keys)]):
         if index % columns == 0:
             axes.set_ylabel("SUHII (degC)", fontsize=9)
-        if index >= len(keys) - columns:
+        if bottom_of_column.get(index % columns) == index:
             axes.set_xlabel("Year", fontsize=9)
+            axes.tick_params(labelbottom=True)
+            for label in axes.get_xticklabels():
+                label.set_visible(True)
 
     handles = [
         _legend_handle(styles[method], f"rural reference: {method}")
@@ -5136,6 +5157,7 @@ def build_sen_slope_stipple_figure(
     slope_key: str = "sen_slope",
     significant_key: str = "significant",
     title: str = "Sen's slope of land surface temperature",
+    years_key: str = "n_years",
 ) -> Any:
     """Build the report Sen's-slope map: one panel, significance as stippling.
 
@@ -5145,6 +5167,18 @@ def build_sen_slope_stipple_figure(
     magnitude in the same place, so a reader cannot read a rate off one panel
     and its confidence off another without registering the two by eye.
 
+    .. warning::
+        When the series is too short for ANY pixel to survive the correction -
+        see :func:`colombo_uhi.trends.fdr_power_floor` - this figure says so
+        first, in its title and at the head of its footer. Colab run 2 rendered
+        a strongly blue map with zero stipples and the line "0 of 62,887 fitted
+        pixels (0.0%) survive Benjamini-Hochberg", which reads as "Colombo is
+        cooling and the cooling is not significant". Both halves of that reading
+        are wrong: at 12 years over 62 887 pixels the smallest attainable
+        p-value is ten times the correction threshold, so the test had no power
+        at all, and an unconstrained Sen's slope below the detection limit
+        carries no information about sign.
+
     Args:
         arrays: Band-name to 2-D array, from
             :func:`colombo_uhi.trends.read_trend_raster` on the FDR-corrected
@@ -5153,6 +5187,9 @@ def build_sen_slope_stipple_figure(
         slope_key: Band holding the Sen's slope, degC per year.
         significant_key: Band holding the FDR significance mask (1/0/NaN).
         title: Figure title.
+        years_key: Band holding the per-pixel contributing-year count. Used for
+            the power check; when absent the check is skipped and the figure
+            says the check could not be made rather than implying it passed.
 
     Returns:
         A ``matplotlib.figure.Figure``.
@@ -5186,17 +5223,57 @@ def build_sen_slope_stipple_figure(
     n_significant = int(np.nansum(significant == 1.0))
     share = (n_significant / tested) if tested else float("nan")
     clipped = saturated_fraction(slope, vis["min"], vis["max"])
+    method = params["trends"]["fdr"]["method"].replace("_", "-")
+    # Proper-noun capitalisation. The banner sits directly above a caveat that
+    # writes "Benjamini-Hochberg", and the two must not disagree in the same
+    # footer.
+    method_label = "-".join(part.capitalize() for part in method.split("-"))
+    alpha = float(params["trends"]["fdr"]["alpha"])
+
+    # Could ANY pixel have been significant? Arithmetic, not a data result.
+    power = None
+    if years_key in arrays and tested:
+        years = np.asarray(arrays[years_key], dtype="float64")
+        usable = years[np.isfinite(significant) & np.isfinite(years)]
+        if usable.size:
+            from colombo_uhi import trends
+
+            power = trends.fdr_power_floor(
+                int(np.median(usable)), tested, alpha
+            )
+
+    powerless = power is not None and not power["can_detect"]
+    lead: list[str] = []
+    if powerless:
+        lead.append(
+            f"THIS TEST HAD NO POWER. At {power['n_years']:.0f} years a "
+            "Mann-Kendall cannot return a p-value below "
+            f"{power['min_attainable_p']:.1e} however monotonic the series, "
+            f"while {method_label} across {tested:,} pixels requires "
+            f"{power['bh_threshold']:.1e} - "
+            f"{power['ratio']:.0f}x smaller. NO pixel could have been called "
+            "significant, whatever the temperature did. The zero below is a "
+            "property of the design, not a measurement of the climate."
+        )
+        lead.append(
+            "Read the colours as an UNCONSTRAINED ESTIMATE, not as a result. "
+            "Sen's slope always returns a number; it does not say whether that "
+            "number means anything, and here nothing establishes its sign. Do "
+            "NOT report this map as cooling. The trend evidence in this project "
+            "comes from the 26-year MODIS night series."
+        )
 
     stipple = params["report"]["stipple"]
-    footer = caveat_footer(
+    footer = _wrap_bullets(lead) + ("\n" if lead else "") + caveat_footer(
         params,
-        ["lst_not_air_temp", "valid_obs_required", "single_overpass",
-         "fdr_dependence", "trend_not_causal"],
+        (["trend_power_floor"] if powerless else [])
+        + ["lst_not_air_temp", "valid_obs_required", "single_overpass",
+           "fdr_dependence", "trend_not_causal"],
     ) + "\n" + _wrap_bullets(
         [
             f"{n_significant:,} of {tested:,} fitted pixels ({share:.1%}) survive "
-            f"{params['trends']['fdr']['method'].replace('_', '-')} correction at "
-            f"alpha = {params['trends']['fdr']['alpha']}. Only those are stippled.",
+            f"{method_label} correction at alpha = {alpha}."
+            + ("" if powerless else " Only those are stippled."),
             "Grey is NOT 'no trend'. It is a pixel that was never tested, because "
             "it fell below the valid-observation or minimum-year floor. Read this "
             "map against figure 3.",
@@ -5206,6 +5283,11 @@ def build_sen_slope_stipple_figure(
             f"{clipped:.1%} of fitted pixels fall outside the "
             f"{vis['min']:+.2f}..{vis['max']:+.2f} degC/yr colour stretch.",
         ]
+        + ([] if power is not None else [
+            "The per-pixel year count was not supplied, so whether this series "
+            "COULD have produced a significant pixel was not checked. Read the "
+            "significant count against the detection limit before quoting it."
+        ])
     )
 
     width = float(params["report"]["width_inches"])
@@ -5239,11 +5321,27 @@ def build_sen_slope_stipple_figure(
     bar.set_label("Sen's slope (degC per year)", fontsize=9)
     bar.ax.tick_params(labelsize=8)
 
+    # A legend entry for stippling that appears nowhere on the map invites the
+    # reader to hunt for dots that do not exist. When none were drawn, the entry
+    # says why instead of showing a marker.
+    if n_significant:
+        significance_handle = Line2D(
+            [], [], linestyle="none", marker=str(stipple["marker"]),
+            markersize=4, color=normalise_hex(stipple["colour"]),
+            label=str(stipple["label"]),
+        )
+    else:
+        significance_handle = Patch(
+            facecolor="none", edgecolor="none",
+            label=(
+                "no pixel is FDR-significant - the test had no power at this "
+                "series length" if powerless
+                else "no pixel is FDR-significant"
+            ),
+        )
     axes.legend(
         handles=[
-            Line2D([], [], linestyle="none", marker=str(stipple["marker"]),
-                   markersize=4, color=normalise_hex(stipple["colour"]),
-                   label=str(stipple["label"])),
+            significance_handle,
             Patch(facecolor="#dcdcdc", edgecolor="#999999",
                   label="not tested (below the observation floor)"),
         ],
@@ -5251,7 +5349,11 @@ def build_sen_slope_stipple_figure(
         edgecolor="#cccccc",
     )
 
-    figure.suptitle(title, fontsize=12, y=1 - 0.22 / height)
+    figure.suptitle(
+        title + ("   [NO POWER - SEE NOTE]" if powerless else ""),
+        fontsize=12, y=1 - 0.22 / height,
+        color="#b2182b" if powerless else "#000000",
+    )
     figure.text(
         0.01, 0.08 / height, footer, fontsize=7, va="bottom", ha="left",
         color="#444444",
@@ -5266,12 +5368,13 @@ def plot_sen_slope_stipple(
     slope_key: str = "sen_slope",
     significant_key: str = "significant",
     title: str = "Sen's slope of land surface temperature",
+    years_key: str = "n_years",
 ) -> Path:
     """Write the stippled slope map. See :func:`build_sen_slope_stipple_figure`."""
     return _save_figure(
         build_sen_slope_stipple_figure(
             arrays, params, slope_key=slope_key,
-            significant_key=significant_key, title=title,
+            significant_key=significant_key, title=title, years_key=years_key,
         ),
         out_path,
         dpi=report_dpi(params),
@@ -5386,12 +5489,23 @@ def build_obs_count_figure(
         np.arange(1, ordered.size + 1) / ordered.size,
         color="#31688e", linewidth=1.6,
     )
-    for mark in marks:
+    # Labels are STAGGERED up the axis, not placed at the curve. Where coverage
+    # is good every reference count sits in the same flat stretch of the ECDF -
+    # over Colombo all three land at 3.6% - so labelling each at its own
+    # crossing collides them into one unreadable smear. Staggering by index
+    # cannot collide, whatever the data does.
+    for index, mark in enumerate(marks):
         ecdf.axvline(mark, color="#b2182b", linewidth=0.9, linestyle="--")
         ecdf.annotate(
-            f"{mark}: {shares[mark]:.0%}",
-            xy=(mark, shares[mark]), xytext=(4, 4), textcoords="offset points",
-            fontsize=7.5, color="#b2182b",
+            f"{mark}: {shares[mark]:.1%}",
+            xy=(mark, shares[mark]),
+            xytext=(mark, 0.95 - 0.07 * index),
+            textcoords="data",
+            fontsize=7.5, color="#b2182b", ha="left", va="center",
+            arrowprops={
+                "arrowstyle": "-", "linewidth": 0.5, "color": "#b2182b",
+                "alpha": 0.5, "shrinkA": 1, "shrinkB": 1,
+            },
         )
     ecdf.set_xlabel("usable observations per pixel", fontsize=9)
     ecdf.set_ylabel("cumulative share of pixels", fontsize=9)
@@ -5532,9 +5646,22 @@ def build_utfvi_epoch_maps_figure(
         bars = figure.add_subplot(grid[1, column])
         positions = list(range(len(labels)))
         bars.bar(positions, shares[key], color=palette, edgecolor="#666666", linewidth=0.4)
+        # The footer promises the bars repeat the shares AS NUMBERS, so they
+        # must actually be printed. Over Colombo the distribution is sharply
+        # bimodal - about 60% Excellent and a third Worst - which leaves the
+        # four middle classes as slivers a reader cannot measure by eye, and
+        # those are precisely the classes a redistribution would move through.
+        for position, value in zip(positions, shares[key]):
+            if value != value:                       # NaN: no classified pixel
+                continue
+            bars.annotate(
+                f"{value:.1f}",
+                xy=(position, value), xytext=(0, 2), textcoords="offset points",
+                ha="center", va="bottom", fontsize=6, color="#333333",
+            )
         bars.set_xticks(positions)
         bars.set_xticklabels(labels, fontsize=6.5, rotation=45, ha="right")
-        bars.set_ylim(0, 100)
+        bars.set_ylim(0, 108)                        # headroom for the labels
         bars.tick_params(labelsize=7)
         bars.grid(True, axis="y", alpha=0.3)
         if column == 0:

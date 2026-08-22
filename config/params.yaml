@@ -2717,6 +2717,16 @@ caveats:
     are also strongly intercorrelated over Colombo, so the leave-one-out
     ablation - not the weights - is what says how much the method adds over
     ranking by land surface temperature alone.
+  trend_power_floor: >-
+    A zero significant-pixel count is not the same as an absence of warming.
+    Mann-Kendall on n observations is bounded, so there is a smallest p-value
+    the test can ever return; when that floor lies above the Benjamini-Hochberg
+    threshold for the number of pixels tested, NO pixel can be reported
+    significant whatever the temperature did. Over Colombo the single-sensor
+    12-year Landsat series is exactly this case. Where it holds, the Sen's
+    slope field is an unconstrained estimate and its sign must NOT be read as
+    cooling or warming; quote the detection limit instead, and take the trend
+    evidence from the 26-year MODIS night series.
   colour_is_not_the_only_channel: >-
     Colour alone never carries a class on these figures. Every categorical map
     also states its classes in an ordered legend, and any category the Phase 8
@@ -2786,9 +2796,16 @@ report:
     label: "FDR-significant (Benjamini-Hochberg)"
 
   # --- Figure 3: valid-observation count ---------------------------------------
-  obs_count_vis:                      # [DEFAULT - Phase 8, RE-CHECK ON FIRST RUN] total usable
-    min: 0                            # dry-season scene observations per pixel, 2000-2025. The
-    max: 120                          # notebook prints the percentiles.
+  obs_count_vis:                      # *** MEASURED, Colab run 2 - do not lower. ***
+    min: 0                            # Total usable dry-season scene observations per pixel,
+    max: 200                          # 2000-2025, over the Colombo District at 100 m:
+                                      #   p1 0   p5 78   p25 89   p50 94   p75 103
+                                      #   p95 174   p99 197   max ~210
+                                      # The Phase 8 default of 120 clipped 17.56% of pixels -
+                                      # the whole western half saturated to one colour - against
+                                      # a report.max_saturated_fraction of 5%. At 200 the tail is
+                                      # inside the ramp. Re-check with the percentiles the
+                                      # notebook prints if the source or the window changes.
     palette: ["440154", "31688e", "35b779", "fde725"]   # viridis, same as trends.n_years_vis,
                                       # so a count map always reads the same way
     ecdf_marks: [10, 26, 50]          # reference counts drawn on the companion ECDF panel:

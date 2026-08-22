@@ -1,6 +1,108 @@
 # PROGRESS — Colombo UHI practicum
 
-_Last updated: 2026-08-20 (Phase 8 — Colab run 1: Part 1 clean, Step 3 fixed, **Part 2 not yet run**. 1571 tests pass, 3 skip)_
+_Last updated: 2026-08-20 (Phase 8 — Colab run 2: ten of eleven figures; **figure 1 and the sign-off outstanding**. 1579 tests pass, 3 skip)_
+
+### Colab run 2 (2026-08-20) — ten of eleven figures, and the one that was lying
+
+Step 3 fixed: `driver_series` sampled all 26 years, **120 675 pixels**, R² 0.30–0.78.
+Ten figures written at 300 dpi (`PIL` reads 299.9994 — PNG stores pixels per
+metre, so that is exactly 300). The poll cell re-attached after the reconnect.
+
+**Figure 1 was not drawn**: the MODIS decadal export was still `RUNNING` when
+Drive was copied. No code fault — the discovery cell named the gap before
+anything was rendered, which is what it is for. Copy
+`lst_decadal_district_2000_2025_1000m_terra_day.tif` into `data/interim/`, re-run
+the discovery cell and figure 1, and check 4 can finally be answered.
+
+#### The serious one: figure 2 read as "Colombo is cooling"
+
+The run rendered a strongly blue slope map, zero stipples, and the line
+*"0 of 62,887 fitted pixels (0.0%) survive benjamini-hochberg correction"*. A
+reader takes that as **cooling, not significant**. Both halves are wrong, and
+Phase 4 already said so in its own notebook — *"The -0.157 degC/yr Sen's slope
+is not cooling; it is an unconstrained estimate from a short, noisy series"* —
+but **the figure carried none of it**. Phase 4's own words: a negative result
+without a detection limit is just silence.
+
+Measuring it sharpened the point beyond Phase 4's Monte Carlo limit into
+arithmetic. Mann-Kendall on n observations is bounded, so there is a smallest
+p-value it can EVER return:
+
+| | |
+|---|---|
+| smallest attainable p at n = 12 | **8.30e-06** |
+| Benjamini-Hochberg threshold at 62 887 tests | **7.95e-07** |
+| ratio | **10.4x too large** |
+
+**No pixel could have been called significant at that series length, whatever
+the temperature did.** Not "the warming was too weak to detect" — the test had
+exactly zero power. New `trends.fdr_power_floor` computes it, and figure 2 now
+leads with it: a red `[NO POWER - SEE NOTE]` in the title, a banner at the head
+of the footer, a new `caveats.trend_power_floor` that travels into
+`docs/limitations.md` and every exported sidecar, and a legend that says *"no
+pixel is FDR-significant - the test had no power at this series length"* instead
+of advertising a marker that appears nowhere on the map.
+
+The check is a measurement, not decoration: at 26 years the same helper returns
+`can_detect = True` and the figure says nothing. If the year count is absent the
+figure states that the check was **not made**, because silence would imply it
+passed.
+
+#### Three more defects, all found by looking at the output
+
+**Figure 3 clipped 17.56% of its pixels.** Measured percentiles: p50 94, p95
+174, p99 197, max ~210, against a stretch of 0–120 — the whole western half
+saturated to one colour. `report.obs_count_vis.max` is now **200**, recorded as
+measured. The notebook's own guard printed the warning and named the parameter
+to widen, which is the loop that widened `trends.slope_vis` twice.
+
+**Figure 3's ECDF labels collided into `10: 4%6: 4%50: 4%`.** Where coverage is
+good every reference count sits in the same flat stretch of the curve — all
+three landed at 3.6% — so labels placed at their crossings smear into one
+another. They are now staggered by index up the axis with leader lines, which
+cannot collide whatever the data does.
+
+**Figure 4's footer claimed the bars "repeat the same information as numbers".
+They did not.** The distribution is sharply bimodal — about 60% Excellent and a
+third Worst — leaving the four middle classes as slivers of 1.5–2.3%, and those
+are exactly the classes a redistribution of heat would move through. Every bar
+now carries its share.
+
+**Figure 6 hid the year axis on six of its seven panels.** `sharex` labels only
+the last row of the grid, but seven sources in a 3x3 grid leave a partial last
+row, so a panel can be bottom-most in its column and still have its ticks
+hidden. Each column's bottom-most panel is now labelled explicitly.
+
+**Every footer could split a hyphenated proper noun across a line.**
+`textwrap.wrap` breaks on hyphens by default, and the power banner rendered
+"Benjamini-" above "Hochberg". Fixed in both wrappers, so Mann-Kendall,
+Getis-Ord, CA-Markov and 3-30-300 stay whole in every figure in the project.
+
+#### Confirmed correct
+
+* Figure 9 reproduces **-0.85 degC over 2 763 greened cells** against the
+  committed -0.84, and prints the district-wide -0.03 beside it labelled *NOT
+  the result*.
+* Figure 7's slopes are stable across epochs — NDVI -10.71 / -10.91 / -11.65,
+  NDBI +19.98 / +19.23 / +18.17 — with r rising 0.50 → 0.58.
+* Every non-exempt palette passes the colour-vision check; both exemptions
+  print their measured dE and their reason.
+* Figures 5, 5b, 8, 10 and 11 are legible, correctly legended and correctly
+  footed.
+
+1579 tests pass, 3 skip.
+
+#### Run 3
+
+Copy the MODIS decadal raster in, then re-run the discovery cell and Part 2.
+
+| # | Check |
+|---|---|
+| 1 | Figure 1 draws, and **the Landsat row steps between decades while the MODIS row does not** |
+| 2 | No decadal panel exceeds `report.max_saturated_fraction` — if it does, widen `report.decadal.shared_vis` and say so |
+| 3 | Figure 3 now reports well under 5% outside the stretch |
+| 4 | Figure 2 carries the red `[NO POWER]` marker and the banner |
+| 5 | Eleven figures in `figures/report/`, all 300 dpi |
 
 ### Colab run 1 (2026-08-20) — Part 1 clean, figure 7's sample wiped out by one argument
 

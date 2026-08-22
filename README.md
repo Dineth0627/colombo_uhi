@@ -212,7 +212,7 @@ every trend product in this project rests on it.
 python -m pytest tests/ -q
 ```
 
-1571 pass, 3 skip. The suite needs only `pyyaml`, `pytest`, `pandas`,
+1579 pass, 3 skip. The suite needs only `pyyaml`, `pytest`, `pandas`,
 `numpy`, `matplotlib` and `rasterio` — **no Earth Engine credentials**: tests
 fake `ee` and pin `params.yaml` values against the verified catalog constants.
 
@@ -289,7 +289,7 @@ rather than checking behaviour:
 | 5 | `05_spatial_statistics` | Gi*, Moran's I, EHSA, GWR/MGWR, MAUP, landscape metrics | ✅ done + Colab-verified |
 | 6 | `06_prediction` | RF + CA-Markov scenario projection, spatially blocked validation, greening counterfactual, MOLUSCE handoff | ✅ done + Colab-verified |
 | 7 | `07_greening_priority` | MCDA/AHP weighted overlay (CR 0.0081), TOPSIS cross-check, 3-30-300 compliance, Ramsar wetland cross, ranked priority table | ✅ done + Colab-verified |
-| 8 | `08_figures_for_report` | eleven 300 dpi report figures, colour-vision verification, generated methods and limitations, data provenance | 🟡 Colab run 1: Part 1 clean, **Part 2 outstanding** |
+| 8 | `08_figures_for_report` | eleven 300 dpi report figures, colour-vision verification, generated methods and limitations, data provenance | 🟡 Colab run 2: ten of eleven drawn, **figure 1 outstanding** |
 
 ## The report figures
 

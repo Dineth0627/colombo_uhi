@@ -80,6 +80,12 @@ These are reproduced verbatim from `config/params.yaml`, where they are stamped 
 
 > The AHP criterion weights are JUDGEMENTS, not measurements. They were argued by the analyst from the literature and from this project's own measurements, not elicited from stakeholders, and a different defensible set of judgements gives a different ranking. The consistency ratio tests only whether the judgements are self-consistent, never whether they are right. The criteria are also strongly intercorrelated over Colombo, so the leave-one-out ablation - not the weights - is what says how much the method adds over ranking by land surface temperature alone.
 
+### Trend power floor
+
+`caveats.trend_power_floor`
+
+> A zero significant-pixel count is not the same as an absence of warming. Mann-Kendall on n observations is bounded, so there is a smallest p-value the test can ever return; when that floor lies above the Benjamini-Hochberg threshold for the number of pixels tested, NO pixel can be reported significant whatever the temperature did. Over Colombo the single-sensor 12-year Landsat series is exactly this case. Where it holds, the Sen's slope field is an unconstrained estimate and its sign must NOT be read as cooling or warming; quote the detection limit instead, and take the trend evidence from the 26-year MODIS night series.
+
 ### Colour is not the only channel
 
 `caveats.colour_is_not_the_only_channel`

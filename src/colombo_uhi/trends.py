@@ -3566,3 +3566,75 @@ def minimum_detectable_slope(
         "slope_per_year": float(high),
         "change_over_record": float(high * (n - 1)),
     }
+
+
+def fdr_power_floor(
+    n_years: int, n_tested: int, alpha: float | None = None
+) -> dict[str, Any]:
+    """Whether ANY pixel could survive FDR correction at this series length.
+
+    A distinct and much harder statement than
+    :func:`minimum_detectable_slope`, which is a Monte Carlo estimate under an
+    assumed noise level. This is arithmetic, and it does not depend on the data
+    at all.
+
+    Mann-Kendall on ``n`` observations is bounded: the largest ``S`` a perfectly
+    monotonic series can produce is ``n(n-1)/2``, so there is a smallest
+    two-sided p-value the test can EVER return. Benjamini-Hochberg compares the
+    smallest observed p-value against ``alpha / m``. If the first is above the
+    second, **no pixel can be reported significant whatever the temperature
+    did** - not because nothing happened, but because the test has no power at
+    that length against that many comparisons.
+
+    Over Colombo this is not hypothetical. The single-sensor Landsat series is
+    12 years, so its smallest attainable p is 8.3e-06, while 62 887 tested
+    pixels put the Benjamini-Hochberg threshold at 8.0e-07. A zero
+    significant-pixel count there is a property of the design, and reporting it
+    as "0.0% of pixels show a significant trend" without saying so invites
+    exactly the wrong reading.
+
+    Args:
+        n_years: Observations per pixel - the trend raster's ``n_years`` band.
+        n_tested: Number of pixels entering the correction.
+        alpha: Significance level; ``None`` uses ``trends.fdr.alpha``. Pass the
+            resolved value when a params mapping is not to hand.
+
+    Returns:
+        Mapping with ``n_years``, ``n_tested``, ``alpha``, ``min_attainable_p``
+        (the smallest two-sided p the test can return at this length),
+        ``bh_threshold`` (``alpha / n_tested``, the most lenient rank-1
+        Benjamini-Hochberg cut), ``ratio`` of the two, and ``can_detect`` -
+        False when no pixel could possibly be called significant.
+
+    Raises:
+        ValueError: If ``n_years`` is below 3 or ``n_tested`` is below 1.
+    """
+    import math as _math
+
+    import numpy as np  # Deferred: see module docstring.
+
+    n = int(n_years)
+    tested = int(n_tested)
+    if n < 3:
+        raise ValueError(f"n_years must be >= 3, got {n}")
+    if tested < 1:
+        raise ValueError(f"n_tested must be >= 1, got {tested}")
+    level = 0.05 if alpha is None else float(alpha)
+    if not 0.0 < level < 1.0:
+        raise ValueError(f"alpha must be strictly between 0 and 1, got {level}")
+
+    max_s = n * (n - 1) / 2.0
+    variance = n * (n - 1) * (2 * n + 5) / 18.0
+    # The same continuity-corrected Z the pixel-wise test uses, at |S| = max.
+    best_z = (max_s - 1.0) / _math.sqrt(variance)
+    min_p = float(two_sided_p(np.asarray([best_z], dtype="float64"))[0])
+    threshold = level / tested
+    return {
+        "n_years": float(n),
+        "n_tested": tested,
+        "alpha": level,
+        "min_attainable_p": min_p,
+        "bh_threshold": threshold,
+        "ratio": min_p / threshold,
+        "can_detect": bool(min_p <= threshold),
+    }
